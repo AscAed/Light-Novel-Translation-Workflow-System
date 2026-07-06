@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.unittest_cache/
+
+# Environments
+.env
+.env.local
+.env.shared
+
+# IDE
+.vscode/
+.idea/
+
+# Local Project Data (Ignore all projects except the example)
+projects/*
+!projects/example/
+!projects/.gitkeep
+StartUP.txt

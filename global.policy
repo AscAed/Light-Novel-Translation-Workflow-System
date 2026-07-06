@@ -1,0 +1,18 @@
+# Global Policy for Novel Translation Pipeline
+policies:
+  - name: "Strict JSON Enforcement"
+    description: "When the user requests JSON output, ensure the response is a valid JSON object and contains no extra text."
+    action: "ALLOW"
+    constraints:
+      - "output_must_be_json"
+
+  - name: "No Conversational Filler"
+    description: "The model must not provide greetings, explanations, or 'Sure, I can help with that' style prefixes."
+    action: "ALLOW"
+    constraints:
+      - "no_preamble"
+      - "no_postamble"
+
+  - name: "Glossary Adherence"
+    description: "The model must prioritize terms found in Glossary.json located in the workspace."
+    action: "ALLOW"
