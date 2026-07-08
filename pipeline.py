@@ -3,6 +3,7 @@ import os
 import json
 import re
 import urllib.request
+import logging
 from typing import List, Dict, Any, Optional
 from openai import AsyncOpenAI
 from rag_engine import RAGEngine
@@ -13,6 +14,9 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
     class ClientConnectorDNSError(aiohttp.ClientConnectorError):
         pass
     aiohttp.ClientConnectorDNSError = ClientConnectorDNSError
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
@@ -110,8 +114,8 @@ class Config:
                 args, _ = parser.parse_known_args()
                 project = args.project
                 config_file = args.config
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to parse command line arguments", exc_info=True)
                 
         if not project and not config_file:
             project = os.environ.get("TRANSLATOR_PROJECT")
