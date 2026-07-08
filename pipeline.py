@@ -123,6 +123,11 @@ class Config:
                 if dirs:
                     project = dirs[0]
                     
+        if project:
+            # Prevent path traversal vulnerabilities
+            if ".." in project or "/" in project or "\\" in project:
+                raise ValueError("Invalid project name: path traversal detected")
+
         # 3. Resolve configuration
         cfg_data = {}
         if config_file and os.path.exists(config_file):
