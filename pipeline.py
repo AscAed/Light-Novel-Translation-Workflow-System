@@ -134,7 +134,12 @@ class Config:
             with open(config_file, "r", encoding="utf-8") as f:
                 cfg_data = json.load(f)
         elif project:
-            workspace_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects", project))
+            base_projects_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects"))
+            workspace_dir = os.path.abspath(os.path.join(base_projects_dir, project))
+
+            # Prevent path traversal vulnerabilities by verifying resolved path
+            if not workspace_dir.startswith(base_projects_dir + os.sep):
+                raise ValueError("Invalid project name: path traversal detected")
             cfg_data = {
                 "WORKSPACE_DIR": workspace_dir,
                 "GLOSSARY_PATH": os.path.join(workspace_dir, "Knowledge", "Glossary.json"),
