@@ -498,8 +498,11 @@ else:
             initial_translation = ""
             try:
                 # Call initial translator
-                initial_res = await self.call_completions("qwen3.6-plus", prompt, response_schema={"raw_translation": "str"})
-                initial_translation = initial_res.get("raw_translation", "")
+                initial_res = await self.call_completions("qwen3.6-plus", prompt, response_schema={"translated_paragraphs": "array"})
+                if isinstance(initial_res, dict) and "translated_paragraphs" in initial_res:
+                    initial_translation = "\n\n".join(initial_res["translated_paragraphs"])
+                else:
+                    initial_translation = ""
             except Exception as e:
                 print(f"Initial translation failed: {e}. Trying Gemini Fallback...")
                 try:

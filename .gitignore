@@ -6,17 +6,37 @@ __pycache__/
 .pytest_cache/
 .unittest_cache/
 
-# Environments
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environments and Secrets
 .env
 .env.local
 .env.shared
+.env.*
+
+# Logs and Scratch files
+*.log
+scratch/
+StartUP.txt
+
+# OS
+.DS_Store
+Thumbs.db
 
 # IDE
 .vscode/
 .idea/
 
+# Temporary test/CLI directories in root
+temp_test/
+temp_test_out/
+temp_cli_workspace/
+
 # Local Project Data (Ignore all projects except the example)
 projects/*
 !projects/example/
 !projects/.gitkeep
-StartUP.txt

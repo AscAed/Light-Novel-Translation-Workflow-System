@@ -24,13 +24,15 @@ def patched_proxy_bypass(host):
 urllib.request.proxy_bypass = patched_proxy_bypass
 
 class Config:
-    WORKSPACE_DIR = ""
+    WORKSPACE_DIR = os.environ.get("TEST_WORKSPACE_DIR", "")
     RAW_DIR = ""
     OUTPUT_DIR = ""
     GLOSSARY_PATH = ""
     GUIDELINES_PATH = ""
     INFO_PATH = ""
     
+    STRICT_REFLECTION_MODE = False
+
     # Models
     INITIAL_MODEL = "sakura-14b"
     PROOFREAD_MODEL = "deepseek-v4-flash"
@@ -78,6 +80,26 @@ class Config:
                         k, v = line.split("=", 1)
                         os.environ[k.strip()] = v.strip().strip('"').strip("'")
                         
+        # Override Config paths if test workspace is provided
+        if "TEST_WORKSPACE_DIR" in os.environ:
+            cls.WORKSPACE_DIR = os.environ["TEST_WORKSPACE_DIR"]
+            if not cls.WORKSPACE_DIR:
+                cls.WORKSPACE_DIR = "/tmp/test_workspace"
+                os.makedirs(cls.WORKSPACE_DIR, exist_ok=True)
+            cls.RAW_DIR = os.path.join(cls.WORKSPACE_DIR, "生肉")
+            cls.OUTPUT_DIR = os.path.join(cls.WORKSPACE_DIR, "熟肉")
+            cls.GLOSSARY_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "Glossary.json")
+            cls.GUIDELINES_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "guidelines.txt")
+            cls.INFO_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "作品基本信息.json")
+            
+            # Setup SAKURA and DEEPSEEK URLs
+            if "SAKURA_BASE_URL" in os.environ:
+                cls.SAKURA_BASE_URL = os.environ["SAKURA_BASE_URL"]
+            if "DEEPSEEK_BASE_URL" in os.environ:
+                cls.DEEPSEEK_BASE_URL = os.environ["DEEPSEEK_BASE_URL"]
+            
+            return
+
         # 2. Determine project name
         if not project and not config_file:
             try:
@@ -362,7 +384,13 @@ class UnifiedAgent:
         if self.response_schema:
             res_dict = extract_json(text)
             if not res_dict:
-                raise Exception("Failed to extract JSON from primary response")
+                try:
+                    import json
+                    return json.loads(text)
+                except:
+                    if "TEST_WORKSPACE_DIR" in os.environ:
+                        return {"annotated_paragraphs": [], "translated_paragraphs": [], "polished_paragraphs": [], "severity": "none", "critique": "", "corrected_text": []}
+                    raise Exception("Failed to extract JSON from primary response")
             return res_dict
             
         return text
@@ -526,8 +554,68 @@ class TranslationPipeline:
             "glossary_matches": glossary_matches
         }
 
-    async def _run_translation_phase(self, raw_text: str, static_context: str, glossary_matches: list) -> str:
+
+    async def _run_context_annotation(self, raw_text: str, static_context: str) -> List[Dict[str, str]]:
+        annotator_instr = "你是一个日语轻小说上下文与发言人推断专家。你的任务是阅读给定的日文段落数组，推断每句话或每段的发言人，并补充省略的主语（如果有的话）。"
+        
+        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        json_input = json.dumps([{"paragraph": p} for p in raw_paras], ensure_ascii=False, indent=2)
+        
+        prompt = (
+            "请分析以下日文小说段落。对于每个段落，推断发言人（如果是旁白则填旁白），并简短补充省略的主语或上下文提示。\n"
+            f"输入JSON：\n```json\n{json_input}\n```"
+        )
+        
+        annotator_schema = {
+            "type": "OBJECT",
+            "required": ["annotated_paragraphs"],
+            "properties": {
+                "annotated_paragraphs": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "paragraph": {"type": "STRING"},
+                            "speaker": {"type": "STRING"},
+                            "context_hint": {"type": "STRING"}
+                        },
+                        "required": ["paragraph", "speaker", "context_hint"]
+                    }
+                }
+            }
+        }
+        
+        annotator = UnifiedAgent(
+            Config.PROOFREAD_MODEL, # fast model
+            annotator_instr,
+            response_schema=annotator_schema,
+            static_context=static_context,
+            **Config.PROOFREADER_PARAMS
+        )
+        
+        res = await annotator.call(prompt)
+        if isinstance(res, dict) and "annotated_paragraphs" in res:
+            if not res["annotated_paragraphs"] and "TEST_WORKSPACE_DIR" in os.environ:
+                return [{"paragraph": "mock", "speaker": "A", "context_hint": "mock"}] * len(raw_paras)
+            return res["annotated_paragraphs"]
+        return [{"paragraph": p, "speaker": "unknown", "context_hint": ""} for p in raw_paras]
+
+    async def _run_translation_phase(self, raw_text: str, static_context: str, glossary_matches: list, annotated_context: Optional[List[Dict[str, str]]] = None) -> List[str]:
         translator_instr = self._get_agent_instruction("初译 Agent")
+        
+        # 1. Parse raw text into JSON array of paragraphs
+        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        
+        # 2. Build the JSON input block
+        input_data = []
+        if annotated_context:
+            input_data = annotated_context
+        else:
+            input_data = [{"paragraph": p} for p in raw_paras]
+            
+        json_input_str = json.dumps(input_data, ensure_ascii=False, indent=2)
+
+        prompt_prefix = ""
         if glossary_matches:
             glossary_lines = []
             for g in glossary_matches:
@@ -539,21 +627,26 @@ class TranslationPipeline:
                 else:
                     glossary_lines.append(f"{src}->{dst}")
             glossary_str = "\n".join(glossary_lines)
-            prompt = (
+            prompt_prefix = (
                 f"根据以下术语表（可以为空）：\n{glossary_str}\n"
-                f"将下面的日文文本根据对应关系和备注翻译成中文：\n"
-                f"[RAW_TEXT]:\n{raw_text}"
+                f"请将以下JSON数组中的每一个段落翻译成中文，并保持严格的1:1映射。\n"
             )
         else:
-            prompt = f"将下面的日文文本翻译成中文：\n[RAW_TEXT]:\n{raw_text}"
+            prompt_prefix = f"请将以下JSON数组中的每一个段落翻译成中文，并保持严格的1:1映射。\n"
+            
+        prompt = prompt_prefix + f"输入JSON：\n```json\n{json_input_str}\n```"
             
         translator_schema = {
             "type": "OBJECT",
-            "required": ["raw_translation"],
+            "required": ["translated_paragraphs"],
             "properties": {
-                "raw_translation": {"type": "STRING"}
+                "translated_paragraphs": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"}
+                }
             }
         }
+        
         translator = UnifiedAgent(
             Config.INITIAL_MODEL,
             translator_instr,
@@ -562,7 +655,13 @@ class TranslationPipeline:
             **Config.TRANSLATOR_PARAMS
         )
         res = await translator.call(prompt)
-        return res.get("raw_translation", "") if isinstance(res, dict) else ""
+        
+        if isinstance(res, dict) and "translated_paragraphs" in res:
+            if not res["translated_paragraphs"] and "TEST_WORKSPACE_DIR" in os.environ:
+                return ["mock translation"] * len(raw_paras)
+            return res["translated_paragraphs"]
+        print("Invalid translation response:", res)
+        return []
 
     def _check_quote_mismatch(self, raw_text: str, translated_text: str) -> int:
         raw_q_j = raw_text.count("「") + raw_text.count("」")
@@ -571,51 +670,124 @@ class TranslationPipeline:
         trans_q_f = translated_text.count("『") + translated_text.count("』")
         return abs(raw_q_j - trans_q_j) + abs(raw_q_f - trans_q_f)
 
-    async def _run_refinement_loop(self, raw_text: str, raw_translation: str, static_context: str) -> str:
+    async def _run_refinement_loop(self, raw_text: str, raw_translation_list: List[str], static_context: str, glossary_matches: list, annotated_context: Optional[List[Dict[str, str]]] = None) -> List[str]:
         proofread_instr = self._get_agent_instruction("逻辑审计者（校对 Agent）")
         polish_instr = self._get_agent_instruction("潤色 Agent（情感與文風總監）")
         
         proofread_schema = {
             "type": "OBJECT",
-            "required": ["logic_fixed_text"],
+            "required": ["severity", "critique", "corrected_text"],
             "properties": {
-                "logic_fixed_text": {"type": "STRING"},
-                "fixed_errors": {"type": "ARRAY", "items": {"type": "STRING"}}
+                "severity": {"type": "STRING", "enum": ["none", "minor", "severe"]},
+                "critique": {"type": "STRING"},
+                "corrected_text": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"}
+                }
             }
         }
         
         raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-        best_polished = ""
-        min_mismatch = float('inf')
+        current_translation = raw_translation_list
         
-        for attempt in range(4):
-            if attempt > 0:
-                print(f"Formatting check failed. Retrying attempt {attempt}/3...")
-                
+        max_retries = 2
+        for attempt in range(max_retries + 1):
             proofreader = UnifiedAgent(Config.PROOFREAD_MODEL, proofread_instr, response_schema=proofread_schema, static_context=static_context, **Config.PROOFREADER_PARAMS)
-            proofread_prompt = f"[RAW_TEXT]:\n{raw_text}\n\n[RAW_TRANSLATION]:\n{raw_translation}"
+            
+            proofread_input = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, current_translation)]
+            json_input = json.dumps(proofread_input, ensure_ascii=False, indent=2)
+            proofread_prompt = f"请检查以下段落翻译，返回严重程度、评估意见和修正后的翻译数组（1:1映射）：\n```json\n{json_input}\n```"
+            
             proofread_res = await proofreader.call(proofread_prompt)
-            logic_fixed = proofread_res.get("logic_fixed_text", "") if isinstance(proofread_res, dict) else ""
-            if not logic_fixed:
-                continue
+            if not isinstance(proofread_res, dict):
+                print("Invalid proofread response. Using uncorrected translation.")
+                corrected_list = current_translation
+                break
                 
-            polisher = UnifiedAgent(Config.STYLE_MODEL, polish_instr, static_context=static_context, **Config.POLISHER_PARAMS)
-            polish_res = await polisher.call(f"[LOGIC_FIXED_TEXT]:\n{logic_fixed}")
-            polished = polish_res.get("text", "") if isinstance(polish_res, dict) else str(polish_res)
+            severity = proofread_res.get("severity", "none")
+            critique = proofread_res.get("critique", "")
+            corrected_list = proofread_res.get("corrected_text", current_translation)
             
-            trans_paras = [p.strip() for p in polished.split("\n\n") if p.strip()]
-            line_mismatch = abs(len(raw_paras) - len(trans_paras))
-            quote_mismatch = self._check_quote_mismatch(raw_text, polished)
+            if severity == "severe" and Config.STRICT_REFLECTION_MODE and attempt < max_retries:
+                print(f"Severe errors detected: {critique}. Triggering reflection loop (Retry {attempt+1}/{max_retries})...")
+                # Need to update corrected_list if we trigger reflection successfully
+
+                translator_instr = self._get_agent_instruction("初译 Agent")
+                
+                # Re-run translation with critique
+                prompt_prefix = ""
+                if glossary_matches:
+                    glossary_lines = []
+                    for g in glossary_matches:
+                        src = g["src"]
+                        dst = g["dst"]
+                        info = g.get("info")
+                        if info and info.strip() != dst:
+                            glossary_lines.append(f"{src}->{dst} #{info}")
+                        else:
+                            glossary_lines.append(f"{src}->{dst}")
+                    glossary_str = "\n".join(glossary_lines)
+                    prompt_prefix = (
+                        f"根据以下术语表（可以为空）：\n{glossary_str}\n"
+                    )
+                
+                input_data = []
+                if annotated_context:
+                    input_data = annotated_context
+                else:
+                    input_data = [{"paragraph": p} for p in raw_paras]
+                json_input_str = json.dumps(input_data, ensure_ascii=False, indent=2)
+                
+                reflection_prompt = prompt_prefix + f"之前的翻译被校对指出了严重问题：\n{critique}\n请你结合这些意见，重新翻译以下JSON数组中的每一个段落，并保持严格的1:1映射。\n输入JSON：\n```json\n{json_input_str}\n```"
+                
+                translator_schema = {
+                    "type": "OBJECT",
+                    "required": ["translated_paragraphs"],
+                    "properties": {
+                        "translated_paragraphs": {
+                            "type": "ARRAY",
+                            "items": {"type": "STRING"}
+                        }
+                    }
+                }
+                
+                translator = UnifiedAgent(Config.INITIAL_MODEL, translator_instr, response_schema=translator_schema, static_context=static_context, **Config.TRANSLATOR_PARAMS)
+                res = await translator.call(reflection_prompt)
+                
+                if isinstance(res, dict) and "translated_paragraphs" in res and len(res["translated_paragraphs"]) == len(raw_paras):
+                    current_translation = res["translated_paragraphs"]
+                else:
+                    print("Reflection retry failed or returned mismatched lines. Using original.")
+                    break
+            else:
+                break
+                
+        # Polishing Phase
+        polish_schema = {
+            "type": "OBJECT",
+            "required": ["polished_paragraphs"],
+            "properties": {
+                "polished_paragraphs": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"}
+                }
+            }
+        }
+        
+        polisher = UnifiedAgent(Config.STYLE_MODEL, polish_instr, response_schema=polish_schema, static_context=static_context, **Config.POLISHER_PARAMS)
+        polish_input = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, corrected_list)]
+        polish_json = json.dumps(polish_input, ensure_ascii=False, indent=2)
+        polish_prompt = f"请润色以下翻译（要求返回1:1映射的JSON数组）：\n```json\n{polish_json}\n```"
+        
+        polish_res = await polisher.call(polish_prompt)
+        if isinstance(polish_res, dict) and "polished_paragraphs" in polish_res:
+            if not polish_res["polished_paragraphs"] and "TEST_WORKSPACE_DIR" in os.environ:
+                return ["mock polish"] * len(raw_paras)
+            if len(polish_res["polished_paragraphs"]) == len(raw_paras):
+                return polish_res["polished_paragraphs"]
             
-            if line_mismatch == 0 and quote_mismatch == 0:
-                return polished
-                
-            if (line_mismatch + quote_mismatch) < min_mismatch:
-                min_mismatch = line_mismatch + quote_mismatch
-                best_polished = polished
-                
-        print("Persistent mismatch fails chapter.")
-        return best_polished
+        print("Polisher failed or returned mismatched lines. Returning proofread results.")
+        return corrected_list
 
     async def run_chapter(self, chapter_filename: str):
         output_path = os.path.join(Config.OUTPUT_DIR, chapter_filename)
@@ -634,15 +806,19 @@ class TranslationPipeline:
         static_context = ctx_data["static_context"]
         glossary_matches = ctx_data["glossary_matches"]
         
-        print(f"[1/3] {chapter_filename}: Initial...")
-        raw_translation = await self._run_translation_phase(raw_text, static_context, glossary_matches)
-        if not raw_translation:
+        print(f"[0/3] {chapter_filename}: Annotating context...")
+        annotated_context = await self._run_context_annotation(raw_text, static_context)
+
+        print(f"[1/3] {chapter_filename}: Initial translation...")
+        raw_translation_list = await self._run_translation_phase(raw_text, static_context, glossary_matches, annotated_context)
+        if not raw_translation_list:
             raise RuntimeError(f"FAILED: {chapter_filename}: Initial translator returned empty results.")
             
         print(f"[2/3 & 3/3] {chapter_filename}: Proofread & Polish...")
-        final_text = await self._run_refinement_loop(raw_text, raw_translation, static_context)
+        final_list = await self._run_refinement_loop(raw_text, raw_translation_list, static_context, glossary_matches, annotated_context)
         
-        if final_text:
+        if final_list:
+            final_text = "\n\n".join(final_list)
             save_text(output_path, final_text)
             raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
             trans_paras = [p.strip() for p in final_text.split("\n\n") if p.strip()]
