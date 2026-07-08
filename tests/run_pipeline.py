@@ -366,8 +366,8 @@ else:
                 try:
                     with open(self.tm_path, "r", encoding="utf-8") as f:
                         tm_data = json.load(f)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Failed to read translation memory from {self.tm_path}: {e}")
             tm_data.setdefault("chapters", {})
             tm_data["chapters"][chapter_filename] = paragraph_pairs
             
