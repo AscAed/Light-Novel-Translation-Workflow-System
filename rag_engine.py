@@ -2,6 +2,7 @@
 # RAG retrieval module for translation memory, glossary, and guidelines.
 # Compliant with Australian English spelling conventions.
 
+import logging
 import os
 import json
 import re
@@ -14,6 +15,8 @@ class RAGEngine:
 
     def __init__(self, tm_path: str, glossary_path: str, guidelines_path: str):
         """Initialise paths and load initial database contents from disk."""
+        self.logger = logging.getLogger(__name__)
+
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
@@ -26,8 +29,12 @@ class RAGEngine:
                     data = json.load(f)
                     if isinstance(data, dict) and "chapters" in data:
                         self.tm_data = data
-            except Exception:
-                pass
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to decode translation memory JSON file '{self.tm_path}': {e}")
+                raise
+            except OSError as e:
+                self.logger.error(f"Failed to read translation memory file '{self.tm_path}': {e}")
+                raise
 
         # Initialise glossary raw content
         self.glossary_raw = ""
