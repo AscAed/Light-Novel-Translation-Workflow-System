@@ -31,11 +31,22 @@ if mock_port:
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
+            timeout = float(os.environ.get("ALIGN_API_TIMEOUT", "10"))
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     val = res_data.get("embedding", {}).get("values", [0.1] * 768)
-            except Exception:
+            except urllib.error.URLError as e:
+                if isinstance(e.reason, TimeoutError):
+                    print(f"Warning: Mock Gemini API request timed out after {timeout} seconds.")
+                else:
+                    print(f"Warning: Mock Gemini API request failed: {e}")
+                val = [0.1] * 768
+            except TimeoutError:
+                print(f"Warning: Mock Gemini API request timed out after {timeout} seconds.")
+                val = [0.1] * 768
+            except Exception as e:
+                print(f"Warning: Mock Gemini API request encountered an unexpected error: {e}")
                 val = [0.1] * 768
             return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
 
