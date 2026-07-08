@@ -172,22 +172,6 @@ class RAGEngine:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
 
-    def _extract_chapter_num(self, filename: str) -> float:
-        """Extract chapter number from file name."""
-        match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*[話话]", filename)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-        match = re.search(r"(\d+(?:\.\d+)?)", filename)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-        return 0.0
-
     def _load_current_chapter_raw(self, chapter_filename: str) -> str:
         """Attempt to read raw chapter text from expected locations."""
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
@@ -209,7 +193,7 @@ class RAGEngine:
     def _find_tm_filename(self, chap_num: float) -> Optional[str]:
         """Find the filename matching chapter number in translation memory."""
         for fn in self.tm_data.get("chapters", {}):
-            if self._extract_chapter_num(fn) == chap_num:
+            if extract_chapter_num(fn, default=0.0) == chap_num:
                 return fn
         return None
 
@@ -267,7 +251,7 @@ class RAGEngine:
     def get_partitioned_guidelines(self, chapter_filename: str) -> str:
         """Retrieve global and matching/semantic-fallback chapter guidelines under 10KB."""
         global_guidelines, chapter_dict = self._parse_guidelines_content()
-        target_chap = self._extract_chapter_num(chapter_filename)
+        target_chap = extract_chapter_num(chapter_filename, default=0.0)
 
         if target_chap in chapter_dict:
             matched_content = chapter_dict[target_chap]
