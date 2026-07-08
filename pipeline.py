@@ -4,6 +4,7 @@ import json
 import re
 import urllib.request
 from typing import List, Dict, Any, Optional
+from utils import extract_chapter_num
 from openai import AsyncOpenAI
 from rag_engine import RAGEngine
 
@@ -242,14 +243,6 @@ def get_chapters(raw_dir: str) -> List[str]:
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
-def extract_chapter_num(filename: str) -> Optional[float]:
-    match = re.search(r'第\s*(\d+(?:\.\d+)?)\s*[話话]', filename)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
-    return None
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
