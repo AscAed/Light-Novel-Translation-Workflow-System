@@ -3,7 +3,9 @@ import os
 import json
 import re
 import urllib.request
+import logging
 from typing import List, Dict, Any, Optional
+from utils import extract_chapter_num
 from openai import AsyncOpenAI
 from rag_engine import RAGEngine
 
@@ -13,6 +15,9 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
     class ClientConnectorDNSError(aiohttp.ClientConnectorError):
         pass
     aiohttp.ClientConnectorDNSError = ClientConnectorDNSError
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
@@ -110,8 +115,8 @@ class Config:
                 args, _ = parser.parse_known_args()
                 project = args.project
                 config_file = args.config
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to parse command line arguments", exc_info=True)
                 
         if not project and not config_file:
             project = os.environ.get("TRANSLATOR_PROJECT")
@@ -242,14 +247,6 @@ def get_chapters(raw_dir: str) -> List[str]:
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
-def extract_chapter_num(filename: str) -> Optional[float]:
-    match = re.search(r'第\s*(\d+(?:\.\d+)?)\s*[話话]', filename)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
-    return None
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -800,12 +797,15 @@ class TranslationPipeline:
         return corrected_list
 
     async def run_chapter(self, chapter_filename: str):
-        output_path = os.path.join(Config.OUTPUT_DIR, chapter_filename)
+        # Sanitize chapter_filename to prevent path traversal
+        clean_filename = os.path.normpath('/' + chapter_filename).lstrip('/')
+
+        output_path = os.path.join(Config.OUTPUT_DIR, clean_filename)
         if os.path.exists(output_path):
-            print(f">>> Skipping {chapter_filename}")
+            print(f">>> Skipping {clean_filename}")
             return
             
-        raw_text = load_text(os.path.join(Config.RAW_DIR, chapter_filename))
+        raw_text = load_text(os.path.join(Config.RAW_DIR, clean_filename))
         if not raw_text.strip():
             print(f"Chapter {chapter_filename} is empty. Writing empty output.")
             save_text(output_path, "")

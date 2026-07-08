@@ -2,11 +2,18 @@
 # RAG retrieval module for translation memory, glossary, and guidelines.
 # Compliant with Australian English spelling conventions.
 
+import logging
 import os
+
+import logging
 import json
 import re
 import numpy as np
+import logging
+import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class RAGEngine:
@@ -14,6 +21,8 @@ class RAGEngine:
 
     def __init__(self, tm_path: str, glossary_path: str, guidelines_path: str):
         """Initialise paths and load initial database contents from disk."""
+        self.logger = logging.getLogger(__name__)
+
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
@@ -26,8 +35,12 @@ class RAGEngine:
                     data = json.load(f)
                     if isinstance(data, dict) and "chapters" in data:
                         self.tm_data = data
-            except Exception:
-                pass
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to decode translation memory JSON file '{self.tm_path}': {e}")
+                raise
+            except OSError as e:
+                self.logger.error(f"Failed to read translation memory file '{self.tm_path}': {e}")
+                raise
 
         # Initialise glossary raw content
         self.glossary_raw = ""
@@ -35,8 +48,8 @@ class RAGEngine:
             try:
                 with open(self.glossary_path, "r", encoding="utf-8") as f:
                     self.glossary_raw = f.read()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to read glossary from {self.glossary_path}: {e}")
 
         # Initialise guidelines raw content
         self.guidelines_raw = ""
@@ -44,8 +57,8 @@ class RAGEngine:
             try:
                 with open(self.guidelines_path, "r", encoding="utf-8") as f:
                     self.guidelines_raw = f.read()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to read guidelines from {self.guidelines_path}: {e}")
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
@@ -60,10 +73,14 @@ class RAGEngine:
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     return res_data.get("embedding", {}).get("values", [0.1] * 768)
-            except Exception:
+            except (TimeoutError, urllib.error.URLError) as e:
+                logger.warning(f"Mock server request failed (timeout or URL error): {e}")
+                return [0.1] * 768
+            except Exception as e:
+                logger.warning(f"Mock server request failed with unexpected error: {e}")
                 return [0.1] * 768
         else:
             from google import genai
@@ -81,7 +98,8 @@ class RAGEngine:
 
         try:
             q_emb = self._generate_embedding_sync(raw_text)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to generate embedding for query: {e}")
             return []
 
         candidates = []
@@ -172,22 +190,6 @@ class RAGEngine:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
 
-    def _extract_chapter_num(self, filename: str) -> float:
-        """Extract chapter number from file name."""
-        match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*[話话]", filename)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-        match = re.search(r"(\d+(?:\.\d+)?)", filename)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-        return 0.0
-
     def _load_current_chapter_raw(self, chapter_filename: str) -> str:
         """Attempt to read raw chapter text from expected locations."""
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
@@ -202,14 +204,15 @@ class RAGEngine:
                 try:
                     with open(p, "r", encoding="utf-8") as f:
                         return f.read()
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to read raw chapter from {p}: {e}")
                     pass
         return ""
 
     def _find_tm_filename(self, chap_num: float) -> Optional[str]:
         """Find the filename matching chapter number in translation memory."""
         for fn in self.tm_data.get("chapters", {}):
-            if self._extract_chapter_num(fn) == chap_num:
+            if extract_chapter_num(fn, default=0.0) == chap_num:
                 return fn
         return None
 
@@ -259,7 +262,8 @@ class RAGEngine:
                 best_chap = self._find_best_semantic_match(curr_emb, candidates)
                 if best_chap is not None:
                     return chapter_dict[best_chap]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Semantic fallback failed for chapter {chapter_filename}: {e}")
             pass
         closest_num = min(candidates, key=lambda k: abs(k - target_chap))
         return chapter_dict[closest_num]
@@ -267,7 +271,7 @@ class RAGEngine:
     def get_partitioned_guidelines(self, chapter_filename: str) -> str:
         """Retrieve global and matching/semantic-fallback chapter guidelines under 10KB."""
         global_guidelines, chapter_dict = self._parse_guidelines_content()
-        target_chap = self._extract_chapter_num(chapter_filename)
+        target_chap = extract_chapter_num(chapter_filename, default=0.0)
 
         if target_chap in chapter_dict:
             matched_content = chapter_dict[target_chap]
@@ -297,7 +301,8 @@ class RAGEngine:
             if not embedding:
                 try:
                     embedding = self._generate_embedding_sync(raw_text)
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to generate embedding for raw text: {e}")
                     embedding = [0.1] * 768
             new_pairs.append({
                 "raw": raw_text,
@@ -311,5 +316,5 @@ class RAGEngine:
             os.makedirs(os.path.dirname(self.tm_path), exist_ok=True)
             with open(self.tm_path, "w", encoding="utf-8") as f:
                 json.dump(self.tm_data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to write translation memory to {self.tm_path}: {e}")

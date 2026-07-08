@@ -2,6 +2,7 @@ import os
 import json
 import re
 from typing import List, Dict, Any, Optional
+from utils import extract_chapter_num
 
 WORKSPACE_DIR = r"d:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ_祝福的牛头人"
 GLOSSARY_PATH = os.path.join(WORKSPACE_DIR, "Glossary.json")
@@ -57,15 +58,6 @@ def filter_glossary(raw_text: str, full_glossary: Dict[str, Any]) -> Dict[str, A
         if any(kw in raw_text for kw in keywords):
             active[key] = val
     return active
-
-def extract_chapter_num(filename: str) -> Optional[float]:
-    match = re.search(r'第\s*(\d+(?:\.\d+)?)\s*[話话]', filename)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
-    return None
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
