@@ -6,7 +6,11 @@ import os
 import json
 import re
 import numpy as np
+import logging
+import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class RAGEngine:
@@ -60,10 +64,14 @@ class RAGEngine:
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     return res_data.get("embedding", {}).get("values", [0.1] * 768)
-            except Exception:
+            except (TimeoutError, urllib.error.URLError) as e:
+                logger.warning(f"Mock server request failed (timeout or URL error): {e}")
+                return [0.1] * 768
+            except Exception as e:
+                logger.warning(f"Mock server request failed with unexpected error: {e}")
                 return [0.1] * 768
         else:
             from google import genai
