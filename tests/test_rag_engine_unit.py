@@ -69,18 +69,18 @@ Chapter 2 specific guidelines.
         self.assertEqual(engine.guidelines_raw, "")
 
     def test_initialise_with_invalid_json(self):
-        """Verify RAGEngine initialises and ignores invalid JSON in database files."""
+        """Verify RAGEngine initialises and raises on invalid JSON in database files."""
         bad_json_path = os.path.join(self.test_dir, "bad.json")
         with open(bad_json_path, "w", encoding="utf-8") as f:
             f.write("{invalid json content}")
 
-        engine = RAGEngine(
-            tm_path=bad_json_path,
-            glossary_path=bad_json_path,
-            guidelines_path=self.guidelines_path
-        )
-        self.assertEqual(engine.tm_data, {"chapters": {}})
-        self.assertEqual(engine.glossary_raw, "{invalid json content}")
+        import json
+        with self.assertRaises(json.JSONDecodeError):
+            RAGEngine(
+                tm_path=bad_json_path,
+                glossary_path=bad_json_path,
+                guidelines_path=self.guidelines_path
+            )
 
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_query_translation_memory_empty(self, mock_embed):
