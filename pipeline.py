@@ -800,12 +800,15 @@ class TranslationPipeline:
         return corrected_list
 
     async def run_chapter(self, chapter_filename: str):
-        output_path = os.path.join(Config.OUTPUT_DIR, chapter_filename)
+        # Sanitize chapter_filename to prevent path traversal
+        clean_filename = os.path.normpath('/' + chapter_filename).lstrip('/')
+
+        output_path = os.path.join(Config.OUTPUT_DIR, clean_filename)
         if os.path.exists(output_path):
-            print(f">>> Skipping {chapter_filename}")
+            print(f">>> Skipping {clean_filename}")
             return
             
-        raw_text = load_text(os.path.join(Config.RAW_DIR, chapter_filename))
+        raw_text = load_text(os.path.join(Config.RAW_DIR, clean_filename))
         if not raw_text.strip():
             print(f"Chapter {chapter_filename} is empty. Writing empty output.")
             save_text(output_path, "")
