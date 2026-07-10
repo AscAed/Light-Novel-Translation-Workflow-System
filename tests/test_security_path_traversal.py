@@ -13,22 +13,22 @@ class TestPathTraversalSecurity(unittest.TestCase):
     def test_path_sanitization_in_pipeline(self):
         # We test the logic used in pipeline.py
         def sanitize(chapter_filename):
-            return os.path.normpath('/' + chapter_filename).lstrip('/')
+            return os.path.basename(chapter_filename)
 
         # 1. Normal file
         self.assertEqual(sanitize("chapter_1.md"), "chapter_1.md")
 
         # 2. File in subdirectory
-        self.assertEqual(sanitize("arc_1/chapter_1.md"), "arc_1/chapter_1.md")
+        self.assertEqual(sanitize("arc_1/chapter_1.md"), "chapter_1.md")
 
         # 3. Path traversal attack
-        self.assertEqual(sanitize("../../../etc/passwd"), "etc/passwd")
+        self.assertEqual(sanitize("../../../etc/passwd"), "passwd")
 
         # 4. Deep path traversal attack
-        self.assertEqual(sanitize("arc_1/../../../../etc/passwd"), "etc/passwd")
+        self.assertEqual(sanitize("arc_1/../../../../etc/passwd"), "passwd")
 
         # 5. Absolute path attack
-        self.assertEqual(sanitize("/etc/passwd"), "etc/passwd")
+        self.assertEqual(sanitize("/etc/passwd"), "passwd")
 
 if __name__ == '__main__':
     unittest.main()
