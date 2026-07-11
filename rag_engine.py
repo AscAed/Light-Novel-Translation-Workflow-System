@@ -9,6 +9,7 @@ import logging
 import json
 import re
 import numpy as np
+from utils import extract_chapter_num
 import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
@@ -218,15 +219,20 @@ class RAGEngine:
 
     def _get_chapter_tm_embedding(self, filename: str) -> Optional[np.ndarray]:
         """Compute the average paragraph embedding for chapter in TM."""
+        if not hasattr(self, '_chapter_tm_embeddings_cache'):
+            self._chapter_tm_embeddings_cache = {}
+        if filename in self._chapter_tm_embeddings_cache:
+            return self._chapter_tm_embeddings_cache[filename]
+
         pairs = self.tm_data.get("chapters", {}).get(filename, [])
         vectors = []
         for pair in pairs:
             emb = pair.get("embedding")
             if emb and isinstance(emb, list) and len(emb) > 0:
                 vectors.append(emb)
-        if vectors:
-            return np.mean(vectors, axis=0)
-        return None
+        result = np.mean(vectors, axis=0) if vectors else None
+        self._chapter_tm_embeddings_cache[filename] = result
+        return result
 
     def _find_best_semantic_match(self, curr_emb: np.ndarray, candidates: list) -> Optional[float]:
         """Compare current chapter embedding with candidates and select highest similarity."""
@@ -311,6 +317,8 @@ class RAGEngine:
             })
 
         self.tm_data.setdefault("chapters", {})[chapter_filename] = new_pairs
+        if hasattr(self, '_chapter_tm_embeddings_cache') and chapter_filename in self._chapter_tm_embeddings_cache:
+            del self._chapter_tm_embeddings_cache[chapter_filename]
 
         try:
             os.makedirs(os.path.dirname(self.tm_path), exist_ok=True)
