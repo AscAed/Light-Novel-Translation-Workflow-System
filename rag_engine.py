@@ -12,6 +12,7 @@ import numpy as np
 import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
+from utils import extract_chapter_num
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class RAGEngine:
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     return res_data.get("embedding", {}).get("values", [0.1] * 768)
             except (TimeoutError, urllib.error.URLError) as e:

@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 import json
 import urllib.request
 
@@ -13,11 +14,11 @@ def get_embedding(text, base_url):
         headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data.get("embedding", {}).get("values", [0.1] * 768)
     except Exception as e:
-        print(f"Error fetching embedding: {e}")
+        logging.exception(f"Error fetching embedding: {e}")
         # Default fallback vector
         return [0.1] * 768
 

@@ -18,7 +18,7 @@ def wait_for_server(port, timeout=10):
     url = f"http://127.0.0.1:{port}/health"
     while time.time() - start < timeout:
         try:
-            with urllib.request.urlopen(url) as resp:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode('utf-8'))
                     if data.get("status") == "ok":

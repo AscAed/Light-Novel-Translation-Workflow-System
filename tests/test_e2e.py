@@ -95,7 +95,7 @@ class E2ETestSuite(unittest.TestCase):
             headers={"Content-Type": "application/json"}
         )
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             self.fail(f"Failed to set mock state: {e}")
