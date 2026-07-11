@@ -455,7 +455,7 @@ class UnifiedAgent:
         try:
             return await self._call_primary(user_prompt, full_sys)
         except Exception as e:
-            print(f"Warning: Primary model {self.model_name} invocation failed: {e}. Switching to Gemini fallback...")
+            logger.warning(f"Primary model {self.model_name} invocation failed: {e}. Switching to Gemini fallback...", exc_info=True)
             return await self._call_gemini(user_prompt, full_sys)
 
 # Alias for backwards compatibility with tests

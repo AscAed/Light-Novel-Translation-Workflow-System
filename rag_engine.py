@@ -49,7 +49,7 @@ class RAGEngine:
                 with open(self.glossary_path, "r", encoding="utf-8") as f:
                     self.glossary_raw = f.read()
             except Exception as e:
-                logger.warning(f"Failed to read glossary from {self.glossary_path}: {e}")
+                logger.warning(f"Failed to read glossary from {self.glossary_path}: {e}", exc_info=True)
 
         # Initialise guidelines raw content
         self.guidelines_raw = ""
@@ -58,7 +58,7 @@ class RAGEngine:
                 with open(self.guidelines_path, "r", encoding="utf-8") as f:
                     self.guidelines_raw = f.read()
             except Exception as e:
-                logger.warning(f"Failed to read guidelines from {self.guidelines_path}: {e}")
+                logger.warning(f"Failed to read guidelines from {self.guidelines_path}: {e}", exc_info=True)
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
@@ -80,7 +80,7 @@ class RAGEngine:
                 logger.warning(f"Mock server request failed (timeout or URL error): {e}")
                 return [0.1] * 768
             except Exception as e:
-                logger.warning(f"Mock server request failed with unexpected error: {e}")
+                logger.warning(f"Mock server request failed with unexpected error: {e}", exc_info=True)
                 return [0.1] * 768
         else:
             from google import genai
@@ -99,7 +99,7 @@ class RAGEngine:
         try:
             q_emb = self._generate_embedding_sync(raw_text)
         except Exception as e:
-            logger.warning(f"Failed to generate embedding for query: {e}")
+            logger.warning(f"Failed to generate embedding for query: {e}", exc_info=True)
             return []
 
         candidates = []
@@ -206,7 +206,7 @@ class RAGEngine:
                     with open(p, "r", encoding="utf-8") as f:
                         return f.read()
                 except Exception as e:
-                    logger.warning(f"Failed to read raw chapter from {p}: {e}")
+                    logger.warning(f"Failed to read raw chapter from {p}: {e}", exc_info=True)
                     pass
         return ""
 
@@ -264,7 +264,7 @@ class RAGEngine:
                 if best_chap is not None:
                     return chapter_dict[best_chap]
         except Exception as e:
-            logger.warning(f"Semantic fallback failed for chapter {chapter_filename}: {e}")
+            logger.warning(f"Semantic fallback failed for chapter {chapter_filename}: {e}", exc_info=True)
             pass
         closest_num = min(candidates, key=lambda k: abs(k - target_chap))
         return chapter_dict[closest_num]
@@ -303,7 +303,7 @@ class RAGEngine:
                 try:
                     embedding = self._generate_embedding_sync(raw_text)
                 except Exception as e:
-                    logger.warning(f"Failed to generate embedding for raw text: {e}")
+                    logger.warning(f"Failed to generate embedding for raw text: {e}", exc_info=True)
                     embedding = [0.1] * 768
             new_pairs.append({
                 "raw": raw_text,
@@ -318,4 +318,4 @@ class RAGEngine:
             with open(self.tm_path, "w", encoding="utf-8") as f:
                 json.dump(self.tm_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"Failed to write translation memory to {self.tm_path}: {e}")
+            logger.error(f"Failed to write translation memory to {self.tm_path}: {e}", exc_info=True)
