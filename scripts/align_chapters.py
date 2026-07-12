@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 # scripts/align_chapters.py
 # Paragraph alignment tool for compiling Translation Memory (TM) database.
 # Compliant with Australian English spelling conventions.
@@ -46,7 +48,7 @@ if mock_port:
                 print(f"Warning: Mock Gemini API request timed out after {timeout} seconds.")
                 val = [0.1] * 768
             except Exception as e:
-                print(f"Warning: Mock Gemini API request encountered an unexpected error: {e}")
+                logger.warning(f"Mock Gemini API request encountered an unexpected error: {e}", exc_info=True)
                 val = [0.1] * 768
             return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
 
@@ -295,7 +297,7 @@ def main():
         try:
             aligned_pairs = align_chapter(raw_content, translated_content)
         except Exception as e:
-            print(f"Error aligning chapter {f}: {e}")
+            logger.error(f"Error aligning chapter {f}: {e}", exc_info=True)
             sys.exit(1)
 
         # Filter out empty pairs to prevent database pollution

@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import sys
 import json
@@ -78,7 +80,7 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         print(f"Extraction complete!\nDraft glossary saved to: {glossary_path}\nDraft summary saved to: {summary_path}")
         
     except Exception as e:
-        print(f"Error during extraction: {e}")
+        logger.error(f"Error during extraction: {e}", exc_info=True)
 
 if __name__ == "__main__":
     Config.load_config()
