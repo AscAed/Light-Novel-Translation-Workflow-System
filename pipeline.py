@@ -332,8 +332,15 @@ def get_base_url(default_url: str) -> str:
 def get_api_key(env_name: str) -> str:
     key = os.environ.get(env_name)
     if not key:
-        key = getattr(Config, "CODING_PLAN_API_KEY", None)
-    return key or "mock-key"
+        key = getattr(Config, env_name, None)
+
+    if not key:
+        # Fallback to mock key ONLY in test environments
+        if os.environ.get("MOCK_SERVER_PORT") or os.environ.get("TEST_WORKSPACE_DIR"):
+            return "mock-key"
+        return ""
+
+    return key
 
 def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(
