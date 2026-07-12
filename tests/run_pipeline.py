@@ -65,7 +65,7 @@ class MockAioModels:
             "config": serializable_config
         }
         
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=float(os.environ.get("API_TIMEOUT", 10.0)))) as session:
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:
                     raise Exception(f"Gemini API error status {resp.status}")
@@ -102,7 +102,7 @@ class MockAioModels:
             "model": model,
             "contents": contents
         }
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=float(os.environ.get("API_TIMEOUT", 10.0)))) as session:
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:
                     raise Exception(f"Gemini Embedding API error status {resp.status}")
@@ -160,7 +160,7 @@ def cosine_similarity(v1, v2):
 async def get_embedding(text, port):
     url = f"http://127.0.0.1:{port}/gemini/embedContent"
     payload = {"model": "text-embedding-004", "contents": [text]}
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=float(os.environ.get("API_TIMEOUT", 10.0)))) as session:
         async with session.post(url, json=payload) as resp:
             if resp.status == 200:
                 data = await resp.json()
@@ -175,6 +175,8 @@ if has_rag_engine:
     print("Running in REFACTORED mode.")
     # Add root dir to path
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import pipeline
     
     # Configure variables based on environment
@@ -385,7 +387,7 @@ else:
             if response_schema:
                 payload["response_format"] = {"type": "json_object"}
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=float(os.environ.get("API_TIMEOUT", 10.0)))) as session:
                 async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
                         raise Exception(f"API Error: status {resp.status}")
