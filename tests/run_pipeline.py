@@ -460,6 +460,7 @@ else:
                 return resp.text
 
         async def run_chapter(self, chapter_filename: str):
+            chapter_filename = os.path.basename(chapter_filename)
             raw_path = os.path.join(self.raw_dir, chapter_filename)
             output_path = os.path.join(self.output_dir, chapter_filename)
             
