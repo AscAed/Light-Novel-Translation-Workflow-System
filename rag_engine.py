@@ -12,6 +12,7 @@ import numpy as np
 import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
+from utils import extract_chapter_num
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,11 @@ class RAGEngine:
                 self.logger.error(f"Failed to read translation memory file '{self.tm_path}': {e}", exc_info=True)
                 raise
 
+        # Cache for translation memory vectors
+        self._cached_tm_matrix = None
+        self._cached_tm_norms = None
+        self._cached_candidates = None
+
         # Initialise glossary raw content
         self.glossary_raw = ""
         if os.path.exists(self.glossary_path):
@@ -59,6 +65,38 @@ class RAGEngine:
                     self.guidelines_raw = f.read()
             except Exception as e:
                 logger.warning(f"Failed to read guidelines from {self.guidelines_path}: {e}", exc_info=True)
+
+    def _invalidate_cache(self) -> None:
+        """Invalidate the translation memory vector cache."""
+        self._cached_tm_matrix = None
+        self._cached_tm_norms = None
+        self._cached_candidates = None
+
+    def _build_cache(self) -> None:
+        """Build the vectorized translation memory cache."""
+        candidates = []
+        for chap_name, pairs in self.tm_data.get("chapters", {}).items():
+            if not isinstance(pairs, list):
+                continue
+            for pair in pairs:
+                if isinstance(pair, dict) and "raw" in pair and "translated" in pair:
+                    emb = pair.get("embedding")
+                    if emb and isinstance(emb, list) and len(emb) > 0:
+                        candidates.append((pair["raw"], pair["translated"], emb))
+
+        if not candidates:
+            self._cached_tm_matrix = np.array([])
+            self._cached_tm_norms = np.array([])
+            self._cached_candidates = []
+            return
+
+        self._cached_candidates = candidates
+
+        # Create matrix and precalculate norms
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates])
+        self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1)
+        # Avoid division by zero
+        self._cached_tm_norms[self._cached_tm_norms == 0] = 1e-9
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
@@ -102,31 +140,30 @@ class RAGEngine:
             logger.warning(f"Failed to generate embedding for query: {e}", exc_info=True)
             return []
 
-        candidates = []
-        for chap_name, pairs in self.tm_data.get("chapters", {}).items():
-            if not isinstance(pairs, list):
-                continue
-            for pair in pairs:
-                if isinstance(pair, dict) and "raw" in pair and "translated" in pair:
-                    emb = pair.get("embedding")
-                    if emb and isinstance(emb, list) and len(emb) > 0:
-                        candidates.append((pair["raw"], pair["translated"], emb))
+        if self._cached_tm_matrix is None:
+            self._build_cache()
 
-        if not candidates:
+        if len(self._cached_candidates) == 0:
             return []
 
         q_arr = np.array(q_emb)
         q_norm = np.linalg.norm(q_arr) or 1e-9
 
-        scores = []
-        for raw, trans, emb in candidates:
-            c_arr = np.array(emb)
-            c_norm = np.linalg.norm(c_arr) or 1e-9
-            sim = np.dot(q_arr, c_arr) / (q_norm * c_norm)
-            scores.append((sim, raw, trans))
+        sims = np.dot(self._cached_tm_matrix, q_arr) / (self._cached_tm_norms * q_norm)
 
-        scores.sort(key=lambda x: x[0], reverse=True)
-        return [{"raw": raw, "translated": trans} for _, raw, trans in scores[:top_k]]
+        k = min(top_k, len(sims))
+        if k < len(sims):
+            top_k_idx = np.argpartition(sims, -k)[-k:]
+            top_k_idx = top_k_idx[np.argsort(sims[top_k_idx])[::-1]]
+        else:
+            top_k_idx = np.argsort(sims)[::-1]
+
+        results = []
+        for idx in top_k_idx:
+            raw, trans, _ = self._cached_candidates[idx]
+            results.append({"raw": raw, "translated": trans})
+
+        return results
 
     def _parse_glossary_json(self) -> dict:
         """Parse raw glossary JSON while removing single-line comments."""
@@ -312,6 +349,9 @@ class RAGEngine:
             })
 
         self.tm_data.setdefault("chapters", {})[chapter_filename] = new_pairs
+
+        # Invalidate the cache since tm_data has been mutated
+        self._invalidate_cache()
 
         try:
             os.makedirs(os.path.dirname(self.tm_path), exist_ok=True)
