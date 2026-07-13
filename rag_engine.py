@@ -9,9 +9,11 @@ import logging
 import json
 import re
 import numpy as np
+from utils import extract_chapter_num
 import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
+from utils import extract_chapter_num
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ class RAGEngine:
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
+
+        self._cached_cleaned_glossary = None
 
         # Initialise translation memory
         self.tm_data = {"chapters": {}}
@@ -73,7 +77,7 @@ class RAGEngine:
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     return res_data.get("embedding", {}).get("values", [0.1] * 768)
             except (TimeoutError, urllib.error.URLError) as e:
@@ -150,22 +154,45 @@ class RAGEngine:
                 pos = start + 1
         return merged
 
-    def get_cleaned_glossary(self, raw_text: str) -> List[Dict[str, str]]:
-        """Filter and return cleaned terminology mapping matching the raw text."""
+    def _get_precomputed_glossary(self) -> List[Dict[str, Any]]:
+        if self._cached_cleaned_glossary is not None:
+            return self._cached_cleaned_glossary
+
         merged = self._parse_glossary_json()
-        results = []
+        precomputed = []
         for key, val in merged.items():
             clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
             raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
-            if any(kw in raw_text for kw in keywords):
-                src = keywords[0]
-                parts_v = re.split(r"[/／\(\)（）]", str(val))
-                dst_candidates = [item.strip() for item in parts_v if item.strip()]
-                dst = dst_candidates[0] if dst_candidates else str(val).strip()
-                results.append({"src": src, "dst": dst, "info": str(val).strip()})
+
+            src = keywords[0]
+            parts_v = re.split(r"[/／\(\)（）]", str(val))
+            dst_candidates = [item.strip() for item in parts_v if item.strip()]
+            dst = dst_candidates[0] if dst_candidates else str(val).strip()
+
+            precomputed.append({
+                "keywords": keywords,
+                "src": src,
+                "dst": dst,
+                "info": str(val).strip()
+            })
+
+        self._cached_cleaned_glossary = precomputed
+        return precomputed
+
+    def get_cleaned_glossary(self, raw_text: str) -> List[Dict[str, str]]:
+        """Filter and return cleaned terminology mapping matching the raw text."""
+        precomputed = self._get_precomputed_glossary()
+        results = []
+        for item in precomputed:
+            if any(kw in raw_text for kw in item["keywords"]):
+                results.append({
+                    "src": item["src"],
+                    "dst": item["dst"],
+                    "info": item["info"]
+                })
         return results
 
     def _parse_guidelines_content(self) -> Tuple[str, Dict[float, str]]:
@@ -192,13 +219,12 @@ class RAGEngine:
 
     def _load_current_chapter_raw(self, chapter_filename: str) -> str:
         """Attempt to read raw chapter text from expected locations."""
-        safe_filename = os.path.basename(chapter_filename)
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
         paths_to_try = [
-            os.path.join(base_dir, "生肉", safe_filename),
-            os.path.join(base_dir, "生肉", "1.神んてらの世界", safe_filename),
-            os.path.join(os.getcwd(), "生肉", safe_filename),
-            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界", safe_filename),
+            os.path.join(base_dir, "生肉", chapter_filename),
+            os.path.join(base_dir, "生肉", "1.神んてらの世界", chapter_filename),
+            os.path.join(os.getcwd(), "生肉", chapter_filename),
+            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界", chapter_filename),
         ]
         for p in paths_to_try:
             if os.path.exists(p):
@@ -219,15 +245,20 @@ class RAGEngine:
 
     def _get_chapter_tm_embedding(self, filename: str) -> Optional[np.ndarray]:
         """Compute the average paragraph embedding for chapter in TM."""
+        if not hasattr(self, '_chapter_tm_embeddings_cache'):
+            self._chapter_tm_embeddings_cache = {}
+        if filename in self._chapter_tm_embeddings_cache:
+            return self._chapter_tm_embeddings_cache[filename]
+
         pairs = self.tm_data.get("chapters", {}).get(filename, [])
         vectors = []
         for pair in pairs:
             emb = pair.get("embedding")
             if emb and isinstance(emb, list) and len(emb) > 0:
                 vectors.append(emb)
-        if vectors:
-            return np.mean(vectors, axis=0)
-        return None
+        result = np.mean(vectors, axis=0) if vectors else None
+        self._chapter_tm_embeddings_cache[filename] = result
+        return result
 
     def _find_best_semantic_match(self, curr_emb: np.ndarray, candidates: list) -> Optional[float]:
         """Compare current chapter embedding with candidates and select highest similarity."""
@@ -312,6 +343,8 @@ class RAGEngine:
             })
 
         self.tm_data.setdefault("chapters", {})[chapter_filename] = new_pairs
+        if hasattr(self, '_chapter_tm_embeddings_cache') and chapter_filename in self._chapter_tm_embeddings_cache:
+            del self._chapter_tm_embeddings_cache[chapter_filename]
 
         try:
             os.makedirs(os.path.dirname(self.tm_path), exist_ok=True)
