@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 import json
 import urllib.request
 
@@ -45,7 +46,7 @@ def main():
     )
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             
             # Extract candidate text
@@ -59,7 +60,7 @@ def main():
             print(json.dumps(out_obj, ensure_ascii=False))
             sys.exit(0)
     except Exception as e:
-        sys.stderr.write(f"Gemini CLI mock error: {e}\n")
+        logging.exception(f"Gemini CLI mock error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

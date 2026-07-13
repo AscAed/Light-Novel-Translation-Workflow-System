@@ -64,6 +64,7 @@ class Config:
     CLI_COMMAND = "gemini"
     MIN_JITTER = 2
     MAX_JITTER = 5
+    API_TIMEOUT = 10.0
     SAFE_MODE = False
     WORK_DISCLAIMER = (
         "**[WORK_DISCLAIMER]**\n"
@@ -226,6 +227,7 @@ class Config:
         cls.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
         cls.SAKURA_BASE_URL = os.environ.get("SAKURA_BASE_URL", cls.SAKURA_BASE_URL)
         cls.DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", cls.DEEPSEEK_BASE_URL)
+        cls.API_TIMEOUT = float(os.environ.get("API_TIMEOUT", cls.API_TIMEOUT))
 
 def load_json(path: str) -> Dict[str, Any]:
     with open(path, 'r', encoding='utf-8') as f:
@@ -805,7 +807,7 @@ class TranslationPipeline:
 
     async def run_chapter(self, chapter_filename: str):
         # Sanitize chapter_filename to prevent path traversal
-        clean_filename = os.path.basename(chapter_filename)
+        clean_filename = os.path.normpath('/' + chapter_filename).lstrip('/')
 
         output_path = os.path.join(Config.OUTPUT_DIR, clean_filename)
         if os.path.exists(output_path):
