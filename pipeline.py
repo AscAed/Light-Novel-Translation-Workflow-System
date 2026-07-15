@@ -807,7 +807,7 @@ class TranslationPipeline:
 
     async def run_chapter(self, chapter_filename: str):
         # Sanitize chapter_filename to prevent path traversal
-        clean_filename = os.path.normpath('/' + chapter_filename).lstrip('/')
+        clean_filename = os.path.basename(chapter_filename)
 
         output_path = os.path.join(Config.OUTPUT_DIR, clean_filename)
         if os.path.exists(output_path):
