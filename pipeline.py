@@ -481,65 +481,74 @@ class TranslationPipeline:
             self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
         else:
             self.story_summary = "尚无手动配置的故事概要。"
+        self._instruction_cache = {}
 
     def _get_agent_instruction(self, agent_dir: str) -> str:
+        if agent_dir in self._instruction_cache:
+            return self._instruction_cache[agent_dir]
+
+        instruction = None
         # 1. Custom or legacy lookup inside the project workspace directory
         skill_path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "SKILL.md")
         if os.path.exists(skill_path):
             with open(skill_path, 'r', encoding='utf-8') as f:
-                return f.read().strip()
-                
-        path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "ai_studio_code.py")
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
-                    if match:
-                        return match.group(1).strip()
-                    match = re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
-                    if match:
-                        return match.group(1).strip()
-                    match = re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL)
-                    if match:
-                        return match.group(1).strip()
-            except Exception:
-                pass
+                instruction = f.read().strip()
+
+        if instruction is None:
+            path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "ai_studio_code.py")
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL):
+                            instruction = match.group(1).strip()
+                        elif match := re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL):
+                            instruction = match.group(1).strip()
+                except Exception:
+                    pass
                 
         # 2. Modern generic lookup
-        prompt_map = {
-            "初译 Agent": "translator_skill.md",
-            "逻辑审计者（校对 Agent）": "proofreader_skill.md",
-            "逻辑审计者": "proofreader_skill.md",
-            "校对 Agent": "proofreader_skill.md",
-            "潤色 Agent（情感與文風總監）": "polisher_skill.md",
-            "潤色 Agent": "polisher_skill.md",
-            "润色 Agent": "polisher_skill.md",
-        }
-        generic_filename = prompt_map.get(agent_dir)
-        if generic_filename:
-            # First check for project-specific custom prompts directory
-            project_prompts_dir = os.path.join(Config.WORKSPACE_DIR, "prompts")
-            project_prompt_path = os.path.join(project_prompts_dir, generic_filename)
-            if os.path.exists(project_prompt_path):
-                with open(project_prompt_path, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
-            # If a custom override does not exist in the project, try custom filenames directly
-            # e.g., custom_polisher_skill.md
-            custom_prefix = "custom_" + generic_filename
-            project_custom_prompt_path = os.path.join(project_prompts_dir, custom_prefix)
-            if os.path.exists(project_custom_prompt_path):
-                with open(project_custom_prompt_path, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
+        if instruction is None:
+            prompt_map = {
+                "初译 Agent": "translator_skill.md",
+                "逻辑审计者（校对 Agent）": "proofreader_skill.md",
+                "逻辑审计者": "proofreader_skill.md",
+                "校对 Agent": "proofreader_skill.md",
+                "潤色 Agent（情感與文風總監）": "polisher_skill.md",
+                "潤色 Agent": "polisher_skill.md",
+                "润色 Agent": "polisher_skill.md",
+            }
+            generic_filename = prompt_map.get(agent_dir)
+            if generic_filename:
+                # First check for project-specific custom prompts directory
+                project_prompts_dir = os.path.join(Config.WORKSPACE_DIR, "prompts")
+                project_prompt_path = os.path.join(project_prompts_dir, generic_filename)
+                if os.path.exists(project_prompt_path):
+                    with open(project_prompt_path, 'r', encoding='utf-8') as f:
+                        instruction = f.read().strip()
+                if instruction is None:
+                    # If a custom override does not exist in the project, try custom filenames directly
+                    # e.g., custom_polisher_skill.md
+                    custom_prefix = "custom_" + generic_filename
+                    project_custom_prompt_path = os.path.join(project_prompts_dir, custom_prefix)
+                    if os.path.exists(project_custom_prompt_path):
+                        with open(project_custom_prompt_path, 'r', encoding='utf-8') as f:
+                            instruction = f.read().strip()
 
-            # Second check for default templates in the global prompts directory
-            root_dir = os.path.dirname(os.path.abspath(__file__))
-            root_prompt_path = os.path.join(root_dir, "prompts", generic_filename)
-            if os.path.exists(root_prompt_path):
-                with open(root_prompt_path, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
+                if instruction is None:
+                    # Second check for default templates in the global prompts directory
+                    root_dir = os.path.dirname(os.path.abspath(__file__))
+                    root_prompt_path = os.path.join(root_dir, "prompts", generic_filename)
+                    if os.path.exists(root_prompt_path):
+                        with open(root_prompt_path, 'r', encoding='utf-8') as f:
+                            instruction = f.read().strip()
                     
-        return ""
+        instruction = instruction if instruction is not None else ""
+        self._instruction_cache[agent_dir] = instruction
+        return instruction
 
     async def _build_run_context(self, chapter_filename: str, raw_text: str, current_chap_num: Optional[float]) -> dict:
         guidelines = self.rag.get_partitioned_guidelines(chapter_filename)
