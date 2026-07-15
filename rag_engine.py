@@ -191,6 +191,10 @@ class RAGEngine:
                 pos = start + 1
         return merged
 
+    _CLEAN_K_RE = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+    _SPLIT_K_RE = re.compile(r"/|／|\bor\b|,|，|、")
+    _SPLIT_V_RE = re.compile(r"[/／\(\)（）]")
+
     def _get_precomputed_glossary(self) -> List[Dict[str, Any]]:
         if self._cached_cleaned_glossary is not None:
             return self._cached_cleaned_glossary
@@ -198,14 +202,14 @@ class RAGEngine:
         merged = self._parse_glossary_json()
         precomputed = []
         for key, val in merged.items():
-            clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
-            raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
+            clean_k = self._CLEAN_K_RE.sub("", key).strip()
+            raw_keywords = self._SPLIT_K_RE.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
-            parts_v = re.split(r"[/／\(\)（）]", str(val))
+            parts_v = self._SPLIT_V_RE.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -232,12 +236,14 @@ class RAGEngine:
                 })
         return results
 
+    _GUIDELINES_SPLIT_RE = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+    _GUIDELINES_CHAP_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+
     def _parse_guidelines_content(self) -> Tuple[str, Dict[float, str]]:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        pattern = r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])"
-        parts = re.split(pattern, self.guidelines_raw)
+        parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -249,7 +255,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
-                match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*章", header)
+                match = self._GUIDELINES_CHAP_RE.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
