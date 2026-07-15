@@ -255,6 +255,7 @@ class RAGEngine:
 
     def _load_current_chapter_raw(self, chapter_filename: str) -> str:
         """Attempt to read raw chapter text from expected locations."""
+        chapter_filename = os.path.basename(chapter_filename)
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
         paths_to_try = [
             os.path.join(base_dir, "生肉", chapter_filename),
