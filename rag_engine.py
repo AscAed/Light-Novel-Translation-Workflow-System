@@ -258,11 +258,12 @@ class RAGEngine:
         """Attempt to read raw chapter text from expected locations."""
         chapter_filename = os.path.basename(chapter_filename)
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
+        clean_filename = os.path.basename(chapter_filename)
         paths_to_try = [
-            os.path.join(base_dir, "生肉", chapter_filename),
-            os.path.join(base_dir, "生肉", "1.神んてらの世界", chapter_filename),
-            os.path.join(os.getcwd(), "生肉", chapter_filename),
-            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界", chapter_filename),
+            os.path.join(base_dir, "生肉", clean_filename),
+            os.path.join(base_dir, "生肉", "1.神んてらの世界", clean_filename),
+            os.path.join(os.getcwd(), "生肉", clean_filename),
+            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界", clean_filename),
         ]
         for p in paths_to_try:
             if os.path.exists(p):
