@@ -182,10 +182,11 @@ class RAGEngine:
             if start == -1:
                 break
             try:
-                obj, idx = decoder.raw_decode(clean_content[start:])
+                # Pass the string and start index directly to avoid O(N) string slicing
+                obj, idx = decoder.raw_decode(clean_content, start)
                 if isinstance(obj, dict):
                     merged.update(obj)
-                pos = start + idx
+                pos = idx
             except json.JSONDecodeError:
                 pos = start + 1
         return merged
