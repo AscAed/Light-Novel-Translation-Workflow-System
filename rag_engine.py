@@ -18,6 +18,14 @@ from utils import extract_chapter_num
 logger = logging.getLogger(__name__)
 
 
+# Precompile regular expressions for performance
+_GLOSSARY_COMMENT_PATTERN = re.compile(r"//.*")
+_GLOSSARY_CLEAN_KEY_PATTERN = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_GLOSSARY_SPLIT_KEY_PATTERN = re.compile(r"/|／|\bor\b|,|，|、")
+_GLOSSARY_SPLIT_VAL_PATTERN = re.compile(r"[/／\(\)（）]")
+_GUIDELINES_SPLIT_PATTERN = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_GUIDELINES_CHAPTER_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+
 class RAGEngine:
     """RAGEngine handles similarity search, glossary parsing, and partitioned guidelines."""
 
@@ -172,7 +180,7 @@ class RAGEngine:
         """Parse raw glossary JSON while removing single-line comments."""
         if not self.glossary_raw:
             return {}
-        clean_content = re.sub(r"//.*", "", self.glossary_raw)
+        clean_content = _GLOSSARY_COMMENT_PATTERN.sub("", self.glossary_raw)
         decoder = json.JSONDecoder()
         pos = 0
         merged = {}
@@ -198,14 +206,14 @@ class RAGEngine:
         merged = self._parse_glossary_json()
         precomputed = []
         for key, val in merged.items():
-            clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
-            raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
+            clean_k = _GLOSSARY_CLEAN_KEY_PATTERN.sub("", key).strip()
+            raw_keywords = _GLOSSARY_SPLIT_KEY_PATTERN.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
-            parts_v = re.split(r"[/／\(\)（）]", str(val))
+            parts_v = _GLOSSARY_SPLIT_VAL_PATTERN.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -236,8 +244,7 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        pattern = r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])"
-        parts = re.split(pattern, self.guidelines_raw)
+        parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -249,7 +256,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
-                match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*章", header)
+                match = _GUIDELINES_CHAPTER_PATTERN.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
