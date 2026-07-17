@@ -6,3 +6,6 @@
 ## 2026-07-14 - json.JSONDecoder().raw_decode string slicing performance
 **Learning:** Slicing large strings inside loops (e.g., `clean_content[start:]` for JSON parsing) allocates a new copy of the sliced string every iteration, leading to O(N^2) memory usage and execution time.
 **Action:** Use the `idx` parameter built into `json.JSONDecoder().raw_decode(s, idx)` to pass the original string and start index directly, avoiding accidental O(N^2) bottlenecks when parsing malformed or large JSON documents.
+## 2024-07-17 - Precompiled Regex Objects
+**Learning:** Compiling regular expressions repeatedly within a loop or heavily called function leads to redundant CPU overhead as Python internally looks them up in a cache and parses the pattern.
+**Action:** Always precompile regex patterns at the module or class level using `re.compile()` to reuse the compiled object, speeding up text processing routines.

@@ -242,13 +242,18 @@ def save_text(path: str, content: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
+
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
-        match = re.search(r'第(\d+)話', filename)
+        match = CHAPTER_SORT_PATTERN.search(filename)
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
+
+SUMMARY_HEADER_MATCH_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+SUMMARY_CHAPTER_MATCH_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -257,7 +262,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
-        if line_stripped and re.match(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]', line_stripped):
+        if line_stripped and SUMMARY_HEADER_MATCH_PATTERN.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -268,7 +273,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = re.match(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]', line_stripped)
+        match = SUMMARY_CHAPTER_MATCH_PATTERN.match(line_stripped)
         if match:
             try:
                 num = float(match.group(1))
@@ -301,11 +306,13 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         result += "尚无符合条件的故事概要。"
     return result
 
+EXTRACT_JSON_PATTERN = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+
 def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
-        match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        match = EXTRACT_JSON_PATTERN.search(text)
         if match:
             try:
                 return json.loads(match.group(1))
@@ -318,6 +325,8 @@ def extract_json(text: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+CODING_URL_PORT_PATTERN = re.compile(r':(\d+)')
+
 def get_base_url(default_url: str) -> str:
     mock_port = os.environ.get("MOCK_SERVER_PORT")
     coding_url = getattr(Config, "CODING_PLAN_BASE_URL", "")
@@ -326,7 +335,7 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
-        match = re.search(r':(\d+)', coding_url)
+        match = CODING_URL_PORT_PATTERN.search(coding_url)
         if match:
             return coding_url
     return default_url
@@ -494,18 +503,22 @@ class TranslationPipeline:
             with open(skill_path, 'r', encoding='utf-8') as f:
                 instruction = f.read().strip()
 
+        SYS_INSTR_PATTERN_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
+
         if instruction is None:
             path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "ai_studio_code.py")
             if os.path.exists(path):
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
+                        match = SYS_INSTR_PATTERN_1.search(content)
                         if match:
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL):
+                        elif match := SYS_INSTR_PATTERN_2.search(content):
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL):
+                        elif match := SYS_INSTR_PATTERN_3.search(content):
                             instruction = match.group(1).strip()
                 except Exception:
                     pass
