@@ -9,6 +9,13 @@ import logging
 import json
 import re
 import numpy as np
+
+_RE_COMMENT = re.compile(r"//.*")
+_RE_CLEAN_K = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_RE_SPLIT_K = re.compile(r"/|／|\bor\b|,|，|、")
+_RE_SPLIT_V = re.compile(r"[/／\(\)（）]")
+_RE_GUIDELINE_PART = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_RE_CHAP_NUM_GUIDELINE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
 from utils import extract_chapter_num
 import logging
 import urllib.error
@@ -172,7 +179,7 @@ class RAGEngine:
         """Parse raw glossary JSON while removing single-line comments."""
         if not self.glossary_raw:
             return {}
-        clean_content = re.sub(r"//.*", "", self.glossary_raw)
+        clean_content = _RE_COMMENT.sub("", self.glossary_raw)
         decoder = json.JSONDecoder()
         pos = 0
         merged = {}
@@ -198,14 +205,14 @@ class RAGEngine:
         merged = self._parse_glossary_json()
         precomputed = []
         for key, val in merged.items():
-            clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
-            raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
+            clean_k = _RE_CLEAN_K.sub("", key).strip()
+            raw_keywords = _RE_SPLIT_K.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
-            parts_v = re.split(r"[/／\(\)（）]", str(val))
+            parts_v = _RE_SPLIT_V.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -236,8 +243,7 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        pattern = r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])"
-        parts = re.split(pattern, self.guidelines_raw)
+        parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -249,7 +255,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
-                match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*章", header)
+                match = _RE_CHAP_NUM_GUIDELINE.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
