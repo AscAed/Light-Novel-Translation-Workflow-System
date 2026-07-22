@@ -64,7 +64,7 @@ class Config:
     CLI_COMMAND = "gemini"
     MIN_JITTER = 2
     MAX_JITTER = 5
-    API_TIMEOUT = 10.0
+    API_TIMEOUT = 600.0
     SAFE_MODE = False
     WORK_DISCLAIMER = (
         "**[WORK_DISCLAIMER]**\n"
@@ -351,7 +351,8 @@ def get_api_key(env_name: str) -> str:
 def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=api_key,
-        base_url=get_base_url(base_url)
+        base_url=get_base_url(base_url),
+        timeout=Config.API_TIMEOUT
     )
 
 class UnifiedAgent:
@@ -420,7 +421,7 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
-        client = genai.Client(api_key=gemini_key)
+        client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),

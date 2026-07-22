@@ -125,7 +125,7 @@ class RAGEngine:
                 return [0.1] * 768
         else:
             from google import genai
-            client = genai.Client()
+            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
             response = client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
