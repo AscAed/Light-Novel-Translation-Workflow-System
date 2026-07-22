@@ -242,13 +242,17 @@ def save_text(path: str, content: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+_CHAPTER_RE = re.compile(r'第(\d+)話')
+
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
-        match = re.search(r'第(\d+)話', filename)
+        match = _CHAPTER_RE.search(filename)
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
+
+_SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -257,7 +261,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
-        if line_stripped and re.match(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]', line_stripped):
+        if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -268,7 +272,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = re.match(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]', line_stripped)
+        match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
                 num = float(match.group(1))
