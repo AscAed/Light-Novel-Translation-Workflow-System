@@ -19,6 +19,10 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Precompile regex patterns used in loops for performance
+_STORY_SUMMARY_CHAPTER_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
 def patched_proxy_bypass(host):
@@ -64,7 +68,7 @@ class Config:
     CLI_COMMAND = "gemini"
     MIN_JITTER = 2
     MAX_JITTER = 5
-    API_TIMEOUT = 10.0
+    API_TIMEOUT = 600.0
     SAFE_MODE = False
     WORK_DISCLAIMER = (
         "**[WORK_DISCLAIMER]**\n"
@@ -242,13 +246,22 @@ def save_text(path: str, content: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+_CHAPTER_RE = re.compile(r'第(\d+)話')
+
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
-        match = re.search(r'第(\d+)話', filename)
+        match = _CHAPTER_RE.search(filename)
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
+
+_SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_PORT_RE = re.compile(r':(\d+)')
+_SYS_INSTR_1_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_2_RE = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_3_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -257,7 +270,8 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
-        if line_stripped and re.match(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]', line_stripped):
+        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
+        if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -268,7 +282,8 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = re.match(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]', line_stripped)
+        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
+        match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
                 num = float(match.group(1))
@@ -305,7 +320,7 @@ def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
-        match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        match = _JSON_BLOCK_RE.search(text)
         if match:
             try:
                 return json.loads(match.group(1))
@@ -326,7 +341,7 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
-        match = re.search(r':(\d+)', coding_url)
+        match = _PORT_RE.search(coding_url)
         if match:
             return coding_url
     return default_url
@@ -349,6 +364,7 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
         api_key=api_key,
         base_url=get_base_url(base_url),
         timeout=float(os.environ.get("API_TIMEOUT", 600.0))
+        timeout=Config.API_TIMEOUT
     )
 
 class UnifiedAgent:
@@ -418,6 +434,7 @@ class UnifiedAgent:
         
         gemini_key = get_api_key("GEMINI_API_KEY")
         client = genai.Client(api_key=gemini_key, http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+        client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -501,12 +518,12 @@ class TranslationPipeline:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
+                        match = _SYS_INSTR_1_RE.search(content)
                         if match:
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL):
+                        elif match := _SYS_INSTR_2_RE.search(content):
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL):
+                        elif match := _SYS_INSTR_3_RE.search(content):
                             instruction = match.group(1).strip()
                 except Exception:
                     pass

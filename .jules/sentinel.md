@@ -11,3 +11,8 @@
 **Vulnerability:** Instances of `AsyncOpenAI` and `google.genai.Client` were being initialized without explicit timeouts. Because standard API clients might wait indefinitely (or fall back to extremely long OS default socket timeouts) for a response, malicious or overloaded upstream endpoints could easily cause connection pooling exhaustion, memory leaks, and Denial of Service (DoS) across the pipeline.
 **Learning:** External API dependencies must always enforce explicit bounds on their waiting periods to fail fast.
 **Prevention:** Always define `timeout` limits when configuring API wrappers (e.g., `AsyncOpenAI(timeout=...)` and `genai.Client(http_options={'timeout': ...})`).
+
+## 2026-07-20 - Missing API Timeout Configurations
+**Vulnerability:** The application instantiated `AsyncOpenAI` and `genai.Client` without explicit timeout configurations or used an inadequately low timeout value (10.0 seconds). This created a risk of thread/resource exhaustion or Application Denial of Service (DoS) if the upstream generative AI service hung indefinitely or responded very slowly.
+**Learning:** Default instantiations of API clients often lack safe timeouts, or they may use timeouts too short for long-running AI inferences, leading to unhandled failures or hangs.
+**Prevention:** Always set explicit, generous timeout configurations (e.g., 600.0 seconds) for external Generative AI API clients (e.g. via `timeout=` for OpenAI and `http_options={'timeout': ...}` for Gemini).
