@@ -363,6 +363,7 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=api_key,
         base_url=get_base_url(base_url),
+        timeout=float(os.environ.get("API_TIMEOUT", 600.0))
         timeout=Config.API_TIMEOUT
     )
 
@@ -432,6 +433,7 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
+        client = genai.Client(api_key=gemini_key, http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
         client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
