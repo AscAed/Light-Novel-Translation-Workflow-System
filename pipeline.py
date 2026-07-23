@@ -253,6 +253,11 @@ def get_chapters(raw_dir: str) -> List[str]:
 
 
 _SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_PORT_RE = re.compile(r':(\d+)')
+_SYS_INSTR_1_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_2_RE = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_3_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -309,7 +314,7 @@ def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
-        match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        match = _JSON_BLOCK_RE.search(text)
         if match:
             try:
                 return json.loads(match.group(1))
@@ -330,7 +335,7 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
-        match = re.search(r':(\d+)', coding_url)
+        match = _PORT_RE.search(coding_url)
         if match:
             return coding_url
     return default_url
@@ -505,12 +510,12 @@ class TranslationPipeline:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
+                        match = _SYS_INSTR_1_RE.search(content)
                         if match:
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL):
+                        elif match := _SYS_INSTR_2_RE.search(content):
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL):
+                        elif match := _SYS_INSTR_3_RE.search(content):
                             instruction = match.group(1).strip()
                 except Exception:
                     pass
