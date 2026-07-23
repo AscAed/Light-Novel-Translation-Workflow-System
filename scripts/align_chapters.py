@@ -220,7 +220,7 @@ def align_chapter(raw_content: str, trans_content: str) -> list[tuple[str, str]]
 def generate_embeddings_batched(texts: list[str], batch_size: int = 50) -> list[list[float]]:
     """Generate paragraph embeddings in batches to prevent rate limits."""
     from google import genai
-    client = genai.Client()
+    client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
     embeddings = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
