@@ -19,6 +19,10 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Precompile regex patterns used in loops for performance
+_STORY_SUMMARY_CHAPTER_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
 def patched_proxy_bypass(host):
@@ -266,6 +270,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
+        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
         if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
@@ -277,6 +282,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
+        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
         match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
