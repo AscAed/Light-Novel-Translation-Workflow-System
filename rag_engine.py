@@ -176,8 +176,6 @@ class RAGEngine:
         return results
 
     _GLOSSARY_COMMENT_RE = re.compile(r"//.*")
-    _GUIDELINE_PARTITION_RE = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
-    _GUIDELINE_CHAP_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
 
     def _parse_glossary_json(self) -> dict:
         """Parse raw glossary JSON while removing single-line comments."""
@@ -208,22 +206,16 @@ class RAGEngine:
 
         merged = self._parse_glossary_json()
         precomputed = []
-        clean_k_re = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
-        raw_keywords_re = re.compile(r"/|／|\bor\b|,|，|、")
-        parts_v_re = re.compile(r"[/／\(\)（）]")
 
         for key, val in merged.items():
             clean_k = _CLEAN_K_PATTERN.sub("", key).strip()
             raw_keywords = _SPLIT_K_PATTERN.split(clean_k)
-            clean_k = clean_k_re.sub("", key).strip()
-            raw_keywords = raw_keywords_re.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
             parts_v = _SPLIT_V_PATTERN.split(str(val))
-            parts_v = parts_v_re.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -255,7 +247,6 @@ class RAGEngine:
         if not self.guidelines_raw:
             return "", {}
         parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -267,7 +258,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
-                match = self._GUIDELINE_CHAP_RE.search(header)
+                match = _GUIDELINE_HEADER_PATTERN.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
