@@ -103,10 +103,14 @@ class RAGEngine:
         self._cached_candidates = candidates
 
         # Create matrix and precalculate norms
-        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates])
-        self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1)
+        # Using float32 for performance and memory efficiency
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+
+        # Pre-normalize the matrix to make cosine similarity a simple dot product
+        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
         # Avoid division by zero
-        self._cached_tm_norms[self._cached_tm_norms == 0] = 1e-9
+        norms[norms == 0] = 1e-9
+        self._cached_tm_matrix /= norms
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
@@ -156,10 +160,13 @@ class RAGEngine:
         if len(self._cached_candidates) == 0:
             return []
 
-        q_arr = np.array(q_emb)
+        # Pre-normalize the query array
+        q_arr = np.array(q_emb, dtype=np.float32)
         q_norm = np.linalg.norm(q_arr) or 1e-9
+        q_arr /= q_norm
 
-        sims = np.dot(self._cached_tm_matrix, q_arr) / (self._cached_tm_norms * q_norm)
+        # Direct dot product computes cosine similarity with pre-normalized vectors
+        sims = np.dot(self._cached_tm_matrix, q_arr)
 
         k = min(top_k, len(sims))
         if k < len(sims):

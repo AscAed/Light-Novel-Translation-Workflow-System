@@ -16,3 +16,6 @@
 ## 2026-07-22 - Python re.compile overhead in RAG engine and Pipeline
 **Learning:** In `pipeline.py` and `rag_engine.py`, there are still places where `re.search`, `re.sub`, and `re.split` are called directly. These operations are not within massive loops, but for a codebase where precompilation is preferred, they should be precompiled at the module or class level to avoid any cache lookup overhead, as RAG engines are highly sensitive to latency.
 **Action:** Always pre-compile regular expressions explicitly using `re.compile()` at the module level or outside of loops, and call the `.match()`, `.search()`, etc. methods directly on the compiled `re.Pattern` object to guarantee O(1) initialization.
+## 2025-02-12 - Vector similarity optimizations
+**Learning:** In applications repeatedly computing cosine similarities over large datasets (like translation memory embeddings), division operations (`/`) and memory bandwidth for float64 arrays become a measurable bottleneck on the query hot path.
+**Action:** When computing dot products or cosine similarities via NumPy, cast array elements to `np.float32` to halve memory footprint and improve SIMD throughput. Additionally, pre-calculate L2 norms on the cached matrix to make the runtime cosine calculation a simple dot product, bypassing per-query division overhead.
