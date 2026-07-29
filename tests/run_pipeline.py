@@ -180,13 +180,14 @@ if has_rag_engine:
     import pipeline
     
     # Configure variables based on environment
+    pipeline.Config.load_config()
     pipeline.Config.WORKSPACE_DIR = os.environ.get("TEST_WORKSPACE_DIR", pipeline.Config.WORKSPACE_DIR)
     pipeline.Config.RAW_DIR = os.environ.get("TEST_RAW_DIR", pipeline.Config.RAW_DIR)
     pipeline.Config.OUTPUT_DIR = os.environ.get("TEST_OUTPUT_DIR", pipeline.Config.OUTPUT_DIR)
-    pipeline.Config.GLOSSARY_PATH = os.environ.get("TEST_GLOSSARY_PATH", pipeline.Config.GLOSSARY_PATH)
-    pipeline.Config.GUIDELINES_PATH = os.environ.get("TEST_GUIDELINES_PATH", pipeline.Config.GUIDELINES_PATH)
-    pipeline.Config.INFO_PATH = os.environ.get("TEST_INFO_PATH", pipeline.Config.INFO_PATH)
-    pipeline.Config.STORY_SUMMARY_PATH = os.environ.get("TEST_STORY_SUMMARY_PATH", pipeline.Config.STORY_SUMMARY_PATH)
+    if os.environ.get("TEST_GLOSSARY_PATH"): pipeline.Config.GLOSSARY_PATH = os.environ.get("TEST_GLOSSARY_PATH")
+    if os.environ.get("TEST_GUIDELINES_PATH"): pipeline.Config.GUIDELINES_PATH = os.environ.get("TEST_GUIDELINES_PATH")
+    if os.environ.get("TEST_INFO_PATH"): pipeline.Config.INFO_PATH = os.environ.get("TEST_INFO_PATH")
+    if os.environ.get("TEST_STORY_SUMMARY_PATH"): pipeline.Config.STORY_SUMMARY_PATH = os.environ.get("TEST_STORY_SUMMARY_PATH")
     
     mock_port = os.environ.get("MOCK_SERVER_PORT", "6006")
     pipeline.Config.CODING_PLAN_BASE_URL = f"http://127.0.0.1:{mock_port}/v1"
