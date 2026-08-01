@@ -54,7 +54,7 @@ if mock_port:
             return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
 
     class MockClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, http_options=None):
             self.models = MockModels()
 
     import types as pytypes

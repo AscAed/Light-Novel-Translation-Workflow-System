@@ -16,3 +16,8 @@
 **Vulnerability:** The application instantiated `AsyncOpenAI` and `genai.Client` without explicit timeout configurations or used an inadequately low timeout value (10.0 seconds). This created a risk of thread/resource exhaustion or Application Denial of Service (DoS) if the upstream generative AI service hung indefinitely or responded very slowly.
 **Learning:** Default instantiations of API clients often lack safe timeouts, or they may use timeouts too short for long-running AI inferences, leading to unhandled failures or hangs.
 **Prevention:** Always set explicit, generous timeout configurations (e.g., 600.0 seconds) for external Generative AI API clients (e.g. via `timeout=` for OpenAI and `http_options={'timeout': ...}` for Gemini).
+
+## 2026-08-01 - Resource Exhaustion (DoS) and ReDoS Vulnerability Mitigations
+**Vulnerability:** The application was vulnerable to Application Denial of Service (DoS) via resource exhaustion when loading excessively large chapter files into memory, and it contained a potential Regular Expression Denial of Service (ReDoS) vulnerability in the JSON extraction regex (`.*` instead of `.*?`).
+**Learning:** Operations loading entire files into memory without bounds checking can be exploited to crash the application, and greedy regex operations over large strings can lock the CPU in backtracking.
+**Prevention:** Enforce strict file size limits using `os.path.getsize()` before file reading operations, and always prefer non-greedy quantifiers in regular expressions handling dynamic input.
