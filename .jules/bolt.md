@@ -16,3 +16,6 @@
 ## 2026-07-22 - Python re.compile overhead in RAG engine and Pipeline
 **Learning:** In `pipeline.py` and `rag_engine.py`, there are still places where `re.search`, `re.sub`, and `re.split` are called directly. These operations are not within massive loops, but for a codebase where precompilation is preferred, they should be precompiled at the module or class level to avoid any cache lookup overhead, as RAG engines are highly sensitive to latency.
 **Action:** Always pre-compile regular expressions explicitly using `re.compile()` at the module level or outside of loops, and call the `.match()`, `.search()`, etc. methods directly on the compiled `re.Pattern` object to guarantee O(1) initialization.
+## 2026-08-04 - [Optimize NumPy Array Memory Footprint for Embeddings]
+**Learning:** Default NumPy array initializations (`np.array`) use 64-bit float precision (`float64`), which doubles the memory footprint and increases computation overhead compared to 32-bit floats. This is especially relevant when handling dense embedding vectors (like those from Gemini/OpenAI).
+**Action:** When caching, computing, or generating embeddings for Vector/Similarity Search workflows, explicitly declare `dtype=np.float32` and use `.astype(np.float32)` for generated metrics (like `.norm()`) to halve memory footprint and speed up SIMD dot products.
