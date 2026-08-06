@@ -272,6 +272,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
+        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
         if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
@@ -359,7 +360,19 @@ def get_api_key(env_name: str) -> str:
 
     return key
 
+_openai_clients = {}
+_gemini_clients = {}
+
 def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    resolved_url = get_base_url(base_url)
+    cache_key = (resolved_url, api_key)
+    if cache_key not in _openai_clients:
+        _openai_clients[cache_key] = AsyncOpenAI(
+            api_key=api_key,
+            base_url=resolved_url,
+            timeout=Config.API_TIMEOUT
+        )
+    return _openai_clients[cache_key]
     return AsyncOpenAI(
         api_key=api_key,
         base_url=get_base_url(base_url),
@@ -432,6 +445,9 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
+        if gemini_key not in _gemini_clients:
+            _gemini_clients[gemini_key] = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
+        client = _gemini_clients[gemini_key]
         client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
