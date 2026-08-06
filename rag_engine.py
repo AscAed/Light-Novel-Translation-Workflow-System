@@ -95,19 +95,29 @@ class RAGEngine:
                         candidates.append((pair["raw"], pair["translated"], emb))
 
         if not candidates:
-            self._cached_tm_matrix = np.array([])
-            self._cached_tm_norms = np.array([])
+            self._cached_tm_matrix = np.array([], dtype=np.float32)
+            self._cached_tm_norms = np.array([], dtype=np.float32)
             self._cached_candidates = []
             return
 
         self._cached_candidates = candidates
 
+        # Create matrix and pre-normalize it
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        self._cached_tm_matrix /= norms
+
+        # Kept for backward compatibility if needed elsewhere, though unused in dot product now
+        self._cached_tm_norms = np.ones(len(candidates), dtype=np.float32)
         # Create matrix and precalculate norms
         # Using float32 for performance and memory efficiency
         self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
 
         # Pre-normalize the matrix to make cosine similarity a simple dot product
         norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+        self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1).astype(np.float32)
         # Avoid division by zero
         norms[norms == 0] = 1e-9
         self._cached_tm_matrix /= norms
@@ -166,6 +176,7 @@ class RAGEngine:
         q_arr /= q_norm
 
         # Direct dot product computes cosine similarity with pre-normalized vectors
+        # Cosine similarity reduced to simple dot product
         sims = np.dot(self._cached_tm_matrix, q_arr)
 
         k = min(top_k, len(sims))
@@ -222,15 +233,12 @@ class RAGEngine:
         for key, val in merged.items():
             clean_k = _CLEAN_K_PATTERN.sub("", key).strip()
             raw_keywords = _SPLIT_K_PATTERN.split(clean_k)
-            clean_k = clean_k_re.sub("", key).strip()
-            raw_keywords = raw_keywords_re.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
             parts_v = _SPLIT_V_PATTERN.split(str(val))
-            parts_v = parts_v_re.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -261,7 +269,6 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
         parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
@@ -320,7 +327,7 @@ class RAGEngine:
             emb = pair.get("embedding")
             if emb and isinstance(emb, list) and len(emb) > 0:
                 vectors.append(emb)
-        result = np.mean(vectors, axis=0) if vectors else None
+        result = np.mean(vectors, axis=0, dtype=np.float32) if vectors else None
         self._chapter_tm_embeddings_cache[filename] = result
         return result
 
@@ -354,7 +361,7 @@ class RAGEngine:
             paras = [p.strip() for p in curr_text.split("\n\n") if p.strip()][:3]
             if paras:
                 curr_embs = [self._generate_embedding_sync(p) for p in paras]
-                curr_emb = np.mean(curr_embs, axis=0)
+                curr_emb = np.mean(curr_embs, axis=0, dtype=np.float32)
                 best_chap = self._find_best_semantic_match(curr_emb, candidates)
                 if best_chap is not None:
                     return chapter_dict[best_chap]
