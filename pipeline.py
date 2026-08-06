@@ -257,7 +257,7 @@ def get_chapters(raw_dir: str) -> List[str]:
 
 
 _SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
-_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
 _PORT_RE = re.compile(r':(\d+)')
 _SYS_INSTR_1_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
 _SYS_INSTR_2_RE = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
