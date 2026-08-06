@@ -41,6 +41,15 @@ def patched_proxy_bypass(host):
         return False
 urllib.request.proxy_bypass = patched_proxy_bypass
 
+# Precompile regular expressions for performance
+_CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
+_STORY_SUMMARY_HEADER_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_STORY_SUMMARY_CHAP_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_EXTRACT_PATTERN = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_CODING_PLAN_PORT_PATTERN = re.compile(r':(\d+)')
+_AI_STUDIO_INSTR_PATTERN_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_AI_STUDIO_INSTR_PATTERN_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_AI_STUDIO_INSTR_PATTERN_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 # ⚡ Bolt Optimization: Precompile regex patterns at module level to avoid repeated compilation and cache-lookup overhead in frequently called loops/functions.
 _CHAP_FILE_RE = re.compile(r'第(\d+)話')
 _SUMMARY_HEADER_RE = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
@@ -273,6 +282,7 @@ _CHAPTER_RE = re.compile(r'第(\d+)話')
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
+        match = _CHAPTER_SORT_PATTERN.search(filename)
         match = CHAPTER_SORT_PATTERN.search(filename)
         match = _RE_GET_CHAP_NUM.search(filename)
         match = _CHAP_FILE_RE.search(filename)
@@ -298,6 +308,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
+        if line_stripped and _STORY_SUMMARY_HEADER_PATTERN.match(line_stripped):
         if line_stripped and SUMMARY_HEADER_MATCH_PATTERN.match(line_stripped):
         if line_stripped and _RE_STORY_SUMMARY_CHAP_HEADER.match(line_stripped):
         if line_stripped and _SUMMARY_HEADER_RE.match(line_stripped):
@@ -312,6 +323,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
+        match = _STORY_SUMMARY_CHAP_PATTERN.match(line_stripped)
         match = SUMMARY_CHAPTER_MATCH_PATTERN.match(line_stripped)
         match = _RE_STORY_SUMMARY_CHAP_LINE.match(line_stripped)
         match = _SUMMARY_CHAP_RE.match(line_stripped)
@@ -355,6 +367,7 @@ def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
+        match = _JSON_EXTRACT_PATTERN.search(text)
         match = EXTRACT_JSON_PATTERN.search(text)
         match = _RE_EXTRACT_JSON.search(text)
         match = _JSON_BLOCK_RE.search(text)
@@ -380,6 +393,7 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
+        match = _CODING_PLAN_PORT_PATTERN.search(coding_url)
         match = CODING_URL_PORT_PATTERN.search(coding_url)
         match = _RE_PORT.search(coding_url)
         match = _PORT_RE.search(coding_url)
@@ -581,6 +595,12 @@ class TranslationPipeline:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
+                        match = _AI_STUDIO_INSTR_PATTERN_1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := _AI_STUDIO_INSTR_PATTERN_2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := _AI_STUDIO_INSTR_PATTERN_3.search(content):
                         match = SYS_INSTR_PATTERN_1.search(content)
                         if match:
                             instruction = match.group(1).strip()

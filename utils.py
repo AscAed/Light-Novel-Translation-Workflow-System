@@ -1,6 +1,9 @@
 import re
 from typing import Optional
 
+# Precompile regular expressions for performance
+_CHAPTER_NUM_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*[話话]")
+_FALLBACK_NUM_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
 # Optimization: Precompile regular expressions at the module level
 # This avoids the overhead of recompiling or looking up the regex in Python's internal cache
 # during repeated calls to extract_chapter_num.
@@ -21,6 +24,7 @@ def extract_chapter_num(filename: str, default: Optional[float] = None) -> Optio
     First tries to match standard format (第...話/话), then falls back to any number.
     Returns the default value if no number is found.
     """
+    match = _CHAPTER_NUM_PATTERN.search(filename)
     match = CHAPTER_FORMAT_PATTERN.search(filename)
     match = _RE_CHAP_NUM.search(filename)
     match = _CHAP_NUM_RE.search(filename)
@@ -31,6 +35,7 @@ def extract_chapter_num(filename: str, default: Optional[float] = None) -> Optio
         except ValueError:
             pass
 
+    match = _FALLBACK_NUM_PATTERN.search(filename)
     match = ANY_NUMBER_PATTERN.search(filename)
     match = _RE_ANY_NUM.search(filename)
     match = _FALLBACK_NUM_RE.search(filename)
