@@ -102,6 +102,14 @@ class RAGEngine:
 
         self._cached_candidates = candidates
 
+        # Create matrix and pre-normalize it
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        self._cached_tm_matrix /= norms
+
+        # Kept for backward compatibility if needed elsewhere, though unused in dot product now
+        self._cached_tm_norms = np.ones(len(candidates), dtype=np.float32)
         # Create matrix and precalculate norms
         self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
         self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1).astype(np.float32)
@@ -158,8 +166,10 @@ class RAGEngine:
 
         q_arr = np.array(q_emb, dtype=np.float32)
         q_norm = np.linalg.norm(q_arr) or 1e-9
+        q_arr /= q_norm
 
-        sims = np.dot(self._cached_tm_matrix, q_arr) / (self._cached_tm_norms * q_norm)
+        # Cosine similarity reduced to simple dot product
+        sims = np.dot(self._cached_tm_matrix, q_arr)
 
         k = min(top_k, len(sims))
         if k < len(sims):
