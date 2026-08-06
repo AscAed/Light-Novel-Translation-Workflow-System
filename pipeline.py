@@ -32,6 +32,16 @@ def patched_proxy_bypass(host):
         return False
 urllib.request.proxy_bypass = patched_proxy_bypass
 
+# ⚡ Bolt Optimization: Precompile regex patterns at module level to avoid repeated compilation and cache-lookup overhead in frequently called loops/functions.
+_CHAP_FILE_RE = re.compile(r'第(\d+)話')
+_SUMMARY_HEADER_RE = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_SUMMARY_CHAP_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_PORT_RE = re.compile(r':(\d+)')
+_SYS_INSTR_RE1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_RE2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_RE3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
+
 class Config:
     WORKSPACE_DIR = os.environ.get("TEST_WORKSPACE_DIR", "")
     RAW_DIR = ""
@@ -253,6 +263,7 @@ _CHAPTER_RE = re.compile(r'第(\d+)話')
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
+        match = _CHAP_FILE_RE.search(filename)
         match = _CHAPTER_RE.search(filename)
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
@@ -273,6 +284,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
+        if line_stripped and _SUMMARY_HEADER_RE.match(line_stripped):
         if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
             break
         header_lines.append(line)
@@ -284,6 +296,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
+        match = _SUMMARY_CHAP_RE.match(line_stripped)
         match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
         match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
@@ -533,6 +546,12 @@ class TranslationPipeline:
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
+                        match = _SYS_INSTR_RE1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_RE2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_RE3.search(content):
                         match = _SYS_INSTR_1_RE.search(content)
                         if match:
                             instruction = match.group(1).strip()
