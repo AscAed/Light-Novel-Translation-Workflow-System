@@ -208,12 +208,19 @@ class RAGEngine:
 
         return results
 
+    _GLOSSARY_COMMENT_PATTERN = re.compile(r"//.*")
+    _GLOSSARY_KEY_CLEAN_PATTERN = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+    _GLOSSARY_KEY_SPLIT_PATTERN = re.compile(r"/|／|\bor\b|,|，|、")
+    _GLOSSARY_VAL_SPLIT_PATTERN = re.compile(r"[/／\(\)（）]")
+    _GUIDELINES_SPLIT_PATTERN = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+    _GUIDELINES_CHAP_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
     _GLOSSARY_COMMENT_RE = re.compile(r"//.*")
 
     def _parse_glossary_json(self) -> dict:
         """Parse raw glossary JSON while removing single-line comments."""
         if not self.glossary_raw:
             return {}
+        clean_content = self._GLOSSARY_COMMENT_PATTERN.sub("", self.glossary_raw)
         clean_content = _RE_COMMENT.sub("", self.glossary_raw)
         clean_content = _COMMENT_RE.sub("", self.glossary_raw)
         clean_content = self._GLOSSARY_COMMENT_RE.sub("", self.glossary_raw)
@@ -243,6 +250,8 @@ class RAGEngine:
         precomputed = []
 
         for key, val in merged.items():
+            clean_k = self._GLOSSARY_KEY_CLEAN_PATTERN.sub("", key).strip()
+            raw_keywords = self._GLOSSARY_KEY_SPLIT_PATTERN.split(clean_k)
             clean_k = _RE_CLEAN_K.sub("", key).strip()
             raw_keywords = _RE_SPLIT_K.split(clean_k)
             clean_k = _BRACKETS_RE.sub("", key).strip()
@@ -254,6 +263,7 @@ class RAGEngine:
                 continue
 
             src = keywords[0]
+            parts_v = self._GLOSSARY_VAL_SPLIT_PATTERN.split(str(val))
             parts_v = _RE_SPLIT_V.split(str(val))
             parts_v = _VAL_SPLIT_RE.split(str(val))
             parts_v = _SPLIT_V_PATTERN.split(str(val))
@@ -287,6 +297,7 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
+        parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
         parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
         parts = _GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
         parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
@@ -302,6 +313,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
+                match = self._GUIDELINES_CHAP_PATTERN.search(header)
                 match = _RE_CHAP_NUM_GUIDELINE.search(header)
                 match = _CHAP_MATCH_RE.search(header)
                 match = _GUIDELINE_HEADER_PATTERN.search(header)

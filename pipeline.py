@@ -267,11 +267,13 @@ def save_text(path: str, content: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
 _CHAPTER_RE = re.compile(r'第(\d+)話')
 
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
+        match = CHAPTER_SORT_PATTERN.search(filename)
         match = _RE_GET_CHAP_NUM.search(filename)
         match = _CHAP_FILE_RE.search(filename)
         match = _CHAPTER_RE.search(filename)
@@ -279,6 +281,8 @@ def get_chapters(raw_dir: str) -> List[str]:
     return sorted(files, key=sort_key)
 
 
+SUMMARY_HEADER_MATCH_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+SUMMARY_CHAPTER_MATCH_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
 _JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
 _SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
 _JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
@@ -294,6 +298,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
+        if line_stripped and SUMMARY_HEADER_MATCH_PATTERN.match(line_stripped):
         if line_stripped and _RE_STORY_SUMMARY_CHAP_HEADER.match(line_stripped):
         if line_stripped and _SUMMARY_HEADER_RE.match(line_stripped):
         if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
@@ -307,6 +312,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
+        match = SUMMARY_CHAPTER_MATCH_PATTERN.match(line_stripped)
         match = _RE_STORY_SUMMARY_CHAP_LINE.match(line_stripped)
         match = _SUMMARY_CHAP_RE.match(line_stripped)
         match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
@@ -343,10 +349,13 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         result += "尚无符合条件的故事概要。"
     return result
 
+EXTRACT_JSON_PATTERN = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+
 def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
+        match = EXTRACT_JSON_PATTERN.search(text)
         match = _RE_EXTRACT_JSON.search(text)
         match = _JSON_BLOCK_RE.search(text)
         if match:
@@ -361,6 +370,8 @@ def extract_json(text: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+CODING_URL_PORT_PATTERN = re.compile(r':(\d+)')
+
 def get_base_url(default_url: str) -> str:
     mock_port = os.environ.get("MOCK_SERVER_PORT")
     coding_url = getattr(Config, "CODING_PLAN_BASE_URL", "")
@@ -369,6 +380,7 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
+        match = CODING_URL_PORT_PATTERN.search(coding_url)
         match = _RE_PORT.search(coding_url)
         match = _PORT_RE.search(coding_url)
         if match:
@@ -559,12 +571,22 @@ class TranslationPipeline:
             with open(skill_path, 'r', encoding='utf-8') as f:
                 instruction = f.read().strip()
 
+        SYS_INSTR_PATTERN_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
+
         if instruction is None:
             path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "ai_studio_code.py")
             if os.path.exists(path):
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
+                        match = SYS_INSTR_PATTERN_1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := SYS_INSTR_PATTERN_2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := SYS_INSTR_PATTERN_3.search(content):
                         match = _RE_SYS_INSTR_1.search(content)
                         if match:
                             instruction = match.group(1).strip()
