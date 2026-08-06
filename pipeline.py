@@ -3,6 +3,15 @@ import os
 import json
 import re
 import urllib.request
+
+_RE_GET_CHAP_NUM = re.compile(r'第(\d+)話')
+_RE_STORY_SUMMARY_CHAP_HEADER = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_RE_STORY_SUMMARY_CHAP_LINE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_RE_EXTRACT_JSON = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_RE_PORT = re.compile(r':(\d+)')
+_RE_SYS_INSTR_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_RE_SYS_INSTR_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_RE_SYS_INSTR_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 import logging
 from typing import List, Dict, Any, Optional
 from utils import extract_chapter_num
@@ -19,6 +28,10 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Precompile regex patterns used in loops for performance
+_STORY_SUMMARY_CHAPTER_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
 def patched_proxy_bypass(host):
@@ -27,6 +40,25 @@ def patched_proxy_bypass(host):
     except Exception:
         return False
 urllib.request.proxy_bypass = patched_proxy_bypass
+
+# Precompile regular expressions for performance
+_CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
+_STORY_SUMMARY_HEADER_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_STORY_SUMMARY_CHAP_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_EXTRACT_PATTERN = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_CODING_PLAN_PORT_PATTERN = re.compile(r':(\d+)')
+_AI_STUDIO_INSTR_PATTERN_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_AI_STUDIO_INSTR_PATTERN_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_AI_STUDIO_INSTR_PATTERN_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
+# ⚡ Bolt Optimization: Precompile regex patterns at module level to avoid repeated compilation and cache-lookup overhead in frequently called loops/functions.
+_CHAP_FILE_RE = re.compile(r'第(\d+)話')
+_SUMMARY_HEADER_RE = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+_SUMMARY_CHAP_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_PORT_RE = re.compile(r':(\d+)')
+_SYS_INSTR_RE1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_RE2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_RE3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 
 class Config:
     WORKSPACE_DIR = os.environ.get("TEST_WORKSPACE_DIR", "")
@@ -64,7 +96,7 @@ class Config:
     CLI_COMMAND = "gemini"
     MIN_JITTER = 2
     MAX_JITTER = 5
-    API_TIMEOUT = 10.0
+    API_TIMEOUT = 600.0
     SAFE_MODE = False
     WORK_DISCLAIMER = (
         "**[WORK_DISCLAIMER]**\n"
@@ -233,7 +265,9 @@ def load_json(path: str) -> Dict[str, Any]:
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def load_text(path: str) -> str:
+def load_text(path: str, max_size: int = 10 * 1024 * 1024) -> str:
+    if os.path.exists(path) and os.path.getsize(path) > max_size:
+        raise ValueError(f"File {path} exceeds maximum allowed size of {max_size} bytes.")
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
 
@@ -243,14 +277,31 @@ def save_text(path: str, content: str):
         f.write(content)
 
 _CHAPTER_NUM_RE = re.compile(r'第(\d+)話')
+CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
+_CHAPTER_RE = re.compile(r'第(\d+)話')
 
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
         match = _CHAPTER_NUM_RE.search(filename)
+        match = _CHAPTER_SORT_PATTERN.search(filename)
+        match = CHAPTER_SORT_PATTERN.search(filename)
+        match = _RE_GET_CHAP_NUM.search(filename)
+        match = _CHAP_FILE_RE.search(filename)
+        match = _CHAPTER_RE.search(filename)
         return int(match.group(1)) if match else float('inf')
     return sorted(files, key=sort_key)
 
+
+SUMMARY_HEADER_MATCH_PATTERN = re.compile(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]')
+SUMMARY_CHAPTER_MATCH_PATTERN = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
+_PORT_RE = re.compile(r':(\d+)')
+_SYS_INSTR_1_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_2_RE = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+_SYS_INSTR_3_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
     lines = full_summary.split('\n')
@@ -259,7 +310,11 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
-        if line_stripped and re.match(r'^\[第\s*\d+(?:\.\d+)?\s*[話话]', line_stripped):
+        if line_stripped and _STORY_SUMMARY_HEADER_PATTERN.match(line_stripped):
+        if line_stripped and SUMMARY_HEADER_MATCH_PATTERN.match(line_stripped):
+        if line_stripped and _RE_STORY_SUMMARY_CHAP_HEADER.match(line_stripped):
+        if line_stripped and _SUMMARY_HEADER_RE.match(line_stripped):
+        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -270,7 +325,12 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = re.match(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]', line_stripped)
+        match = _STORY_SUMMARY_CHAP_PATTERN.match(line_stripped)
+        match = SUMMARY_CHAPTER_MATCH_PATTERN.match(line_stripped)
+        match = _RE_STORY_SUMMARY_CHAP_LINE.match(line_stripped)
+        match = _SUMMARY_CHAP_RE.match(line_stripped)
+        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
+        match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
                 num = float(match.group(1))
@@ -303,11 +363,16 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         result += "尚无符合条件的故事概要。"
     return result
 
+EXTRACT_JSON_PATTERN = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+
 def extract_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
     try:
-        match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        match = _JSON_EXTRACT_PATTERN.search(text)
+        match = EXTRACT_JSON_PATTERN.search(text)
+        match = _RE_EXTRACT_JSON.search(text)
+        match = _JSON_BLOCK_RE.search(text)
         if match:
             try:
                 return json.loads(match.group(1))
@@ -320,6 +385,8 @@ def extract_json(text: str) -> Dict[str, Any]:
     except Exception:
         return {}
 
+CODING_URL_PORT_PATTERN = re.compile(r':(\d+)')
+
 def get_base_url(default_url: str) -> str:
     mock_port = os.environ.get("MOCK_SERVER_PORT")
     coding_url = getattr(Config, "CODING_PLAN_BASE_URL", "")
@@ -328,7 +395,10 @@ def get_base_url(default_url: str) -> str:
     if coding_url:
         if "127.0.0.1" in coding_url or "localhost" in coding_url:
             return coding_url
-        match = re.search(r':(\d+)', coding_url)
+        match = _CODING_PLAN_PORT_PATTERN.search(coding_url)
+        match = CODING_URL_PORT_PATTERN.search(coding_url)
+        match = _RE_PORT.search(coding_url)
+        match = _PORT_RE.search(coding_url)
         if match:
             return coding_url
     return default_url
@@ -346,10 +416,24 @@ def get_api_key(env_name: str) -> str:
 
     return key
 
+_openai_clients = {}
+_gemini_clients = {}
+
 def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    resolved_url = get_base_url(base_url)
+    cache_key = (resolved_url, api_key)
+    if cache_key not in _openai_clients:
+        _openai_clients[cache_key] = AsyncOpenAI(
+            api_key=api_key,
+            base_url=resolved_url,
+            timeout=Config.API_TIMEOUT
+        )
+    return _openai_clients[cache_key]
     return AsyncOpenAI(
         api_key=api_key,
-        base_url=get_base_url(base_url)
+        base_url=get_base_url(base_url),
+        timeout=float(os.environ.get("API_TIMEOUT", getattr(Config, "API_TIMEOUT", 10.0)))
+        timeout=Config.API_TIMEOUT
     )
 
 class UnifiedAgent:
@@ -418,7 +502,14 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
-        client = genai.Client(api_key=gemini_key)
+        client = genai.Client(
+            api_key=gemini_key,
+            http_options={'timeout': float(os.environ.get("API_TIMEOUT", getattr(Config, "API_TIMEOUT", 10.0)))}
+        )
+        if gemini_key not in _gemini_clients:
+            _gemini_clients[gemini_key] = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
+        client = _gemini_clients[gemini_key]
+        client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -496,18 +587,46 @@ class TranslationPipeline:
             with open(skill_path, 'r', encoding='utf-8') as f:
                 instruction = f.read().strip()
 
+        SYS_INSTR_PATTERN_1 = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_2 = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
+        SYS_INSTR_PATTERN_3 = re.compile(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", re.DOTALL)
+
         if instruction is None:
             path = os.path.join(Config.WORKSPACE_DIR, agent_dir, "ai_studio_code.py")
             if os.path.exists(path):
                 try:
                     with open(path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        match = re.search(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL)
+                        match = _AI_STUDIO_INSTR_PATTERN_1.search(content)
                         if match:
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", content, re.DOTALL):
+                        elif match := _AI_STUDIO_INSTR_PATTERN_2.search(content):
                             instruction = match.group(1).strip()
-                        elif match := re.search(r"system_instruction.*?text\s*=\s*['\"](.*?)['\"]", content, re.DOTALL):
+                        elif match := _AI_STUDIO_INSTR_PATTERN_3.search(content):
+                        match = SYS_INSTR_PATTERN_1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := SYS_INSTR_PATTERN_2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := SYS_INSTR_PATTERN_3.search(content):
+                        match = _RE_SYS_INSTR_1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := _RE_SYS_INSTR_2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := _RE_SYS_INSTR_3.search(content):
+                        match = _SYS_INSTR_RE1.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_RE2.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_RE3.search(content):
+                        match = _SYS_INSTR_1_RE.search(content)
+                        if match:
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_2_RE.search(content):
+                            instruction = match.group(1).strip()
+                        elif match := _SYS_INSTR_3_RE.search(content):
                             instruction = match.group(1).strip()
                 except Exception:
                     pass

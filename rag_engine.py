@@ -9,6 +9,13 @@ import logging
 import json
 import re
 import numpy as np
+
+_RE_COMMENT = re.compile(r"//.*")
+_RE_CLEAN_K = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_RE_SPLIT_K = re.compile(r"/|／|\bor\b|,|，|、")
+_RE_SPLIT_V = re.compile(r"[/／\(\)（）]")
+_RE_GUIDELINE_PART = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_RE_CHAP_NUM_GUIDELINE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
 from utils import extract_chapter_num
 import logging
 import urllib.error
@@ -17,6 +24,28 @@ from utils import extract_chapter_num
 
 logger = logging.getLogger(__name__)
 
+# ⚡ Bolt Optimization: Precompile regex patterns at module level to avoid repeated compilation and cache-lookup overhead in frequently called loops/functions.
+_COMMENT_RE = re.compile(r"//.*")
+_BRACKETS_RE = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_KW_SPLIT_RE = re.compile(r"/|／|\bor\b|,|，|、")
+_VAL_SPLIT_RE = re.compile(r"[/／\(\)（）]")
+_GUIDELINES_SPLIT_RE = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_CHAP_MATCH_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+# Precompile regex patterns used in loops for performance
+_CLEAN_K_PATTERN = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_SPLIT_K_PATTERN = re.compile(r"/|／|\bor\b|,|，|、")
+_SPLIT_V_PATTERN = re.compile(r"[/／\(\)（）]")
+_GUIDELINE_PARTITION_PATTERN = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_GUIDELINE_HEADER_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+
+
+# Precompile regular expressions for performance
+_GLOSSARY_COMMENT_PATTERN = re.compile(r"//.*")
+_GLOSSARY_CLEAN_KEY_PATTERN = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+_GLOSSARY_SPLIT_KEY_PATTERN = re.compile(r"/|／|\bor\b|,|，|、")
+_GLOSSARY_SPLIT_VAL_PATTERN = re.compile(r"[/／\(\)（）]")
+_GUIDELINES_SPLIT_PATTERN = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+_GUIDELINES_CHAPTER_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
 
 class RAGEngine:
     """RAGEngine handles similarity search, glossary parsing, and partitioned guidelines."""
@@ -88,18 +117,32 @@ class RAGEngine:
                         candidates.append((pair["raw"], pair["translated"], emb))
 
         if not candidates:
-            self._cached_tm_matrix = np.array([])
-            self._cached_tm_norms = np.array([])
+            self._cached_tm_matrix = np.array([], dtype=np.float32)
+            self._cached_tm_norms = np.array([], dtype=np.float32)
             self._cached_candidates = []
             return
 
         self._cached_candidates = candidates
 
+        # Create matrix and pre-normalize it
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        self._cached_tm_matrix /= norms
+
+        # Kept for backward compatibility if needed elsewhere, though unused in dot product now
+        self._cached_tm_norms = np.ones(len(candidates), dtype=np.float32)
         # Create matrix and precalculate norms
-        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates])
-        self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1)
+        # Using float32 for performance and memory efficiency
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+
+        # Pre-normalize the matrix to make cosine similarity a simple dot product
+        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
+        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
+        self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1).astype(np.float32)
         # Avoid division by zero
-        self._cached_tm_norms[self._cached_tm_norms == 0] = 1e-9
+        norms[norms == 0] = 1e-9
+        self._cached_tm_matrix /= norms
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
@@ -125,7 +168,8 @@ class RAGEngine:
                 return [0.1] * 768
         else:
             from google import genai
-            client = genai.Client()
+            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 10.0))})
+            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
             response = client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
@@ -149,10 +193,14 @@ class RAGEngine:
         if len(self._cached_candidates) == 0:
             return []
 
-        q_arr = np.array(q_emb)
+        # Pre-normalize the query array
+        q_arr = np.array(q_emb, dtype=np.float32)
         q_norm = np.linalg.norm(q_arr) or 1e-9
+        q_arr /= q_norm
 
-        sims = np.dot(self._cached_tm_matrix, q_arr) / (self._cached_tm_norms * q_norm)
+        # Direct dot product computes cosine similarity with pre-normalized vectors
+        # Cosine similarity reduced to simple dot product
+        sims = np.dot(self._cached_tm_matrix, q_arr)
 
         k = min(top_k, len(sims))
         if k < len(sims):
@@ -168,11 +216,23 @@ class RAGEngine:
 
         return results
 
+    _GLOSSARY_COMMENT_PATTERN = re.compile(r"//.*")
+    _GLOSSARY_KEY_CLEAN_PATTERN = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+    _GLOSSARY_KEY_SPLIT_PATTERN = re.compile(r"/|／|\bor\b|,|，|、")
+    _GLOSSARY_VAL_SPLIT_PATTERN = re.compile(r"[/／\(\)（）]")
+    _GUIDELINES_SPLIT_PATTERN = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+    _GUIDELINES_CHAP_PATTERN = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+    _GLOSSARY_COMMENT_RE = re.compile(r"//.*")
+
     def _parse_glossary_json(self) -> dict:
         """Parse raw glossary JSON while removing single-line comments."""
         if not self.glossary_raw:
             return {}
-        clean_content = re.sub(r"//.*", "", self.glossary_raw)
+        clean_content = _GLOSSARY_COMMENT_PATTERN.sub("", self.glossary_raw)
+        clean_content = self._GLOSSARY_COMMENT_PATTERN.sub("", self.glossary_raw)
+        clean_content = _RE_COMMENT.sub("", self.glossary_raw)
+        clean_content = _COMMENT_RE.sub("", self.glossary_raw)
+        clean_content = self._GLOSSARY_COMMENT_RE.sub("", self.glossary_raw)
         decoder = json.JSONDecoder()
         pos = 0
         merged = {}
@@ -201,15 +261,31 @@ class RAGEngine:
 
         merged = self._parse_glossary_json()
         precomputed = []
+
         for key, val in merged.items():
             clean_k = self._CLEAN_K_RE.sub("", key).strip()
             raw_keywords = self._SPLIT_K_RE.split(clean_k)
+            clean_k = _GLOSSARY_CLEAN_KEY_PATTERN.sub("", key).strip()
+            raw_keywords = _GLOSSARY_SPLIT_KEY_PATTERN.split(clean_k)
+            clean_k = self._GLOSSARY_KEY_CLEAN_PATTERN.sub("", key).strip()
+            raw_keywords = self._GLOSSARY_KEY_SPLIT_PATTERN.split(clean_k)
+            clean_k = _RE_CLEAN_K.sub("", key).strip()
+            raw_keywords = _RE_SPLIT_K.split(clean_k)
+            clean_k = _BRACKETS_RE.sub("", key).strip()
+            raw_keywords = _KW_SPLIT_RE.split(clean_k)
+            clean_k = _CLEAN_K_PATTERN.sub("", key).strip()
+            raw_keywords = _SPLIT_K_PATTERN.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
             parts_v = self._SPLIT_V_RE.split(str(val))
+            parts_v = _GLOSSARY_SPLIT_VAL_PATTERN.split(str(val))
+            parts_v = self._GLOSSARY_VAL_SPLIT_PATTERN.split(str(val))
+            parts_v = _RE_SPLIT_V.split(str(val))
+            parts_v = _VAL_SPLIT_RE.split(str(val))
+            parts_v = _SPLIT_V_PATTERN.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -244,6 +320,12 @@ class RAGEngine:
         if not self.guidelines_raw:
             return "", {}
         parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
+        parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
+        parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
+        parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
+        parts = _GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
+        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
+        parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -256,6 +338,11 @@ class RAGEngine:
                 global_parts.append(content)
             else:
                 match = self._GUIDELINES_CHAP_RE.search(header)
+                match = _GUIDELINES_CHAPTER_PATTERN.search(header)
+                match = self._GUIDELINES_CHAP_PATTERN.search(header)
+                match = _RE_CHAP_NUM_GUIDELINE.search(header)
+                match = _CHAP_MATCH_RE.search(header)
+                match = _GUIDELINE_HEADER_PATTERN.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
@@ -301,7 +388,7 @@ class RAGEngine:
             emb = pair.get("embedding")
             if emb and isinstance(emb, list) and len(emb) > 0:
                 vectors.append(emb)
-        result = np.mean(vectors, axis=0) if vectors else None
+        result = np.mean(vectors, axis=0, dtype=np.float32) if vectors else None
         self._chapter_tm_embeddings_cache[filename] = result
         return result
 
@@ -335,7 +422,7 @@ class RAGEngine:
             paras = [p.strip() for p in curr_text.split("\n\n") if p.strip()][:3]
             if paras:
                 curr_embs = [self._generate_embedding_sync(p) for p in paras]
-                curr_emb = np.mean(curr_embs, axis=0)
+                curr_emb = np.mean(curr_embs, axis=0, dtype=np.float32)
                 best_chap = self._find_best_semantic_match(curr_emb, candidates)
                 if best_chap is not None:
                     return chapter_dict[best_chap]
