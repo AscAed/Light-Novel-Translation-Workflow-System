@@ -237,7 +237,9 @@ def load_json(path: str) -> Dict[str, Any]:
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def load_text(path: str) -> str:
+def load_text(path: str, max_size: int = 10 * 1024 * 1024) -> str:
+    if os.path.exists(path) and os.path.getsize(path) > max_size:
+        raise ValueError(f"File {path} exceeds maximum allowed size of {max_size} bytes.")
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
 
@@ -257,7 +259,7 @@ def get_chapters(raw_dir: str) -> List[str]:
 
 
 _SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
-_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
 _PORT_RE = re.compile(r':(\d+)')
 _SYS_INSTR_1_RE = re.compile(r"system_instruction.*?text\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
 _SYS_INSTR_2_RE = re.compile(r"system_instruction\s*=\s*['\"]{3}(.*?)['\"]{3}", re.DOTALL)
@@ -271,6 +273,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     for line in lines:
         line_stripped = line.strip()
         if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
+        if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -281,7 +284,6 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
         match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
@@ -371,6 +373,11 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
             timeout=Config.API_TIMEOUT
         )
     return _openai_clients[cache_key]
+    return AsyncOpenAI(
+        api_key=api_key,
+        base_url=get_base_url(base_url),
+        timeout=Config.API_TIMEOUT
+    )
 
 class UnifiedAgent:
     def __init__(self, model_name: str, system_instruction: str,
@@ -441,6 +448,7 @@ class UnifiedAgent:
         if gemini_key not in _gemini_clients:
             _gemini_clients[gemini_key] = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         client = _gemini_clients[gemini_key]
+        client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
