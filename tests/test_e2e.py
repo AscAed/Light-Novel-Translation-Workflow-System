@@ -111,6 +111,7 @@ class E2ETestSuite(unittest.TestCase):
                         pass
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
+        self.write_file(os.path.join(self.knowledge_dir, "作品基本信息.json"), {"title": "Test"}, is_json=True)
         env["TEST_WORKSPACE_DIR"] = self.test_dir
         env["TEST_RAW_DIR"] = self.raw_dir
         env["TEST_OUTPUT_DIR"] = self.output_dir
