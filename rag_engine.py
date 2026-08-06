@@ -251,6 +251,10 @@ class RAGEngine:
                 pos = start + 1
         return merged
 
+    _CLEAN_K_RE = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
+    _SPLIT_K_RE = re.compile(r"/|／|\bor\b|,|，|、")
+    _SPLIT_V_RE = re.compile(r"[/／\(\)（）]")
+
     def _get_precomputed_glossary(self) -> List[Dict[str, Any]]:
         if self._cached_cleaned_glossary is not None:
             return self._cached_cleaned_glossary
@@ -259,6 +263,8 @@ class RAGEngine:
         precomputed = []
 
         for key, val in merged.items():
+            clean_k = self._CLEAN_K_RE.sub("", key).strip()
+            raw_keywords = self._SPLIT_K_RE.split(clean_k)
             clean_k = _GLOSSARY_CLEAN_KEY_PATTERN.sub("", key).strip()
             raw_keywords = _GLOSSARY_SPLIT_KEY_PATTERN.split(clean_k)
             clean_k = self._GLOSSARY_KEY_CLEAN_PATTERN.sub("", key).strip()
@@ -274,6 +280,7 @@ class RAGEngine:
                 continue
 
             src = keywords[0]
+            parts_v = self._SPLIT_V_RE.split(str(val))
             parts_v = _GLOSSARY_SPLIT_VAL_PATTERN.split(str(val))
             parts_v = self._GLOSSARY_VAL_SPLIT_PATTERN.split(str(val))
             parts_v = _RE_SPLIT_V.split(str(val))
@@ -305,10 +312,14 @@ class RAGEngine:
                 })
         return results
 
+    _GUIDELINES_SPLIT_RE = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
+    _GUIDELINES_CHAP_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
+
     def _parse_guidelines_content(self) -> Tuple[str, Dict[float, str]]:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
+        parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
         parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
         parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
         parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
@@ -326,6 +337,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
+                match = self._GUIDELINES_CHAP_RE.search(header)
                 match = _GUIDELINES_CHAPTER_PATTERN.search(header)
                 match = self._GUIDELINES_CHAP_PATTERN.search(header)
                 match = _RE_CHAP_NUM_GUIDELINE.search(header)

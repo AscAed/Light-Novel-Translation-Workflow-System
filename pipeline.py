@@ -276,12 +276,14 @@ def save_text(path: str, content: str):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+_CHAPTER_NUM_RE = re.compile(r'第(\d+)話')
 CHAPTER_SORT_PATTERN = re.compile(r'第(\d+)話')
 _CHAPTER_RE = re.compile(r'第(\d+)話')
 
 def get_chapters(raw_dir: str) -> List[str]:
     files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
     def sort_key(filename):
+        match = _CHAPTER_NUM_RE.search(filename)
         match = _CHAPTER_SORT_PATTERN.search(filename)
         match = CHAPTER_SORT_PATTERN.search(filename)
         match = _RE_GET_CHAP_NUM.search(filename)
