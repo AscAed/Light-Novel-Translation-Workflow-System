@@ -237,7 +237,9 @@ def load_json(path: str) -> Dict[str, Any]:
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def load_text(path: str) -> str:
+def load_text(path: str, max_size: int = 10 * 1024 * 1024) -> str:
+    if os.path.exists(path) and os.path.getsize(path) > max_size:
+        raise ValueError(f"File {path} exceeds maximum allowed size of {max_size} bytes.")
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
 
@@ -270,7 +272,6 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     # Collect header lines
     for line in lines:
         line_stripped = line.strip()
-        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
         if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
@@ -282,7 +283,6 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
-        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
         match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:
@@ -363,7 +363,6 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=api_key,
         base_url=get_base_url(base_url),
-        timeout=float(os.environ.get("API_TIMEOUT", 600.0))
         timeout=Config.API_TIMEOUT
     )
 
@@ -433,7 +432,6 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
-        client = genai.Client(api_key=gemini_key, http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
         client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [

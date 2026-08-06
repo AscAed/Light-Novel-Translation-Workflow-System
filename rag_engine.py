@@ -225,15 +225,12 @@ class RAGEngine:
         for key, val in merged.items():
             clean_k = _CLEAN_K_PATTERN.sub("", key).strip()
             raw_keywords = _SPLIT_K_PATTERN.split(clean_k)
-            clean_k = clean_k_re.sub("", key).strip()
-            raw_keywords = raw_keywords_re.split(clean_k)
             keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
             if not keywords:
                 continue
 
             src = keywords[0]
             parts_v = _SPLIT_V_PATTERN.split(str(val))
-            parts_v = parts_v_re.split(str(val))
             dst_candidates = [item.strip() for item in parts_v if item.strip()]
             dst = dst_candidates[0] if dst_candidates else str(val).strip()
 
@@ -264,7 +261,6 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
         parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}

@@ -17,6 +17,10 @@
 **Learning:** Default instantiations of API clients often lack safe timeouts, or they may use timeouts too short for long-running AI inferences, leading to unhandled failures or hangs.
 **Prevention:** Always set explicit, generous timeout configurations (e.g., 600.0 seconds) for external Generative AI API clients (e.g. via `timeout=` for OpenAI and `http_options={'timeout': ...}` for Gemini).
 
+## 2026-08-01 - Resource Exhaustion (DoS) and ReDoS Vulnerability Mitigations
+**Vulnerability:** The application was vulnerable to Application Denial of Service (DoS) via resource exhaustion when loading excessively large chapter files into memory, and it contained a potential Regular Expression Denial of Service (ReDoS) vulnerability in the JSON extraction regex (`.*` instead of `.*?`).
+**Learning:** Operations loading entire files into memory without bounds checking can be exploited to crash the application, and greedy regex operations over large strings can lock the CPU in backtracking.
+**Prevention:** Enforce strict file size limits using `os.path.getsize()` before file reading operations, and always prefer non-greedy quantifiers in regular expressions handling dynamic input.
 ## 2026-08-04 - ReDoS in JSON Extraction Regex
 **Vulnerability:** A Regular Expression Denial of Service (ReDoS) vulnerability was present in the `_JSON_BLOCK_RE` regex used for extracting JSON from AI responses. The greedy match `.*` inside the regex could lead to catastrophic backtracking and CPU exhaustion when parsing large or maliciously crafted strings lacking proper JSON block terminations.
 **Learning:** Using greedy matching like `.*` for parsing large and arbitrary multiline text blocks can cause catastrophic backtracking if the closing sequence is not found.
