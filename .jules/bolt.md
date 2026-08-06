@@ -10,6 +10,9 @@
 **Learning:** Slicing large strings inside loops (e.g., `clean_content[start:]` for JSON parsing) allocates a new copy of the sliced string every iteration, leading to O(N^2) memory usage and execution time.
 **Action:** Use the `idx` parameter built into `json.JSONDecoder().raw_decode(s, idx)` to pass the original string and start index directly, avoiding accidental O(N^2) bottlenecks when parsing malformed or large JSON documents.
 
+## 2026-07-25 - Regex precompilation performance
+**Learning:** Repetitive compilation and cache-lookup overhead of `re.search`, `re.sub`, and `re.split` inside loops and frequently called functions scales poorly.
+**Action:** Always precompile regular expressions at the module or class level using `re.compile()` when they are used inside loops or frequently called functions, rather than calling `re.search`, `re.sub`, or `re.split` directly with string literals.
 ## 2026-11-20 - Regex Precompilation in tight loops
 **Learning:** Calling module-level regex functions like `re.sub(pattern, ...)` or `re.split(pattern, ...)` inside a loop iterating over thousands of items still incurs a small lookup and parsing overhead, despite Python's internal cache. This overhead becomes measurable in tight loops over large datasets.
 **Action:** When performing regex operations on large data structures (like glossary merging or document parsing), explicitly precompile the regexes via `re.compile()` into module-level constants and call the pattern's methods (e.g., `pattern.sub()`) to bypass cache lookups.
