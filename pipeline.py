@@ -258,6 +258,7 @@ def get_chapters(raw_dir: str) -> List[str]:
     return sorted(files, key=sort_key)
 
 
+_JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*\})\s*```', re.DOTALL)
 _SUMMARY_CHAPTER_RE = re.compile(r'^\[第\s*(\d+(?:\.\d+)?)\s*[話话]')
 _JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
 _PORT_RE = re.compile(r':(\d+)')
@@ -273,7 +274,6 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     for line in lines:
         line_stripped = line.strip()
         if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
-        if line_stripped and _SUMMARY_CHAPTER_RE.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -284,6 +284,7 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         line_stripped = line.strip()
         if not line_stripped:
             continue
+        match = _STORY_SUMMARY_CHAPTER_EXTRACT_PATTERN.match(line_stripped)
         match = _SUMMARY_CHAPTER_RE.match(line_stripped)
         if match:
             try:

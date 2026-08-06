@@ -194,8 +194,6 @@ class RAGEngine:
         return results
 
     _GLOSSARY_COMMENT_RE = re.compile(r"//.*")
-    _GUIDELINE_PARTITION_RE = re.compile(r"(《翻译指导原则》\s*-\s*\[(?:全局通用|第\s*\d+(?:\.\d+)?\s*章)\])")
-    _GUIDELINE_CHAP_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*章")
 
     def _parse_glossary_json(self) -> dict:
         """Parse raw glossary JSON while removing single-line comments."""
@@ -226,9 +224,6 @@ class RAGEngine:
 
         merged = self._parse_glossary_json()
         precomputed = []
-        clean_k_re = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
-        raw_keywords_re = re.compile(r"/|／|\bor\b|,|，|、")
-        parts_v_re = re.compile(r"[/／\(\)（）]")
 
         for key, val in merged.items():
             clean_k = _CLEAN_K_PATTERN.sub("", key).strip()
@@ -269,6 +264,7 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
+        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
         parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
@@ -281,7 +277,7 @@ class RAGEngine:
             if "全局通用" in header:
                 global_parts.append(content)
             else:
-                match = self._GUIDELINE_CHAP_RE.search(header)
+                match = _GUIDELINE_HEADER_PATTERN.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
