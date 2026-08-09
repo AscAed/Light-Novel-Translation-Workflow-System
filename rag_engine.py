@@ -59,6 +59,7 @@ class RAGEngine:
         self.guidelines_path = guidelines_path
 
         self._cached_cleaned_glossary = None
+        self._gemini_client = None
 
         # Initialise translation memory
         self.tm_data = {"chapters": {}}
@@ -168,9 +169,9 @@ class RAGEngine:
                 return [0.1] * 768
         else:
             from google import genai
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 10.0))})
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
-            response = client.models.embed_content(
+            if self._gemini_client is None:
+                self._gemini_client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+            response = self._gemini_client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
             )
@@ -320,12 +321,6 @@ class RAGEngine:
         if not self.guidelines_raw:
             return "", {}
         parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
-        parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()

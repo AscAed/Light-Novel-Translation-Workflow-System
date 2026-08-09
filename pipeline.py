@@ -311,10 +311,6 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
     for line in lines:
         line_stripped = line.strip()
         if line_stripped and _STORY_SUMMARY_HEADER_PATTERN.match(line_stripped):
-        if line_stripped and SUMMARY_HEADER_MATCH_PATTERN.match(line_stripped):
-        if line_stripped and _RE_STORY_SUMMARY_CHAP_HEADER.match(line_stripped):
-        if line_stripped and _SUMMARY_HEADER_RE.match(line_stripped):
-        if line_stripped and _STORY_SUMMARY_CHAPTER_PATTERN.match(line_stripped):
             break
         header_lines.append(line)
     header = "\n".join(header_lines).strip()
@@ -429,12 +425,6 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
             timeout=Config.API_TIMEOUT
         )
     return _openai_clients[cache_key]
-    return AsyncOpenAI(
-        api_key=api_key,
-        base_url=get_base_url(base_url),
-        timeout=float(os.environ.get("API_TIMEOUT", getattr(Config, "API_TIMEOUT", 10.0)))
-        timeout=Config.API_TIMEOUT
-    )
 
 class UnifiedAgent:
     def __init__(self, model_name: str, system_instruction: str,
@@ -502,14 +492,9 @@ class UnifiedAgent:
         from google.genai import types
         
         gemini_key = get_api_key("GEMINI_API_KEY")
-        client = genai.Client(
-            api_key=gemini_key,
-            http_options={'timeout': float(os.environ.get("API_TIMEOUT", getattr(Config, "API_TIMEOUT", 10.0)))}
-        )
         if gemini_key not in _gemini_clients:
             _gemini_clients[gemini_key] = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         client = _gemini_clients[gemini_key]
-        client = genai.Client(api_key=gemini_key, http_options={'timeout': Config.API_TIMEOUT})
         
         safety_settings = [
             types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -603,30 +588,6 @@ class TranslationPipeline:
                         elif match := _AI_STUDIO_INSTR_PATTERN_2.search(content):
                             instruction = match.group(1).strip()
                         elif match := _AI_STUDIO_INSTR_PATTERN_3.search(content):
-                        match = SYS_INSTR_PATTERN_1.search(content)
-                        if match:
-                            instruction = match.group(1).strip()
-                        elif match := SYS_INSTR_PATTERN_2.search(content):
-                            instruction = match.group(1).strip()
-                        elif match := SYS_INSTR_PATTERN_3.search(content):
-                        match = _RE_SYS_INSTR_1.search(content)
-                        if match:
-                            instruction = match.group(1).strip()
-                        elif match := _RE_SYS_INSTR_2.search(content):
-                            instruction = match.group(1).strip()
-                        elif match := _RE_SYS_INSTR_3.search(content):
-                        match = _SYS_INSTR_RE1.search(content)
-                        if match:
-                            instruction = match.group(1).strip()
-                        elif match := _SYS_INSTR_RE2.search(content):
-                            instruction = match.group(1).strip()
-                        elif match := _SYS_INSTR_RE3.search(content):
-                        match = _SYS_INSTR_1_RE.search(content)
-                        if match:
-                            instruction = match.group(1).strip()
-                        elif match := _SYS_INSTR_2_RE.search(content):
-                            instruction = match.group(1).strip()
-                        elif match := _SYS_INSTR_3_RE.search(content):
                             instruction = match.group(1).strip()
                 except Exception:
                     pass
