@@ -42,3 +42,6 @@
 ## 2026-08-04 - [Optimize NumPy Array Memory Footprint for Embeddings]
 **Learning:** Default NumPy array initializations (`np.array`) use 64-bit float precision (`float64`), which doubles the memory footprint and increases computation overhead compared to 32-bit floats. This is especially relevant when handling dense embedding vectors (like those from Gemini/OpenAI).
 **Action:** When caching, computing, or generating embeddings for Vector/Similarity Search workflows, explicitly declare `dtype=np.float32` and use `.astype(np.float32)` for generated metrics (like `.norm()`) to halve memory footprint and speed up SIMD dot products.
+## 2026-08-12 - Remove redundant regex patterns
+**Learning:** Redundant variables assigning regex patterns that are essentially copies of other variables creates mess and overhead.
+**Action:** Remove duplicate regex patterns inside parsing functions.

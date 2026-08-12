@@ -24,6 +24,8 @@ from utils import extract_chapter_num
 
 logger = logging.getLogger(__name__)
 
+_gemini_clients = {}
+
 # ⚡ Bolt Optimization: Precompile regex patterns at module level to avoid repeated compilation and cache-lookup overhead in frequently called loops/functions.
 _COMMENT_RE = re.compile(r"//.*")
 _BRACKETS_RE = re.compile(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]")
@@ -168,8 +170,11 @@ class RAGEngine:
                 return [0.1] * 768
         else:
             from google import genai
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 10.0))})
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+            gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            if gemini_key not in _gemini_clients:
+                _gemini_clients[gemini_key] = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+            client = _gemini_clients[gemini_key]
+
             response = client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
@@ -319,13 +324,7 @@ class RAGEngine:
         """Parse guidelines text into global rules and chapter-specific mappings."""
         if not self.guidelines_raw:
             return "", {}
-        parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
         parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
