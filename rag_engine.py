@@ -124,22 +124,14 @@ class RAGEngine:
 
         self._cached_candidates = candidates
 
-        # Create matrix and pre-normalize it
-        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
-        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1e-9
-        self._cached_tm_matrix /= norms
-
-        # Kept for backward compatibility if needed elsewhere, though unused in dot product now
-        self._cached_tm_norms = np.ones(len(candidates), dtype=np.float32)
         # Create matrix and precalculate norms
         # Using float32 for performance and memory efficiency
         self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
 
         # Pre-normalize the matrix to make cosine similarity a simple dot product
         norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
-        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
         self._cached_tm_norms = np.linalg.norm(self._cached_tm_matrix, axis=1).astype(np.float32)
+
         # Avoid division by zero
         norms[norms == 0] = 1e-9
         self._cached_tm_matrix /= norms
@@ -168,9 +160,9 @@ class RAGEngine:
                 return [0.1] * 768
         else:
             from google import genai
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 10.0))})
-            client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
-            response = client.models.embed_content(
+            if not hasattr(self, '_gemini_client'):
+                self._gemini_client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+            response = self._gemini_client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
             )
@@ -320,12 +312,6 @@ class RAGEngine:
         if not self.guidelines_raw:
             return "", {}
         parts = self._GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINES_SPLIT_PATTERN.split(self.guidelines_raw)
-        parts = _RE_GUIDELINE_PART.split(self.guidelines_raw)
-        parts = _GUIDELINES_SPLIT_RE.split(self.guidelines_raw)
-        parts = _GUIDELINE_PARTITION_PATTERN.split(self.guidelines_raw)
-        parts = self._GUIDELINE_PARTITION_RE.split(self.guidelines_raw)
         global_parts = []
         chapter_dict = {}
         first_part = parts[0].strip()
@@ -338,11 +324,6 @@ class RAGEngine:
                 global_parts.append(content)
             else:
                 match = self._GUIDELINES_CHAP_RE.search(header)
-                match = _GUIDELINES_CHAPTER_PATTERN.search(header)
-                match = self._GUIDELINES_CHAP_PATTERN.search(header)
-                match = _RE_CHAP_NUM_GUIDELINE.search(header)
-                match = _CHAP_MATCH_RE.search(header)
-                match = _GUIDELINE_HEADER_PATTERN.search(header)
                 if match:
                     chapter_dict[float(match.group(1))] = content
         return "\n\n".join(global_parts).strip(), chapter_dict
