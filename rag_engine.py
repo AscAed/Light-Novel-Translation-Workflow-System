@@ -126,14 +126,6 @@ class RAGEngine:
 
         self._cached_candidates = candidates
 
-        # Create matrix and pre-normalize it
-        self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
-        norms = np.linalg.norm(self._cached_tm_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1e-9
-        self._cached_tm_matrix /= norms
-
-        # Kept for backward compatibility if needed elsewhere, though unused in dot product now
-        self._cached_tm_norms = np.ones(len(candidates), dtype=np.float32)
         # Create matrix and precalculate norms
         # Using float32 for performance and memory efficiency
         self._cached_tm_matrix = np.array([emb for _, _, emb in candidates], dtype=np.float32)
