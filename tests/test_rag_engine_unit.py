@@ -105,6 +105,16 @@ Chapter 2 specific guidelines.
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["raw"], "こんにちは")
 
+    def test_build_cache_normalizes_vectors_and_keeps_original_norms(self):
+        """Verify cache compaction preserves normalized vectors and source norms."""
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        engine._build_cache()
+
+        expected_norm = np.linalg.norm(np.array([0.1] * 768, dtype=np.float32))
+        np.testing.assert_allclose(np.linalg.norm(engine._cached_tm_matrix, axis=1), [1.0, 1.0], rtol=1e-6)
+        np.testing.assert_allclose(engine._cached_tm_norms, [expected_norm, expected_norm])
+
     def test_get_cleaned_glossary_matches(self):
         """Verify glossary cleans keys/values and matches terms in raw text."""
         engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)

@@ -11,6 +11,8 @@ import json
 import re
 import math
 
+_gemini_clients = {}
+
 # If running in a test context, dynamically mock the google-genai library
 # so the script calls the local mock server instead of real API endpoints.
 mock_port = os.environ.get("MOCK_SERVER_PORT")
@@ -220,9 +222,11 @@ def align_chapter(raw_content: str, trans_content: str) -> list[tuple[str, str]]
 def generate_embeddings_batched(texts: list[str], batch_size: int = 50) -> list[list[float]]:
     """Generate paragraph embeddings in batches to prevent rate limits."""
     from google import genai
-    client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 10.0))})
     import os
-    client = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if gemini_key not in _gemini_clients:
+        _gemini_clients[gemini_key] = genai.Client(http_options={'timeout': float(os.environ.get("API_TIMEOUT", 600.0))})
+    client = _gemini_clients[gemini_key]
     embeddings = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
