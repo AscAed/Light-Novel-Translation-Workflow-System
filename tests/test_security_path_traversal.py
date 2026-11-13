@@ -1,34 +1,54 @@
+import tempfile
 import unittest
-import os
-import sys
+from pathlib import Path
 
-# Add project root to sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+from utils import read_child_text, resolve_child_path, write_new_child_text
 
-import pipeline
 
-class TestPathTraversalSecurity(unittest.TestCase):
-    def test_path_sanitization_in_pipeline(self):
-        # We test the logic used in pipeline.py
-        def sanitize(chapter_filename):
-            return os.path.normpath('/' + chapter_filename).lstrip('/')
+class TestChapterPathBoundaries(unittest.TestCase):
+    def test_rejects_path_components_and_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(ValueError):
+                resolve_child_path(temp_dir, "../outside.md", allow_missing=True)
+            with self.assertRaises(ValueError):
+                resolve_child_path(temp_dir, r"C:\outside.md", allow_missing=True)
 
-        # 1. Normal file
-        self.assertEqual(sanitize("chapter_1.md"), "chapter_1.md")
+    def test_reads_a_regular_child_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chapter = Path(temp_dir) / "chapter.md"
+            chapter.write_text("chapter", encoding="utf-8")
+            self.assertEqual(read_child_text(temp_dir, chapter.name), "chapter")
 
-        # 2. File in subdirectory
-        self.assertEqual(sanitize("arc_1/chapter_1.md"), "arc_1/chapter_1.md")
+    def test_rejects_symlinked_chapter(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "raw"
+            root.mkdir()
+            outside = Path(temp_dir) / "outside.md"
+            outside.write_text("private", encoding="utf-8")
+            link = root / "chapter.md"
+            try:
+                link.symlink_to(outside)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"Symlink creation is unavailable: {exc}")
 
-        # 3. Path traversal attack
-        self.assertEqual(sanitize("../../../etc/passwd"), "etc/passwd")
+            with self.assertRaises(ValueError):
+                read_child_text(str(root), link.name)
 
-        # 4. Deep path traversal attack
-        self.assertEqual(sanitize("arc_1/../../../../etc/passwd"), "etc/passwd")
+    def test_rejects_dangling_output_link(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "translated"
+            root.mkdir()
+            outside = Path(temp_dir) / "created-outside.md"
+            link = root / "chapter.md"
+            try:
+                link.symlink_to(outside)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"Symlink creation is unavailable: {exc}")
 
-        # 5. Absolute path attack
-        self.assertEqual(sanitize("/etc/passwd"), "etc/passwd")
+            with self.assertRaises(ValueError):
+                write_new_child_text(str(root), link.name, "translation")
+            self.assertFalse(outside.exists())
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

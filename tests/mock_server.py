@@ -4,6 +4,7 @@ import socketserver
 import threading
 import sys
 import urllib.parse
+import re
 
 # Global state for the mock server
 SERVER_STATE = {
@@ -19,6 +20,67 @@ SERVER_STATE = {
     "custom_translations": {},
     "embed_values": [0.1] * 768
 }
+
+
+def _prompt_payload(prompt):
+    match = re.search(r"```json\s*(.*?)\s*```", prompt, re.DOTALL)
+    if not match:
+        return []
+    try:
+        payload = json.loads(match.group(1))
+        return payload if isinstance(payload, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _mock_stage_response(prompt, stage, prefix=""):
+    payload = _prompt_payload(prompt)
+    if stage == "annotation":
+        return {
+            "annotated_paragraphs": [
+                {
+                    "paragraph": item.get("paragraph", ""),
+                    "speaker": "旁白",
+                    "context_hint": "",
+                }
+                for item in payload
+                if isinstance(item, dict)
+            ]
+        }
+
+    source_key = "paragraph" if stage == "translation" else "raw"
+    target_key = {
+        "translation": "translated_paragraphs",
+        "proofread": "corrected_text",
+        "polish": "polished_paragraphs",
+    }[stage]
+    result = []
+    custom_translations = SERVER_STATE.get("custom_translations", {})
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        source = item.get(source_key, "")
+        current = item.get("translated", "")
+        if stage == "translation":
+            translated = next(
+                (value for key, value in custom_translations.items() if key in source),
+                f"{prefix}{source}",
+            )
+        elif stage == "proofread":
+            translated = current.replace("【初译】", "【校对】")
+        else:
+            translated = current.replace("【校对】", "【润色】")
+        result.append(translated)
+
+    if stage == "translation" and SERVER_STATE.get("line_count_mismatch_active"):
+        if len(result) > 1:
+            result = result[:-1]
+        else:
+            result.append(f"{prefix}额外段落")
+    if stage == "proofread" and SERVER_STATE.get("quote_mismatch_active") and result:
+        result[0] += "「"
+    return {target_key: result}
+
 
 class MockServerRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -105,102 +167,15 @@ class MockServerRequestHandler(http.server.BaseHTTPRequestHandler):
                 })
                 return
 
-            # Check custom translations mapping
-            translation_content = ""
-            for key, val in SERVER_STATE.get("custom_translations", {}).items():
-                if key in prompt:
-                    translation_content = val
-                    break
-
-            if not translation_content:
-                # Automatic mock behaviour based on prompt & model type
-                if "qwen3.6-plus" in model or "initial" in model.lower() or "sakura" in model.lower():
-                    # Initial translator
-                    raw_text = ""
-                    # Extract from [RAW_TEXT]:
-                    if "[RAW_TEXT]:" in prompt:
-                        raw_text = prompt.split("[RAW_TEXT]:")[-1].strip()
-                    else:
-                        raw_text = prompt
-                    
-                    lines = raw_text.split("\n")
-                    translated_lines = []
-                    for line in lines:
-                        if not line.strip():
-                            translated_lines.append("")
-                            continue
-                        # Basic translation translation simulation preserving quotes
-                        translated = f"【初译】{line}"
-                        translated_lines.append(translated)
-
-                    if SERVER_STATE.get("line_count_mismatch_active"):
-                        # Drop the last line to cause line count mismatch
-                        if len(translated_lines) > 1:
-                            translated_lines = translated_lines[:-1]
-                        else:
-                            translated_lines.append("【初译】Extra line")
-
-                    raw_translation = "\n".join(translated_lines)
-                    translation_content = json.dumps({"raw_translation": raw_translation}, ensure_ascii=False)
-
-                elif "qwen3-max" in model or "proofread" in model.lower() or "logic" in model.lower() or "flash" in model.lower():
-                    # Proofreader
-                    raw_translation = ""
-                    if "[RAW_TRANSLATION]:" in prompt:
-                        raw_translation = prompt.split("[RAW_TRANSLATION]:")[-1].strip()
-                    else:
-                        raw_translation = prompt
-                    
-                    lines = raw_translation.split("\n")
-                    fixed_lines = []
-                    for line in lines:
-                        if not line.strip():
-                            fixed_lines.append("")
-                            continue
-                        fixed_lines.append(line.replace("【初译】", "【校对】"))
-
-                    # Simulated quote mismatch logic
-                    if SERVER_STATE.get("quote_mismatch_active"):
-                        if fixed_lines:
-                            fixed_lines[0] = fixed_lines[0] + "「" # Unmatched quote
-
-                    logic_fixed_text = "\n".join(fixed_lines)
-                    translation_content = json.dumps({
-                        "logic_fixed_text": logic_fixed_text,
-                        "fixed_errors": ["Fixed prefix"]
-                    }, ensure_ascii=False)
-
-                else:
-                    # Polisher or other general model
-                    logic_fixed_text = ""
-                    if "[LOGIC_FIXED_TEXT]:" in prompt:
-                        logic_fixed_text = prompt.split("[LOGIC_FIXED_TEXT]:")[-1].strip()
-                    else:
-                        logic_fixed_text = prompt
-
-                    lines = logic_fixed_text.split("\n")
-                    polished_lines = []
-                    for line in lines:
-                        if not line.strip():
-                            polished_lines.append("")
-                            continue
-                        polished_lines.append(line.replace("【校对】", "【润色】"))
-                    
-                    final_text = "\n".join(polished_lines)
-                    translation_content = final_text
-
-            # Return OpenAI completions response
-            # Note: For polisher, pipeline expects either string or JSON dict.
-            # If response_format is json_object, we must return json.
-            is_json_requested = req_data.get("response_format", {}).get("type") == "json_object"
-            content_str = translation_content
-            if is_json_requested and not content_str.startswith("{"):
-                if "qwen3.6-plus" in model or "initial" in model.lower() or "sakura" in model.lower():
-                    content_str = json.dumps({"raw_translation": content_str}, ensure_ascii=False)
-                elif "qwen3-max" in model or "proofread" in model.lower() or "logic" in model.lower() or "flash" in model.lower():
-                    content_str = json.dumps({"logic_fixed_text": content_str, "fixed_errors": []}, ensure_ascii=False)
-                else:
-                    content_str = json.dumps({"text": content_str}, ensure_ascii=False)
+            if "请分析以下日文小说段落" in prompt:
+                response_obj = _mock_stage_response(prompt, "annotation")
+            elif "请检查以下段落翻译" in prompt:
+                response_obj = _mock_stage_response(prompt, "proofread")
+            elif "请润色以下翻译" in prompt:
+                response_obj = _mock_stage_response(prompt, "polish")
+            else:
+                response_obj = _mock_stage_response(prompt, "translation", "【初译】")
+            content_str = json.dumps(response_obj, ensure_ascii=False)
 
             self._send_json({
                 "id": "chatcmpl-mock",
@@ -255,31 +230,6 @@ class MockServerRequestHandler(http.server.BaseHTTPRequestHandler):
                 if parts:
                     prompt = parts[0].get("text", "")
 
-            # Check custom translations
-            translation_content = ""
-            for key, val in SERVER_STATE.get("custom_translations", {}).items():
-                if key in prompt:
-                    translation_content = val
-                    break
-
-            if not translation_content:
-                # Standard Gemini fallback translation simulation
-                raw_text = prompt
-                if "INPUT_DATA:" in prompt:
-                    raw_text = prompt.split("INPUT_DATA:")[-1].split("TASK:")[0].strip()
-                elif "[RAW_TEXT]:" in prompt:
-                    raw_text = prompt.split("[RAW_TEXT]:")[-1].strip()
-
-                lines = raw_text.split("\n")
-                gemini_lines = []
-                for line in lines:
-                    if not line.strip():
-                        gemini_lines.append("")
-                        continue
-                    gemini_lines.append(f"【Gemini】{line}")
-                
-                translation_content = "\n".join(gemini_lines)
-
             # Determine response structure. If schema requires JSON (like initial or proofread fallback)
             # we should return valid JSON inside candidate text.
             response_schema = req_data.get("config", {}).get("response_schema")
@@ -287,19 +237,18 @@ class MockServerRequestHandler(http.server.BaseHTTPRequestHandler):
             if not response_schema and "config" in req_data:
                 response_schema = req_data["config"].get("responseSchema")
 
-            candidate_text = translation_content
-            # Check if JSON format requested
-            if response_schema:
-                # Return JSON object
-                if "logic_fixed_text" in json.dumps(response_schema):
-                    candidate_text = json.dumps({
-                        "logic_fixed_text": f"【Gemini校对】{translation_content}",
-                        "fixed_errors": []
-                    }, ensure_ascii=False)
-                elif "raw_translation" in json.dumps(response_schema):
-                    candidate_text = json.dumps({
-                        "raw_translation": f"【Gemini初译】{translation_content}"
-                    }, ensure_ascii=False)
+            schema_text = json.dumps(response_schema, ensure_ascii=False)
+            if "annotated_paragraphs" in schema_text:
+                response_obj = _mock_stage_response(prompt, "annotation")
+            elif "translated_paragraphs" in schema_text:
+                response_obj = _mock_stage_response(prompt, "translation", "【Gemini初译】")
+            elif "corrected_text" in schema_text:
+                response_obj = _mock_stage_response(prompt, "proofread")
+            elif "polished_paragraphs" in schema_text:
+                response_obj = _mock_stage_response(prompt, "polish")
+            else:
+                response_obj = {"text": "【Gemini】mock response"}
+            candidate_text = json.dumps(response_obj, ensure_ascii=False) if response_schema else str(response_obj)
 
             self._send_json({
                 "candidates": [{

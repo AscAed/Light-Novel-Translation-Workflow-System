@@ -311,55 +311,55 @@ class E2ETestSuite(unittest.TestCase):
             self.assertEqual(res.returncode, 0)
 
         # F5 (Safety Fallback) Cases (21-25)
-        with self.subTest("Case 21: DeepSeek safety block triggers Gemini fallback"):
+        with self.subTest("Case 21: Content block does not trigger provider failover"):
             self.set_mock_state({"deepseek_safety_blocked": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "テスト")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
-            # Content should have the gemini signature prefix
-            with open(os.path.join(self.output_dir, "第12話.md"), "r", encoding="utf-8") as f:
-                output = f.read()
-                self.assertIn("Gemini", output)
+            self.assertNotEqual(res.returncode, 0)
 
-        with self.subTest("Case 22: Gemini Flash Lite fallback called with BLOCK_NONE"):
+        with self.subTest("Case 22: Content block leaves no translated output"):
             self.set_mock_state({"deepseek_safety_blocked": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
 
-        with self.subTest("Case 23: Fallback handles API errors (status 500) on DeepSeek by calling Gemini"):
+        with self.subTest("Case 23: Explicit failover handles a DeepSeek server error"):
             self.set_mock_state({"deepseek_status_code": 500})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "テスト")
-            res = self.run_pipeline()
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
 
         with self.subTest("Case 24: Safe translation of explicit content completes without block"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "テスト")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 25: Gemini fallback preserves translation style"):
+        with self.subTest("Case 25: Content block remains blocked when failover is enabled"):
             self.set_mock_state({"deepseek_safety_blocked": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "テスト")
-            res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
+            self.assertNotEqual(res.returncode, 0)
 
         # F6 (Formatting Assertions) Cases (26-30)
         with self.subTest("Case 26: Line count matches 1:1 between raw and translated"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "第一行\n\n第二行")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
         with self.subTest("Case 27: Quote marks are preserved 1:1"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "「こんにちは」\n\n『テスト』")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 28: Line count mismatch triggers warning and local retry"):
+        with self.subTest("Case 28: Line count mismatch aborts before writing"):
             self.set_mock_state({"line_count_mismatch_active": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "第一行\n\n第二行")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
         with self.subTest("Case 29: Quote mismatch triggers warning and local retry"):
             self.set_mock_state({"quote_mismatch_active": True})
@@ -372,7 +372,7 @@ class E2ETestSuite(unittest.TestCase):
             self.set_mock_state({"line_count_mismatch_active": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "第一行\n\n第二行")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
 
     # ==========================================
     # TIER 2: Boundary & Corner Cases (30 Cases)
@@ -402,11 +402,11 @@ class E2ETestSuite(unittest.TestCase):
             res = self.run_align()
             self.assertNotEqual(res.returncode, 0) # Should fail
 
-        with self.subTest("Case 35: Invalid JSON TM"):
+        with self.subTest("Case 35: Invalid JSON TM stops the pipeline"):
             self.write_file(os.path.join(self.knowledge_dir, "translation_memory.json"), "{invalid json}")
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
 
         with self.subTest("Case 35b (Extra): TM with missing embedding field"):
             tm_content = {
@@ -492,68 +492,68 @@ class E2ETestSuite(unittest.TestCase):
             self.assertEqual(res.returncode, 0)
 
         # API Boundaries (45-49)
-        with self.subTest("Case 45: Sakura endpoint offline"):
+        with self.subTest("Case 45: Explicit failover handles an unavailable Sakura endpoint"):
             self.set_mock_state({"sakura_offline": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
-            res = self.run_pipeline()
-            # If Sakura offline, it fallbacks to Gemini and succeeds
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 46: Partial response from Sakura (handled by json extraction fallback)"):
-            # Empty response or corrupt json
+        with self.subTest("Case 46: Primary endpoint recovers after offline scenario"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 47: DeepSeek rate limit (429) retry logic"):
+        with self.subTest("Case 47: Explicit failover handles a DeepSeek rate limit"):
             self.set_mock_state({"deepseek_status_code": 429})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
-            res = self.run_pipeline()
-            # If DeepSeek returns 429, retry triggers fallback to Gemini, so it succeeds
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 48: Empty API key"):
+        with self.subTest("Case 48: Empty provider key is accepted by local mock endpoint"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
-            res = self.run_pipeline(extra_env={"CODING_PLAN_API_KEY": ""})
+            res = self.run_pipeline(extra_env={"DEEPSEEK_API_KEY": ""})
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 49: Sakura timeout (simulated via status 504)"):
+        with self.subTest("Case 49: Explicit failover handles a provider timeout"):
             self.set_mock_state({"deepseek_status_code": 504})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
-            res = self.run_pipeline()
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
 
         # Safety Boundaries (50-53)
-        with self.subTest("Case 50: Both DeepSeek and Gemini block"):
+        with self.subTest("Case 50: Provider content block stops before fallback"):
             self.set_mock_state({"deepseek_safety_blocked": True, "gemini_safety_blocked": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "敏感内容")
             res = self.run_pipeline()
             # Both blocked should fail or exit non-zero
             self.assertNotEqual(res.returncode, 0)
 
-        with self.subTest("Case 51: Gemini rate limit (429) during fallback"):
+        with self.subTest("Case 51: Content block does not contact Gemini"):
             self.set_mock_state({"deepseek_safety_blocked": True, "gemini_status_code": 429})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "敏感内容")
             res = self.run_pipeline()
             self.assertNotEqual(res.returncode, 0)
 
-        with self.subTest("Case 52: Empty response from Gemini"):
+        with self.subTest("Case 52: Gemini error state is irrelevant when fallback is disabled"):
             self.set_mock_state({"deepseek_safety_blocked": True, "gemini_status_code": 204}) # NoContent
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "敏感内容")
             res = self.run_pipeline()
             self.assertNotEqual(res.returncode, 0)
 
-        with self.subTest("Case 53: Gemini fallback triggers on multiple consecutive chapters"):
-            self.set_mock_state({"deepseek_safety_blocked": True})
+        with self.subTest("Case 53: Explicit failover processes multiple consecutive chapters"):
+            self.set_mock_state({"deepseek_status_code": 500})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试1")
             self.write_file(os.path.join(self.raw_dir, "第13話.md"), "测试2")
-            res = self.run_pipeline()
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
             self.assertTrue(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
             self.assertTrue(os.path.exists(os.path.join(self.output_dir, "第13話.md")))
 
         # Formatting Boundaries (54-58)
         with self.subTest("Case 54: Paragraph with multiple nested quotes"):
+            self.set_mock_state({})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "「『こんにちは』と言った」")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
@@ -598,38 +598,35 @@ class E2ETestSuite(unittest.TestCase):
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 3: Safety block triggers on a chapter containing glossary matches"):
+        with self.subTest("Case 3: Safety block stops a chapter containing glossary matches"):
             self.write_file(os.path.join(self.knowledge_dir, "Glossary.json"), {"测试": "术语"}, is_json=True)
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
             self.set_mock_state({"deepseek_safety_blocked": True})
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
-            with open(os.path.join(self.output_dir, "第12話.md"), "r", encoding="utf-8") as f:
-                output = f.read()
-                self.assertIn("Gemini", output)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
-        with self.subTest("Case 4: Line count mismatch retry + DeepSeek safety block triggers fallback"):
-            self.set_mock_state({
-                "line_count_mismatch_active": True,
-                "deepseek_safety_blocked": True
-            })
+        with self.subTest("Case 4: Line count mismatch aborts a chapter with combined context"):
+            self.set_mock_state({"line_count_mismatch_active": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "第一行\n\n第二行")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
         with self.subTest("Case 5: Missing chapter guidelines semantic fallback + TM match"):
+            self.set_mock_state({})
             tm_content = {"chapters": {"chap1.md": [{"raw": "测试", "translated": "测试译", "embedding": [0.1]*768}]}}
             self.write_file(os.path.join(self.knowledge_dir, "translation_memory.json"), tm_content, is_json=True)
             self.write_file(os.path.join(self.raw_dir, "第15話.md"), "测试")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
 
-        with self.subTest("Case 6: Local retry fails 3 times on line count mismatch, outputs partial"):
+        with self.subTest("Case 6: Persistent line count mismatch writes no partial output"):
             self.set_mock_state({"line_count_mismatch_active": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "第一行\n\n第二行")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
-            self.assertTrue(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
     # ==========================================
     # TIER 4: Real-World Scenarios (5 Cases)
@@ -641,16 +638,15 @@ class E2ETestSuite(unittest.TestCase):
             self.assertEqual(res.returncode, 0)
             self.assertTrue(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
-        with self.subTest("Case 2: E2E translation of an explicit chapter triggering safety block"):
+        with self.subTest("Case 2: E2E translation stops when the provider blocks content"):
             self.set_mock_state({"deepseek_safety_blocked": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "极其敏感的内容")
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
-            with open(os.path.join(self.output_dir, "第12話.md"), "r", encoding="utf-8") as f:
-                output = f.read()
-                self.assertIn("Gemini", output)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
         with self.subTest("Case 3: Align chapters 1-18, save TM, then run pipeline for chapter 19"):
+            self.set_mock_state({})
             # Set up aligned chapters 1-18
             for i in range(1, 19):
                 self.write_file(os.path.join(self.raw_dir, f"第{i}話.md"), f"日文内容{i}")
@@ -684,6 +680,7 @@ class E2ETestSuite(unittest.TestCase):
                 self.assertNotIn("努力豆", output)
 
         with self.subTest("Case 5: Large batch translation run (5 chapters)"):
+            self.set_mock_state({})
             for i in range(1, 6):
                 self.write_file(os.path.join(self.raw_dir, f"第{i}話.md"), f"第一行{i}\n\n第二行{i}")
             res = self.run_pipeline()
