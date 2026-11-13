@@ -16,11 +16,7 @@ class E2ETestSuite(unittest.TestCase):
         # Determine paths to scripts
         cls.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         cls.run_pipeline_script = os.path.join(cls.project_root, "tests", "run_pipeline.py")
-        
-        if os.path.exists(os.path.join(cls.project_root, "scripts", "align_chapters.py")):
-            cls.align_script = os.path.join(cls.project_root, "scripts", "align_chapters.py")
-        else:
-            cls.align_script = os.path.join(cls.project_root, "tests", "run_align_chapters.py")
+        cls.align_script = os.path.join(cls.project_root, "scripts", "align_chapters.py")
 
     def setUp(self):
         # Reset mock server state
@@ -100,7 +96,7 @@ class E2ETestSuite(unittest.TestCase):
         except Exception as e:
             self.fail(f"Failed to set mock state: {e}")
 
-    def run_pipeline(self, mode="CODING_PLAN", extra_env=None):
+    def run_pipeline(self, extra_env=None):
         if os.path.exists(self.output_dir):
             for f in os.listdir(self.output_dir):
                 fp = os.path.join(self.output_dir, f)
@@ -119,7 +115,6 @@ class E2ETestSuite(unittest.TestCase):
         env["TEST_INFO_PATH"] = os.path.join(self.knowledge_dir, "作品基本信息.json")
         env["TEST_TM_PATH"] = os.path.join(self.knowledge_dir, "translation_memory.json")
         env["TEST_STORY_SUMMARY_PATH"] = os.path.join(self.knowledge_dir, "STORY_SUMMARY.md")
-        env["TEST_EXECUTION_MODE"] = mode
         env["MOCK_SERVER_PORT"] = self.mock_port
         
         # Add tests/bin to PATH for CLI mode testing
@@ -400,7 +395,14 @@ class E2ETestSuite(unittest.TestCase):
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "段落一\n\n段落二")
             self.write_file(os.path.join(self.output_dir, "第12話.md"), "译文段落一") # only 1 para
             res = self.run_align()
-            self.assertNotEqual(res.returncode, 0) # Should fail
+            self.assertEqual(res.returncode, 0)
+            with open(os.path.join(self.knowledge_dir, "translation_memory.json"), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            pairs = data["chapters"]["第12話.md"]
+            self.assertEqual(len(pairs), 1)
+            self.assertEqual(pairs[0]["raw"], "段落一\n\n段落二")
+            self.assertEqual(pairs[0]["translated"], "译文段落一")
+            self.assertTrue(pairs[0]["embedding"])
 
         with self.subTest("Case 35: Invalid JSON TM stops the pipeline"):
             self.write_file(os.path.join(self.knowledge_dir, "translation_memory.json"), "{invalid json}")

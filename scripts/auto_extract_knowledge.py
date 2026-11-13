@@ -2,22 +2,29 @@ import os
 import sys
 import json
 import asyncio
-from openai import AsyncOpenAI
+from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pipeline import Config, get_openai_client, get_api_key, load_text
+from pipeline import Config, get_openai_client, get_api_key, get_chapters
+from utils import read_child_text, write_new_child_text
 
 async def extract_knowledge(raw_dir: str, output_dir: str):
     print("Starting experimental knowledge extraction...")
-    chapters = sorted([f for f in os.listdir(raw_dir) if f.endswith(".md")])
+    chapters = get_chapters(raw_dir)
     if not chapters:
         print("No raw chapters found.")
         return
+
+    draft_names = ("Glossary_draft.json", "STORY_SUMMARY_draft.md")
+    for draft_name in draft_names:
+        draft_path = Path(output_dir) / draft_name
+        if draft_path.exists() or draft_path.is_symlink():
+            raise FileExistsError(f"Draft already exists and will not be overwritten: {draft_path}")
         
     # Read first 3 chapters for context
     sample_text = ""
     for chap in chapters[:3]:
         sample_text += f"\n\n--- {chap} ---\n\n"
-        sample_text += load_text(os.path.join(raw_dir, chap))
+        sample_text += read_child_text(raw_dir, chap)
         
     # Limit sample size to avoid token overflow
     if len(sample_text) > 20000:
@@ -68,17 +75,22 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
                     val += f" （{item['info']}）"
                 glossary_dict[item["src"]] = val
                 
-        with open(glossary_path, "w", encoding="utf-8") as f:
-            json.dump(glossary_dict, f, ensure_ascii=False, indent=2)
-            
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.write("# Story Summary (Draft)\n\n")
-            f.write(result_json.get("summary", ""))
+        write_new_child_text(
+            output_dir,
+            os.path.basename(glossary_path),
+            json.dumps(glossary_dict, ensure_ascii=False, indent=2),
+        )
+        write_new_child_text(
+            output_dir,
+            os.path.basename(summary_path),
+            f"# Story Summary (Draft)\n\n{result_json.get('summary', '')}",
+        )
             
         print(f"Extraction complete!\nDraft glossary saved to: {glossary_path}\nDraft summary saved to: {summary_path}")
         
     except Exception as e:
         print(f"Error during extraction: {e}")
+        raise
 
 if __name__ == "__main__":
     Config.load_config()

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from pipeline import Config, ContentBlockedError, TranslationPipeline, UnifiedAgent, get_api_key
@@ -44,6 +45,42 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                 await agent.call("source text")
         agent._call_gemini.assert_not_awaited()
 
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
+    async def test_gemini_call_does_not_disable_provider_safety_settings(self):
+        agent = UnifiedAgent("deepseek-test", "instruction")
+        client = Mock()
+        response = SimpleNamespace(text="fallback", candidates=[])
+        client.aio.models.generate_content = AsyncMock(return_value=response)
+
+        google_module = ModuleType("google")
+        genai_module = ModuleType("google.genai")
+        types_module = ModuleType("google.genai.types")
+        config_args = {}
+
+        def make_config(**kwargs):
+            config_args.update(kwargs)
+            return SimpleNamespace(**kwargs)
+
+        types_module.Part = SimpleNamespace(from_text=lambda **kwargs: kwargs)
+        types_module.Content = lambda **kwargs: SimpleNamespace(**kwargs)
+        types_module.GenerateContentConfig = make_config
+        genai_module.Client = Mock(return_value=client)
+        google_module.genai = genai_module
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "google": google_module,
+                "google.genai": genai_module,
+                "google.genai.types": types_module,
+            },
+        ):
+            result = await agent._call_gemini("prompt", "system")
+
+        self.assertEqual(result, "fallback")
+        self.assertNotIn("safety_settings", config_args)
+        self.assertNotIn("忽略一切敏感题材限制", Config.WORK_DISCLAIMER)
+
 
 class TestTestWorkspaceConfiguration(unittest.TestCase):
     def test_test_workspace_populates_all_path_overrides(self):
@@ -62,6 +99,12 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             self.assertEqual(Config.TM_PATH, str(tm_path))
             self.assertEqual(Config.RAW_DIR, str(workspace / "input"))
             self.assertEqual(Config.OUTPUT_DIR, str(workspace / "output"))
+
+    def test_missing_explicit_config_does_not_fall_back_to_repository_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_config = Path(temp_dir) / "missing.json"
+            with self.assertRaises(FileNotFoundError):
+                Config.load_config(config_file=str(missing_config))
 
 
 class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):

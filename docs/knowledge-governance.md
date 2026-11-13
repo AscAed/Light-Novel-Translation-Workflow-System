@@ -8,7 +8,7 @@
 | 术语表 | `Knowledge/Glossary.json` | 原文命中后提供 src/dst/info | 文件存在；启发式解析；审核状态未建模 |
 | 翻译指导 | `Knowledge/guidelines.txt` | 全局/章节风格与约束 | 文件存在；章节标记依赖约定文本 |
 | 故事概要 | `Knowledge/STORY_SUMMARY.md` | 按章节裁剪上下文 | 文件存在；来源和审核流程未定义 |
-| 翻译记忆 | `Knowledge/translation_memory.json` | 段落向量检索与 few-shot | 运行时自动写入；缺少审核、来源及版本 |
+| 翻译记忆 | `Knowledge/translation_memory.json` | 段落向量检索与 few-shot | 运行时自动写入并原子替换文件；缺少审核、来源、版本和并发锁 |
 | 自动提取草稿 | `Glossary_draft.json`、`STORY_SUMMARY_draft.md` | 实验性候选生成 | 脚本存在；不是批准或正式写入流程 |
 
 ## 风险
@@ -18,6 +18,7 @@
 - 术语表清洗规则以分隔符启发式识别词条和说明，可能错误拆分合法内容。
 - 概要、人物关系、语气和文化注释尚无统一来源/置信度/冲突机制。
 - 单一 JSON TM 更新可能被并发写入覆盖；并发场景未验证。
+- 原子替换只能防止写入中断留下半截 JSON，不能提供多进程合并、版本回滚或知识审核。
 
 ## 建议的候选知识状态
 

@@ -33,16 +33,17 @@ tests/run_tests.py -> tests/mock_server.py -> tests/test_e2e.py
 2. `TranslationPipeline` 读取作品信息、概要，并创建 `RAGEngine`。
 3. 每章检索指导、TM、词条和概要上下文。
 4. 按阶段调用上下文标注、初译、逻辑校对、润色。
-5. 校验各阶段段落数组与原文段落数量一致，再创建译文文件并按数组位置形成段落对更新 TM。嵌入失败时保留词对但不写入伪造向量。
-6. `align_chapters.py` 可针对已有原译章节重新对齐并建立向量索引。
+5. 校验各阶段段落数组与原文段落数量一致，再创建译文文件并按数组位置形成段落对更新 TM。TM 以同目录临时文件加原子替换写入；嵌入失败时保留词对但不写入伪造向量。
+6. `align_chapters.py` 通过章节子路径校验读取原译文件；锚点不匹配时使用 Gale-Church 对齐，验证 embedding 数量后原子更新 TM。
 
 ## 外部集成与约束
 
 - 源码默认初译模型名 `sakura-14b`，Sakura base URL 为 `http://127.0.0.1:6006/v1`。
 - 源码默认校对/润色模型名分别为 `deepseek-v4-flash`、`deepseek-v4-pro`；base URL 默认 `https://api.deepseek.com/v1`。
-- `UnifiedAgent` 默认不跨 Provider 回退。仅显式设置 `ENABLE_GEMINI_FALLBACK=true` 时，普通主端点异常会将相同请求发送至 Gemini；内容拦截不会触发回退。模型可用性和服务端版本未验证。
-- `rag_engine.py` 与对齐脚本调用 Gemini embedding；本地 mock 仅用于测试。
-- 章节文件读取拒绝符号链接并限制为配置原文目录下的直接子文件；译文使用排他新建，避免覆盖路径上的悬空链接。仍需注意并发本地修改路径的竞态，以及显式配置根目录本身可指向其他位置。
+- `UnifiedAgent` 默认不跨 Provider 回退。仅显式设置 `ENABLE_GEMINI_FALLBACK=true` 时，普通调用异常会将相同请求发送至 Gemini；Provider 内容拦截为终止状态，不触发跨 Provider 回退。Gemini 请求未显式放宽安全阈值。模型可用性和服务端版本未验证。
+- `rag_engine.py` 与对齐脚本当前请求 `gemini-embedding-2`；本地 mock 仅用于测试，不能证明真实模型可用。
+- 翻译和对齐章节读取拒绝直接子文件符号链接并限制为配置目录下的文件；知识提取脚本也使用该读取校验。TM 更新采用原子替换；知识草稿使用排他新建。显式配置根目录仍由操作者负责，跨进程并发写入未实现。
+- 项目名解析会检查已解析路径仍位于 `projects/` 下；显式 JSON 配置路径不存在时立即报错。JSON 配置中的目录仍可由操作者显式指定到仓库外。
 - README 曾描述的 Sakura/DeepSeek/Gemini 型号、`DEVELOPMENT_PLAN.md` 的旧模型栈与现行源码不完全一致。以源码默认值为实现事实，以真实账户/服务实测为可用性事实。
 - 项目级数据目录 `projects/*` 默认被忽略，仅示例项目例外。真实项目知识、译文和 TM 通常不在版本控制中。
 - 当前 JSON 文件适用于现有单机代码路径；并发写入、崩溃恢复、规模化查询能力未验证。

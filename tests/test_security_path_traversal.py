@@ -1,8 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from utils import read_child_text, resolve_child_path, write_new_child_text
+from utils import (
+    read_child_text,
+    resolve_child_path,
+    write_new_child_text,
+    write_text_atomically,
+)
 
 
 class TestChapterPathBoundaries(unittest.TestCase):
@@ -48,6 +54,18 @@ class TestChapterPathBoundaries(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_new_child_text(str(root), link.name, "translation")
             self.assertFalse(outside.exists())
+
+    def test_atomic_write_preserves_previous_file_when_replace_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "translation_memory.json"
+            target.write_text('{"chapters": {}}', encoding="utf-8")
+
+            with patch("utils.os.replace", side_effect=OSError("simulated failure")):
+                with self.assertRaisesRegex(OSError, "simulated failure"):
+                    write_text_atomically(str(target), '{"chapters": {"new": []}}')
+
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"chapters": {}}')
+            self.assertEqual([item.name for item in Path(temp_dir).iterdir()], [target.name])
 
 
 if __name__ == "__main__":
