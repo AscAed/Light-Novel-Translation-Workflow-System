@@ -1,94 +1,43 @@
-# Light Novel Translation Workflow System
+# AI 轻小说翻译工作流
 
-This system handles Japanese-to-Chinese translation for light novels, using a RAG (Retrieval-Augmented Generation) pipeline, translation memory, glossary hybrid retrieval, guideline partitioning, and multi-agent polishing with safety fallbacks.
+## 项目状态
 
-## Architecture
+- 状态基准日：2026-11-13。
+- 当前实现：Python CLI 翻译流水线、RAG 检索模块、章节对齐脚本和 mock 测试。
+- 当前工作目标：日语轻小说译为中文；通用多语言、多文本类型是长期目标，不是现有能力。
+- 事实、限制和未知项见[项目现状](docs/project-status.md)。
 
-The system coordinates several decoupled components:
-1. **Translation Memory (TM)**: Paragraph-level translation database. Cosine similarity matches raw paragraphs to inject matching translated pairs as few-shot context examples.
-2. **Glossary Hybrid Retrieval**: Extracts term mappings (`src`, `dst`, `info`) from the project glossary, cleaning out explanation comments.
-3. **Partitioned Guidelines**: Splits guideline rules into global and chapter-specific rules, falling back semantically if a chapter-specific rule is missing.
-4. **Agent Pipeline**:
-   * **Initial Translation**: Invokes the Sakura LLM API.
-   * **Proofreading**: Invokes the DeepSeek API (`deepseek-v4-flash`) for logical checks.
-   * **Polishing**: Invokes the DeepSeek API (`deepseek-v4-pro`) for tone adjustment.
-5. **Safety Fallback**: Redirects blocked explicit content or API failures from DeepSeek to `gemini-3.1-flash-lite` with safety settings disabled (`BLOCK_NONE`).
-6. **Formatting Verification**: Enforces paragraph count and quote mark matching 1:1, retrying locally up to three times on mismatch.
+## 文档入口
 
-## Setup
+| 文档 | 用途 |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | Codex/Agent 工作约束、验证与文档维护规则 |
+| [项目现状](docs/project-status.md) | 以仓库证据记录已实现、部分实现、计划和未知 |
+| [架构与边界](docs/architecture.md) | 当前模块、数据流、接口与目标边界 |
+| [翻译流程](docs/translation-workflow.md) | 当前流水线阶段、角色职责、质量要求 |
+| [知识库治理](docs/knowledge-governance.md) | 当前知识数据与建议的审核、写入规则 |
+| [开发与验证](docs/development.md) | 环境、配置、命令、测试事实和限制 |
+| [路线图](docs/roadmap.md) | 分阶段目标、依赖、交付物与验收条件 |
+| [决策记录](docs/decisions/README.md) | 已确认决策与待决事项索引 |
+| [本地凭据风险记录](docs/security-notes.md) | 凭据暴露边界与需人工处理事项 |
 
-### Prerequisites
-* Python 3.10+
-* Dependencies:
-  ```bash
-  pip install openai google-genai aiohttp numpy
-  ```
+## 现有命令
 
-### Environment Variables
-Create a `.env` file in the root directory using the [.env.example](file:///D:/OWN/Programming/AI/TranslatorAI/祝福のネトラレラ_祝福的寝取系女主/.env.example) template:
-```env
-SAKURA_API_KEY="your-sakura-key"
-DEEPSEEK_API_KEY="your-deepseek-key"
-GEMINI_API_KEY="your-gemini-key"
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 
-SAKURA_BASE_URL="http://127.0.0.1:6006/v1"
-DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"
-```
-
-### Project Layout
-Individual novel translation tasks are managed as standalone projects inside the `projects/` directory (which is gitignored). Each project folder follows this convention:
-```
-projects/[ProjectName]/
-├── 生肉/                       # Input raw chapter markdown files
-├── 熟肉/                       # Output translated markdown files
-└── Knowledge/
-    ├── 作品基本信息.json       # Novel title, author, and character metadata
-    ├── Glossary.json          # Terminology glossary mappings
-    ├── guidelines.txt         # Global and chapter-specific style rules
-    ├── STORY_SUMMARY.md       # Sliced chapter synopsis
-    └── translation_memory.json # Compiled vector database (generated)
-```
-
-Refer to [projects/example/](file:///D:/OWN/Programming/AI/TranslatorAI/祝福のネトラレラ_祝福的寝取系女主/projects/example/) for a template structure.
-
-## Usage
-
-The scripts support running via project name or using a custom config file path.
-
-### 1. Compile Translation Memory
-To align existing raw and translated chapters and compile the translation memory database:
-```bash
-# Project mode (convention-based layout)
-python scripts/align_chapters.py --project [ProjectName]
-
-# Explicit configuration path mode
-python scripts/align_chapters.py --config /path/to/config.json
-```
-This reads raw and translated chapters, generates embeddings via Gemini, and writes to `projects/[ProjectName]/Knowledge/translation_memory.json`.
-
-### 2. Run Translation Pipeline
-To run the translation workflow for remaining chapters:
-```bash
-# Project mode (convention-based layout)
-python pipeline.py --project [ProjectName]
-
-# Explicit configuration path mode
-python pipeline.py --config /path/to/config.json
-```
-
-### 3. Prompt Customisation
-Default system prompts for the agents are stored in the global `prompts/` directory:
-- [translator_skill.md](file:///D:/OWN/Programming/AI/TranslatorAI/祝福のネトラレラ_祝福的寝取系女主/prompts/translator_skill.md)
-- [proofreader_skill.md](file:///D:/OWN/Programming/AI/TranslatorAI/祝福のネトラレ原_祝福的寝取系女主/prompts/proofreader_skill.md)
-- [polisher_skill.md](file:///D:/OWN/Programming/AI/TranslatorAI/祝福のネトラレラ_祝福的寝取系女主/prompts/polisher_skill.md)
-
-To customise behaviour or style guidelines for a specific novel (e.g. character voices, explicit descriptions), place customized prompt files inside the project prompts directory:
-`projects/[ProjectName]/prompts/custom_polisher_skill.md`
-
-## Tests
-
-Execute the full mock-server E2E integration test suite to verify changes:
-```bash
+python pipeline.py --project <项目目录名>
+python scripts/align_chapters.py --project <项目目录名>
 python tests/run_tests.py
 ```
-This allocates a free port, runs a background mock server simulating Sakura, DeepSeek, and Gemini API endpoints, and completes the assertions defined in `tests/test_e2e.py`.
+
+配置模式和验证限制见[开发与验证](docs/development.md)。仓库没有依赖锁文件、CI 配置或部署清单；安装依赖不代表真实模型端点或外部部署已验证。
+
+## 维护约定
+
+- 修改代码或行为时，同步更新受影响的事实文档和验证证据。
+- 只将可由当前源代码、配置、测试或 Git 状态支持的内容标为“已实现/已验证”。
+- 建议、目标、待决策和未知项不得与实现事实混写。
+- 新决策写入[决策记录](docs/decisions/README.md)；阶段状态写入[路线图](docs/roadmap.md)。

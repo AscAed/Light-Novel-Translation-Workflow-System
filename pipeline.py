@@ -4,8 +4,17 @@ import json
 import re
 import urllib.request
 import logging
+import ipaddress
 from typing import List, Dict, Any, Optional
-from utils import extract_chapter_num
+from urllib.parse import urlsplit
+from utils import (
+    extract_chapter_num,
+    read_child_text,
+    require_aligned_paragraphs,
+    resolve_child_path,
+    split_paragraphs,
+    write_new_child_text,
+)
 from openai import AsyncOpenAI
 from rag_engine import RAGEngine
 
@@ -65,6 +74,7 @@ class Config:
     MIN_JITTER = 2
     MAX_JITTER = 5
     API_TIMEOUT = 10.0
+    GEMINI_FALLBACK_ENABLED = False
     SAFE_MODE = False
     WORK_DISCLAIMER = (
         "**[WORK_DISCLAIMER]**\n"
@@ -84,7 +94,11 @@ class Config:
                         continue
                     if "=" in line:
                         k, v = line.split("=", 1)
-                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+        cls.GEMINI_FALLBACK_ENABLED = os.environ.get("ENABLE_GEMINI_FALLBACK", "").lower() in {
+            "1", "true", "yes", "on"
+        }
                         
         # Override Config paths if test workspace is provided
         if "TEST_WORKSPACE_DIR" in os.environ:
@@ -97,12 +111,29 @@ class Config:
             cls.GLOSSARY_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "Glossary.json")
             cls.GUIDELINES_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "guidelines.txt")
             cls.INFO_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "作品基本信息.json")
+            cls.STORY_SUMMARY_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "STORY_SUMMARY.md")
+            cls.TM_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "translation_memory.json")
+
+            test_path_mapping = {
+                "TEST_RAW_DIR": "RAW_DIR",
+                "TEST_OUTPUT_DIR": "OUTPUT_DIR",
+                "TEST_GLOSSARY_PATH": "GLOSSARY_PATH",
+                "TEST_GUIDELINES_PATH": "GUIDELINES_PATH",
+                "TEST_INFO_PATH": "INFO_PATH",
+                "TEST_STORY_SUMMARY_PATH": "STORY_SUMMARY_PATH",
+                "TEST_TM_PATH": "TM_PATH",
+            }
+            for env_name, config_name in test_path_mapping.items():
+                value = os.environ.get(env_name)
+                if value:
+                    setattr(cls, config_name, value)
             
             # Setup SAKURA and DEEPSEEK URLs
             if "SAKURA_BASE_URL" in os.environ:
                 cls.SAKURA_BASE_URL = os.environ["SAKURA_BASE_URL"]
             if "DEEPSEEK_BASE_URL" in os.environ:
                 cls.DEEPSEEK_BASE_URL = os.environ["DEEPSEEK_BASE_URL"]
+            cls.API_TIMEOUT = float(os.environ.get("API_TIMEOUT", cls.API_TIMEOUT))
             
             return
 
@@ -243,7 +274,17 @@ def save_text(path: str, content: str):
         f.write(content)
 
 def get_chapters(raw_dir: str) -> List[str]:
-    files = [f for f in os.listdir(raw_dir) if f.endswith('.md')]
+    files = []
+    for filename in os.listdir(raw_dir):
+        path = os.path.join(raw_dir, filename)
+        if not filename.endswith(".md"):
+            continue
+        if os.path.islink(path):
+            logger.warning("Skipping symlinked chapter entry: %s", filename)
+            continue
+        if os.path.isfile(path):
+            files.append(filename)
+
     def sort_key(filename):
         match = re.search(r'第(\d+)話', filename)
         return int(match.group(1)) if match else float('inf')
@@ -331,13 +372,26 @@ def get_base_url(default_url: str) -> str:
             return coding_url
     return default_url
 
-def get_api_key(env_name: str) -> str:
-    key = os.environ.get(env_name)
-    if not key:
-        key = getattr(Config, "CODING_PLAN_API_KEY", None)
-    return key or "mock-key"
+def get_api_key(env_name: str) -> Optional[str]:
+    return os.environ.get(env_name) or None
 
-def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
+def _is_loopback_url(base_url: str) -> bool:
+    hostname = urlsplit(base_url).hostname
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def get_openai_client(base_url: str, api_key: Optional[str]) -> AsyncOpenAI:
+    if not api_key:
+        if not _is_loopback_url(base_url):
+            raise RuntimeError("A provider-specific API key is required for this endpoint.")
+        api_key = "local-no-auth"
     return AsyncOpenAI(
         api_key=api_key,
         base_url=get_base_url(base_url)
@@ -384,11 +438,11 @@ class UnifiedAgent:
         
         choice = response.choices[0]
         if choice.finish_reason == "content_filter":
-            raise Exception("Content blocked by primary safety filter (finish_reason=content_filter)")
+            raise ContentBlockedError("Content blocked by primary safety filter (finish_reason=content_filter)")
             
         text = choice.message.content or ""
         if "Content blocked" in text:
-            raise Exception("Content blocked by primary safety filter (Content blocked in text)")
+            raise ContentBlockedError("Content blocked by primary safety filter (Content blocked in text)")
             
         if self.response_schema:
             res_dict = extract_json(text)
@@ -456,9 +510,20 @@ class UnifiedAgent:
         
         try:
             return await self._call_primary(user_prompt, full_sys)
-        except Exception as e:
-            print(f"Warning: Primary model {self.model_name} invocation failed: {e}. Switching to Gemini fallback...")
+        except Exception as primary_error:
+            if not Config.GEMINI_FALLBACK_ENABLED or isinstance(primary_error, ContentBlockedError):
+                raise
+            if not get_api_key("GEMINI_API_KEY"):
+                raise RuntimeError(
+                    "Gemini fallback is enabled, but GEMINI_API_KEY is not configured."
+                )
+            logger.warning("Primary model invocation failed; explicit Gemini fallback is enabled.")
             return await self._call_gemini(user_prompt, full_sys)
+
+
+class ContentBlockedError(RuntimeError):
+    pass
+
 
 # Alias for backwards compatibility with tests
 GeminiAgent = UnifiedAgent
@@ -606,7 +671,13 @@ class TranslationPipeline:
         if isinstance(res, dict) and "annotated_paragraphs" in res:
             if not res["annotated_paragraphs"] and "TEST_WORKSPACE_DIR" in os.environ:
                 return [{"paragraph": "mock", "speaker": "A", "context_hint": "mock"}] * len(raw_paras)
-            return res["annotated_paragraphs"]
+            annotated = res["annotated_paragraphs"]
+            try:
+                require_aligned_paragraphs(raw_paras, annotated, "Annotation")
+            except ValueError:
+                logger.warning("Annotation returned a mismatched paragraph count; using source paragraphs.")
+                return [{"paragraph": p, "speaker": "unknown", "context_hint": ""} for p in raw_paras]
+            return annotated
         return [{"paragraph": p, "speaker": "unknown", "context_hint": ""} for p in raw_paras]
 
     async def _run_translation_phase(self, raw_text: str, static_context: str, glossary_matches: list, annotated_context: Optional[List[Dict[str, str]]] = None) -> List[str]:
@@ -668,7 +739,9 @@ class TranslationPipeline:
         if isinstance(res, dict) and "translated_paragraphs" in res:
             if not res["translated_paragraphs"] and "TEST_WORKSPACE_DIR" in os.environ:
                 return ["mock translation"] * len(raw_paras)
-            return res["translated_paragraphs"]
+            translated = res["translated_paragraphs"]
+            require_aligned_paragraphs(raw_paras, translated, "Translation")
+            return translated
         print("Invalid translation response:", res)
         return []
 
@@ -696,8 +769,9 @@ class TranslationPipeline:
             }
         }
         
-        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        raw_paras = split_paragraphs(raw_text)
         current_translation = raw_translation_list
+        require_aligned_paragraphs(raw_paras, current_translation, "Initial translation")
         
         max_retries = 2
         for attempt in range(max_retries + 1):
@@ -716,6 +790,10 @@ class TranslationPipeline:
             severity = proofread_res.get("severity", "none")
             critique = proofread_res.get("critique", "")
             corrected_list = proofread_res.get("corrected_text", current_translation)
+            if not isinstance(corrected_list, list) or len(corrected_list) != len(raw_paras):
+                logger.warning("Proofreader returned a mismatched paragraph count; retaining the previous translation.")
+                corrected_list = current_translation
+                break
             
             if severity == "severe" and Config.STRICT_REFLECTION_MODE and attempt < max_retries:
                 print(f"Severe errors detected: {critique}. Triggering reflection loop (Retry {attempt+1}/{max_retries})...")
@@ -784,6 +862,7 @@ class TranslationPipeline:
         }
         
         polisher = UnifiedAgent(Config.STYLE_MODEL, polish_instr, response_schema=polish_schema, static_context=static_context, **Config.POLISHER_PARAMS)
+        require_aligned_paragraphs(raw_paras, corrected_list, "Proofreading")
         polish_input = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, corrected_list)]
         polish_json = json.dumps(polish_input, ensure_ascii=False, indent=2)
         polish_prompt = f"请润色以下翻译（要求返回1:1映射的JSON数组）：\n```json\n{polish_json}\n```"
@@ -799,18 +878,18 @@ class TranslationPipeline:
         return corrected_list
 
     async def run_chapter(self, chapter_filename: str):
-        # Sanitize chapter_filename to prevent path traversal
-        clean_filename = os.path.normpath('/' + chapter_filename).lstrip('/')
-
-        output_path = os.path.join(Config.OUTPUT_DIR, clean_filename)
-        if os.path.exists(output_path):
-            print(f">>> Skipping {clean_filename}")
+        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+        output_path = resolve_child_path(
+            Config.OUTPUT_DIR, chapter_filename, allow_missing=True
+        )
+        if output_path.exists():
+            print(f">>> Skipping {chapter_filename}")
             return
             
-        raw_text = load_text(os.path.join(Config.RAW_DIR, clean_filename))
+        raw_text = read_child_text(Config.RAW_DIR, chapter_filename)
         if not raw_text.strip():
             print(f"Chapter {chapter_filename} is empty. Writing empty output.")
-            save_text(output_path, "")
+            write_new_child_text(Config.OUTPUT_DIR, chapter_filename, "")
             return
         current_chap_num = extract_chapter_num(chapter_filename)
         
@@ -830,20 +909,31 @@ class TranslationPipeline:
         final_list = await self._run_refinement_loop(raw_text, raw_translation_list, static_context, glossary_matches, annotated_context)
         
         if final_list:
+            raw_paras = split_paragraphs(raw_text)
+            require_aligned_paragraphs(raw_paras, final_list, "Final translation")
             final_text = "\n\n".join(final_list)
-            save_text(output_path, final_text)
-            raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-            trans_paras = [p.strip() for p in final_text.split("\n\n") if p.strip()]
-            pairs = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, trans_paras)]
+            pairs = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, final_list)]
+            write_new_child_text(Config.OUTPUT_DIR, chapter_filename, final_text)
             self.rag.update_translation_memory(chapter_filename, pairs)
             print(f"SUCCESS: {chapter_filename}")
         else:
             raise RuntimeError(f"FAILED: {chapter_filename}: Refinement returned empty results.")
 
     async def run_all(self):
-        if not get_api_key("GEMINI_API_KEY") and not get_api_key("DEEPSEEK_API_KEY"):
-            print("ERROR: API keys not found in environment.")
-            return
+        required_keys = {"GEMINI_API_KEY"}
+        for model in (Config.INITIAL_MODEL, Config.PROOFREAD_MODEL, Config.STYLE_MODEL):
+            is_sakura = "sakura" in model.lower() or "qwen3.6-plus" in model.lower()
+            env_name = "SAKURA_API_KEY" if is_sakura else "DEEPSEEK_API_KEY"
+            endpoint = Config.SAKURA_BASE_URL if is_sakura else Config.DEEPSEEK_BASE_URL
+            if not _is_loopback_url(get_base_url(endpoint)):
+                required_keys.add(env_name)
+        if Config.GEMINI_FALLBACK_ENABLED:
+            required_keys.add("GEMINI_API_KEY")
+        missing = sorted(name for name in required_keys if not get_api_key(name))
+        if os.environ.get("MOCK_SERVER_PORT"):
+            missing = [name for name in missing if name != "GEMINI_API_KEY"]
+        if missing:
+            raise RuntimeError(f"Missing required provider credentials: {', '.join(missing)}")
             
         chapters = get_chapters(Config.RAW_DIR)
         print(f"Starting pipeline for {len(chapters)} chapters...")

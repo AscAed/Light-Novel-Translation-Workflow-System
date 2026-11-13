@@ -9,7 +9,7 @@ import logging
 import json
 import re
 import numpy as np
-from utils import extract_chapter_num
+from utils import extract_chapter_num, read_child_text
 import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
@@ -77,16 +77,22 @@ class RAGEngine:
             try:
                 with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
-                    return res_data.get("embedding", {}).get("values", [0.1] * 768)
+                    values = res_data.get("embedding", {}).get("values")
+                    if not isinstance(values, list) or not values:
+                        raise RuntimeError("Mock embedding response did not contain vector values.")
+                    return values
             except (TimeoutError, urllib.error.URLError) as e:
                 logger.warning(f"Mock server request failed (timeout or URL error): {e}")
-                return [0.1] * 768
+                raise RuntimeError("Mock embedding request failed.") from e
             except Exception as e:
                 logger.warning(f"Mock server request failed with unexpected error: {e}")
-                return [0.1] * 768
+                raise RuntimeError("Mock embedding request failed.") from e
         else:
             from google import genai
-            client = genai.Client()
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise RuntimeError("GEMINI_API_KEY is required for Gemini embeddings.")
+            client = genai.Client(api_key=api_key)
             response = client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
@@ -195,20 +201,17 @@ class RAGEngine:
     def _load_current_chapter_raw(self, chapter_filename: str) -> str:
         """Attempt to read raw chapter text from expected locations."""
         base_dir = os.path.dirname(os.path.dirname(self.guidelines_path))
-        paths_to_try = [
-            os.path.join(base_dir, "生肉", chapter_filename),
-            os.path.join(base_dir, "生肉", "1.神んてらの世界", chapter_filename),
-            os.path.join(os.getcwd(), "生肉", chapter_filename),
-            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界", chapter_filename),
+        raw_roots = [
+            os.path.join(base_dir, "生肉"),
+            os.path.join(base_dir, "生肉", "1.神んてらの世界"),
+            os.path.join(os.getcwd(), "生肉"),
+            os.path.join(os.getcwd(), "生肉", "1.神んてらの世界"),
         ]
-        for p in paths_to_try:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        return f.read()
-                except Exception as e:
-                    logger.warning(f"Failed to read raw chapter from {p}: {e}")
-                    pass
+        for root in raw_roots:
+            try:
+                return read_child_text(root, chapter_filename)
+            except (OSError, ValueError):
+                continue
         return ""
 
     def _find_tm_filename(self, chap_num: float) -> Optional[str]:
@@ -310,7 +313,7 @@ class RAGEngine:
                     embedding = self._generate_embedding_sync(raw_text)
                 except Exception as e:
                     logger.warning(f"Failed to generate embedding for raw text: {e}")
-                    embedding = [0.1] * 768
+                    embedding = []
             new_pairs.append({
                 "raw": raw_text,
                 "translated": translated_text,

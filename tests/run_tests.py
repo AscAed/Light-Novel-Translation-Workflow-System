@@ -58,13 +58,14 @@ def main():
     print("Mock server is healthy and ready.")
     
     # 4. Run the unittest suite
-    test_script = os.path.join(project_root, "tests", "test_e2e.py")
+    test_targets = sys.argv[1:] or ["tests.test_e2e"]
     env = os.environ.copy()
     env["MOCK_SERVER_PORT"] = str(port)
+    env["GEMINI_API_KEY"] = "mock-test-key"
     
     print("\nRunning E2E tests...")
     test_proc = subprocess.run(
-        [sys.executable, "-m", "unittest", test_script],
+        [sys.executable, "-m", "unittest", *test_targets],
         env=env
     )
     

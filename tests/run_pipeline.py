@@ -187,6 +187,10 @@ if has_rag_engine:
     pipeline.Config.GUIDELINES_PATH = os.environ.get("TEST_GUIDELINES_PATH", pipeline.Config.GUIDELINES_PATH)
     pipeline.Config.INFO_PATH = os.environ.get("TEST_INFO_PATH", pipeline.Config.INFO_PATH)
     pipeline.Config.STORY_SUMMARY_PATH = os.environ.get("TEST_STORY_SUMMARY_PATH", pipeline.Config.STORY_SUMMARY_PATH)
+    pipeline.Config.TM_PATH = os.environ.get("TEST_TM_PATH", pipeline.Config.TM_PATH)
+    pipeline.Config.GEMINI_FALLBACK_ENABLED = os.environ.get("ENABLE_GEMINI_FALLBACK", "").lower() in {
+        "1", "true", "yes", "on"
+    }
     
     mock_port = os.environ.get("MOCK_SERVER_PORT", "6006")
     pipeline.Config.CODING_PLAN_BASE_URL = f"http://127.0.0.1:{mock_port}/v1"

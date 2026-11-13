@@ -1,24 +1,5 @@
-# E2E Test Suite Ready
+# 旧版测试就绪声明（已过期）
 
-## Test Runner
-- Command: `python tests/run_tests.py`
-- Expected: all tests pass with exit code 0
+早期文档中的“71 项”和“测试就绪”不可视为当前测试数量、覆盖率或通过证明。
 
-## Coverage Summary
-| Tier | Count | Description |
-|------|------:|-------------|
-| 1. Feature Coverage | 30 | 5 test cases per feature covering happy paths |
-| 2. Boundary & Corner | 30 | 5 test cases per feature covering limit/error inputs |
-| 3. Cross-Feature | 6 | Pairwise interactions of major RAG/API features |
-| 4. Real-World Application | 5 | Multi-chapter runs, safety failover, glossary metadata cleaning |
-| **Total** | **71** | |
-
-## Feature Checklist
-| Feature | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
-|---------|:------:|:------:|:------:|:------:|
-| F1: Translation Memory | 5 | 5 | ✓ | ✓ |
-| F2: Glossary Parser | 5 | 5 | ✓ | ✓ |
-| F3: Partitioned Guidelines | 5 | 5 | ✓ | ✓ |
-| F4: Sakura/DeepSeek API | 5 | 5 | ✓ | ✓ |
-| F5: Safety Fallback | 5 | 5 | ✓ | ✓ |
-| F6: Formatting Assertions | 5 | 5 | ✓ | ✓ |
+当前测试命令、运行条件、限制和最近一次结果见[开发与验证](docs/development.md)及[项目现状](docs/project-status.md)。在依赖和临时目录问题解决且实际运行通过前，不得标注测试套件为就绪。

@@ -173,6 +173,29 @@ Chapter 2 specific guidelines.
             data = json.load(f)
             self.assertIn("第2話.md", data["chapters"])
 
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", side_effect=RuntimeError("offline"))
+    def test_embedding_failure_does_not_store_a_synthetic_vector(self, mock_embed):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.update_translation_memory(
+            "第3話.md",
+            [{"raw": "新原文", "translated": "新译文"}],
+        )
+
+        saved_pair = engine.tm_data["chapters"]["第3話.md"][0]
+        self.assertEqual(saved_pair["raw"], "新原文")
+        self.assertEqual(saved_pair["translated"], "新译文")
+        self.assertEqual(saved_pair["embedding"], [])
+
+    def test_mock_embedding_response_without_values_is_rejected(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"{}"
+        with patch.dict(os.environ, {"MOCK_SERVER_PORT": "1234"}):
+            with patch("urllib.request.urlopen", return_value=response):
+                engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+                with self.assertRaisesRegex(RuntimeError, "Mock embedding request failed"):
+                    engine._generate_embedding_sync("query")
+
 
 if __name__ == "__main__":
     unittest.main()
