@@ -3,6 +3,12 @@
 # Compliant with Australian English spelling conventions.
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
+from types import ModuleType, SimpleNamespace
+import sys
 from scripts.align_chapters import (
     is_translator_note,
     is_dialogue_anchor,
@@ -12,7 +18,9 @@ from scripts.align_chapters import (
     align_anchor_guided,
     gc_cost,
     gale_church_align,
-    align_chapter
+    align_chapter,
+    generate_embeddings_batched,
+    load_existing_tm,
 )
 
 
@@ -114,6 +122,39 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
         trans_mismatch = ["trans_nav1", "trans_nav2"]  # no quote
         # Gale-Church should align them
         self.assertTrue(len(align_chapter("\n\n".join(raw_mismatch), "\n\n".join(trans_mismatch))) > 0)
+
+    def test_no_dialogue_anchors_with_mismatched_counts_uses_gale_church(self):
+        aligned = align_chapter("原文一\n\n原文二", "译文段落")
+        self.assertEqual(len(aligned), 1)
+        self.assertEqual(aligned[0], ("原文一\n\n原文二", "译文段落"))
+
+    def test_corrupt_translation_memory_is_rejected_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "translation_memory.json"
+            path.write_text("{invalid", encoding="utf-8")
+
+            with self.assertRaises(json.JSONDecodeError):
+                load_existing_tm(str(path))
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "{invalid")
+
+    def test_translation_memory_requires_chapters_object(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "translation_memory.json"
+            path.write_text('{"entries": []}', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "chapters object"):
+                load_existing_tm(str(path))
+
+    def test_embedding_count_mismatch_is_rejected(self):
+        client = Mock()
+        client.models.embed_content.return_value = SimpleNamespace(embeddings=[])
+        google_module = ModuleType("google")
+        google_module.genai = SimpleNamespace(Client=Mock(return_value=client))
+
+        with patch.dict(sys.modules, {"google": google_module}):
+            with self.assertRaisesRegex(RuntimeError, "count did not match"):
+                generate_embeddings_batched(["raw paragraph"])
 
 
 if __name__ == "__main__":

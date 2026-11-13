@@ -186,6 +186,19 @@ Chapter 2 specific guidelines.
         self.assertEqual(saved_pair["translated"], "新译文")
         self.assertEqual(saved_pair["embedding"], [])
 
+    @patch("rag_engine.write_text_atomically", side_effect=OSError("disk full"))
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
+    def test_translation_memory_persistence_failure_is_reported(self, mock_embed, mock_write):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        with self.assertRaisesRegex(OSError, "disk full"):
+            engine.update_translation_memory(
+                "第3話.md",
+                [{"raw": "新原文", "translated": "新译文"}],
+            )
+
+        mock_write.assert_called_once()
+
     def test_mock_embedding_response_without_values_is_rejected(self):
         response = MagicMock()
         response.__enter__.return_value = response

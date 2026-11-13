@@ -8,6 +8,9 @@ import logging
 import json
 import re
 import math
+from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils import read_child_text, write_text_atomically
 
 # If running in a test context, dynamically mock the google-genai library
 # so the script calls the local mock server instead of real API endpoints.
@@ -36,19 +39,11 @@ if mock_port:
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
-                    val = res_data.get("embedding", {}).get("values", [0.1] * 768)
-            except urllib.error.URLError as e:
-                if isinstance(e.reason, TimeoutError):
-                    logging.exception(f"Warning: Mock Gemini API request timed out after {timeout} seconds.")
-                else:
-                    logging.exception(f"Warning: Mock Gemini API request failed: {e}")
-                val = [0.1] * 768
-            except TimeoutError:
-                logging.exception(f"Warning: Mock Gemini API request timed out after {timeout} seconds.")
-                val = [0.1] * 768
-            except Exception as e:
-                logging.exception(f"Warning: Mock Gemini API request encountered an unexpected error: {e}")
-                val = [0.1] * 768
+            except Exception as exc:
+                raise RuntimeError("Mock Gemini embedding request failed.") from exc
+            val = res_data.get("embedding", {}).get("values")
+            if not isinstance(val, list) or not val:
+                raise RuntimeError("Mock embedding response did not contain vector values.")
             return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
 
     class MockClient:
@@ -95,6 +90,8 @@ def check_anchors_match(raw_paras: list[str], trans_paras: list[str]) -> bool:
     """Validate whether dialogue anchors match exactly in count and types."""
     raw_anchors = [p for p in raw_paras if is_dialogue_anchor(p)]
     trans_anchors = [p for p in trans_paras if is_dialogue_anchor(p)]
+    if not raw_anchors and len(raw_paras) != len(trans_paras):
+        return False
     if len(raw_anchors) != len(trans_anchors):
         return False
     for r, t in zip(raw_anchors, trans_anchors):
@@ -217,37 +214,56 @@ def align_chapter(raw_content: str, trans_content: str) -> list[tuple[str, str]]
 
 def generate_embeddings_batched(texts: list[str], batch_size: int = 50) -> list[list[float]]:
     """Generate paragraph embeddings in batches to prevent rate limits."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero.")
     from google import genai
     client = genai.Client()
     embeddings = []
+    dimensions = None
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         response = client.models.embed_content(
             model="gemini-embedding-2",
             contents=batch
         )
-        embeddings.extend([e.values for e in response.embeddings])
+        batch_embeddings = getattr(response, "embeddings", None)
+        if not isinstance(batch_embeddings, list) or len(batch_embeddings) != len(batch):
+            raise RuntimeError("Embedding response count did not match the input batch.")
+        for item in batch_embeddings:
+            values = getattr(item, "values", None)
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in values)
+            ):
+                raise RuntimeError("Embedding response contains an invalid vector.")
+            if dimensions is None:
+                dimensions = len(values)
+            elif len(values) != dimensions:
+                raise RuntimeError("Embedding dimensions changed within the response.")
+            embeddings.append(values)
     return embeddings
 
 
 def load_existing_tm(tm_path: str) -> dict:
     """Load the existing translation memory database if it exists."""
-    if os.path.exists(tm_path):
-        try:
-            with open(tm_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict) and "chapters" in data:
-                    return data
-        except Exception:
-            pass
-    return {"chapters": {}}
+    path = Path(tm_path)
+    if path.is_symlink():
+        raise ValueError("Symbolic links are not allowed for translation memory.")
+    if not path.exists():
+        return {"chapters": {}}
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not isinstance(data.get("chapters"), dict):
+        raise ValueError("Translation memory must contain a chapters object.")
+    return data
 
 
 def save_tm(tm_path: str, tm_data: dict):
     """Save the updated translation memory database to disk."""
-    os.makedirs(os.path.dirname(tm_path), exist_ok=True)
-    with open(tm_path, "w", encoding="utf-8") as f:
-        json.dump(tm_data, f, ensure_ascii=False, indent=2)
+    if not isinstance(tm_data, dict) or not isinstance(tm_data.get("chapters"), dict):
+        raise ValueError("Translation memory must contain a chapters object.")
+    write_text_atomically(tm_path, json.dumps(tm_data, ensure_ascii=False, indent=2))
 
 
 def main():
@@ -281,17 +297,13 @@ def main():
     tm_data = load_existing_tm(tm_path)
 
     for f in raw_files:
-        raw_file_path = os.path.join(raw_dir, f)
-        translated_file_path = os.path.join(output_dir, f)
-
-        if not os.path.exists(translated_file_path):
+        try:
+            translated_content = read_child_text(output_dir, f)
+        except FileNotFoundError:
             print(f"Skipping {f} (translation not found)")
             continue
 
-        with open(raw_file_path, "r", encoding="utf-8") as file:
-            raw_content = file.read()
-        with open(translated_file_path, "r", encoding="utf-8") as file:
-            translated_content = file.read()
+        raw_content = read_child_text(raw_dir, f)
 
         try:
             aligned_pairs = align_chapter(raw_content, translated_content)

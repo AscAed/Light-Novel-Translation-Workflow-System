@@ -4,16 +4,13 @@
 
 import logging
 import os
-
-import logging
 import json
 import re
 import numpy as np
-from utils import extract_chapter_num, read_child_text
-import logging
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
-from utils import extract_chapter_num
+from pathlib import Path
+from utils import extract_chapter_num, read_child_text, write_text_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +28,16 @@ class RAGEngine:
 
         # Initialise translation memory
         self.tm_data = {"chapters": {}}
-        if os.path.exists(self.tm_path):
+        tm_file = Path(self.tm_path)
+        if tm_file.is_symlink():
+            raise ValueError("Symbolic links are not allowed for translation memory.")
+        if tm_file.exists():
             try:
-                with open(self.tm_path, "r", encoding="utf-8") as f:
+                with tm_file.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if isinstance(data, dict) and "chapters" in data:
-                        self.tm_data = data
+                if not isinstance(data, dict) or not isinstance(data.get("chapters"), dict):
+                    raise ValueError("Translation memory must contain a chapters object.")
+                self.tm_data = data
             except json.JSONDecodeError as e:
                 self.logger.error(f"Failed to decode translation memory JSON file '{self.tm_path}': {e}")
                 raise
@@ -325,8 +326,8 @@ class RAGEngine:
             del self._chapter_tm_embeddings_cache[chapter_filename]
 
         try:
-            os.makedirs(os.path.dirname(self.tm_path), exist_ok=True)
-            with open(self.tm_path, "w", encoding="utf-8") as f:
-                json.dump(self.tm_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to write translation memory to {self.tm_path}: {e}")
+            content = json.dumps(self.tm_data, ensure_ascii=False, indent=2)
+            write_text_atomically(self.tm_path, content)
+        except Exception:
+            logger.exception("Failed to write translation memory to %s", self.tm_path)
+            raise

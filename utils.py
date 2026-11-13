@@ -1,5 +1,6 @@
 import re
 import os
+import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import List, Optional
 
@@ -44,6 +45,36 @@ def write_new_child_text(root: str, filename: str, content: str) -> None:
     descriptor = os.open(path, flags, 0o666)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         stream.write(content)
+
+
+def write_text_atomically(path: str, content: str) -> None:
+    """Replace a file atomically, leaving its previous contents intact on failure."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError("Symbolic links are not allowed for persisted data.")
+
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = -1
+        with stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, target)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def split_paragraphs(text: str) -> List[str]:
