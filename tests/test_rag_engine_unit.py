@@ -131,6 +131,18 @@ Chapter 2 specific guidelines.
         self.assertIn("Chapter 1 specific guidelines.", res)
         self.assertNotIn("Chapter 2 specific guidelines.", res)
 
+    def test_mapped_filename_uses_chapter_number_not_volume_number(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.guidelines_raw = (
+            "《翻译指导原则》 - [第 2 章]\nVolume 2 guidance.\n"
+            "《翻译指导原则》 - [第 10 章]\nChapter 10 guidance."
+        )
+
+        result = engine.get_partitioned_guidelines("Volume 2/chapter10.md")
+
+        self.assertIn("Chapter 10 guidance.", result)
+        self.assertNotIn("Volume 2 guidance.", result)
+
     @patch("rag_engine.RAGEngine._load_current_chapter_raw")
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_get_partitioned_guidelines_absolute_fallback(self, mock_embed, mock_load):

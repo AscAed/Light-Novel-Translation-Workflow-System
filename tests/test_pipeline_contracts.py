@@ -24,8 +24,10 @@ from pipeline import (
     _resolve_project_content_dir,
 )
 from utils import (
+    extract_chapter_num,
     parse_provider_data_policy,
     require_aligned_annotations,
+    require_aligned_paragraphs,
     require_provider_data_authorized,
 )
 
@@ -765,15 +767,15 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             root = Path(temp_dir)
             raw_dir = root / "raw"
             output_dir = root / "translated"
-            (raw_dir / "Volume 1").mkdir(parents=True)
+            (raw_dir / "Volume 2").mkdir(parents=True)
             (output_dir / "Ntera").mkdir(parents=True)
-            (raw_dir / "Volume 1" / "第1話.md").write_text(
+            (raw_dir / "Volume 2" / "chapter10.md").write_text(
                 "synthetic source", encoding="utf-8"
             )
             spec = ChapterSpec(
-                "Volume 1/第1話.md",
-                "Ntera/第1話.md",
-                "Volume1/第1話.md",
+                "Volume 2/chapter10.md",
+                "Ntera/chapter10.md",
+                "Volume2/chapter10.md",
             )
             pipeline = TranslationPipeline.__new__(TranslationPipeline)
             pipeline.rag = SimpleNamespace(
@@ -795,21 +797,71 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
                     await pipeline.run_chapter(spec)
 
-            output_path = output_dir / "Ntera" / "第1話.md"
+            output_path = output_dir / "Ntera" / "chapter10.md"
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
                 "synthetic translation",
             )
+            self.assertEqual(
+                pipeline._build_run_context.await_args.args,
+                ("Volume 2/chapter10.md", "synthetic source", 10.0),
+            )
             pipeline.rag.update_translation_memory.assert_called_once()
             self.assertEqual(
                 pipeline.rag.update_translation_memory.call_args.args[0],
-                "Volume1/第1話.md",
+                "Volume2/chapter10.md",
             )
             provenance = pipeline.rag.update_translation_memory.call_args.kwargs[
                 "source_provenance"
             ]
-            self.assertEqual(provenance["raw_file"], "Volume 1/第1話.md")
-            self.assertEqual(provenance["translation_file"], "Ntera/第1話.md")
+            self.assertEqual(provenance["raw_file"], "Volume 2/chapter10.md")
+            self.assertEqual(provenance["translation_file"], "Ntera/chapter10.md")
+
+    async def test_run_chapter_rejects_embedded_paragraph_break_before_persisting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_dir = Path(temp_dir) / "raw"
+            output_dir = Path(temp_dir) / "translated"
+            raw_dir.mkdir()
+            (raw_dir / "第1話.md").write_text(
+                "synthetic source", encoding="utf-8"
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(return_value=["valid"])
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["first paragraph\n\nextra paragraph"]
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with self.assertRaisesRegex(
+                        ValueError, "multiple paragraphs at index 1"
+                    ):
+                        await pipeline.run_chapter("第1話.md")
+
+            self.assertFalse((output_dir / "第1話.md").exists())
+            pipeline.rag.update_translation_memory.assert_not_called()
+
+    def test_aligned_paragraphs_trim_boundary_whitespace_and_reject_blank_lines(self):
+        target = ["  translated text  "]
+        require_aligned_paragraphs(["source"], target, "Test")
+        self.assertEqual(target, ["translated text"])
+
+        with self.assertRaisesRegex(ValueError, "multiple paragraphs at index 1"):
+            require_aligned_paragraphs(
+                ["source"], ["first\n \nsecond"], "Test"
+            )
+
+    def test_chapter_number_uses_filename_not_parent_directory(self):
+        self.assertEqual(extract_chapter_num("Volume 2/chapter10.md"), 10.0)
+        self.assertEqual(extract_chapter_num(r"Volume 2\chapter10.md"), 10.0)
 
     async def test_tm_persistence_failure_leaves_output_and_warns_on_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:

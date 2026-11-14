@@ -331,6 +331,12 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
             raise ValueError(
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
+        normalized = paragraph.strip()
+        if re.search(r"(?:\r?\n)[ \t]*(?:\r?\n)", normalized):
+            raise ValueError(
+                f"{stage} returned multiple paragraphs at index {index}."
+            )
+        target[index - 1] = normalized
 
 
 def require_aligned_annotations(source: List[str], target: List, stage: str) -> None:
@@ -359,6 +365,7 @@ def extract_chapter_num(filename: str, default: Optional[float] = None) -> Optio
     First tries to match standard format (第...話/话), then falls back to any number.
     Returns the default value if no number is found.
     """
+    filename = str(filename).replace("\\", "/").rsplit("/", 1)[-1]
     match = re.search(r"第\s*(\d+(?:\.\d+)?)\s*[話话]", filename)
     if match:
         try:

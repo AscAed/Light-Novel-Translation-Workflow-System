@@ -116,6 +116,15 @@ python -m pip install -r requirements.txt
 
 ## 最近一次验证记录
 
+### 2026-11-14 PR #56 复审修复
+
+- 段落校验先去除模型输出的首尾空白，再拒绝段落项内部的空行；因此译文序列化后的段落数仍与 TM `source_provenance` 一对一索引相符。回归确认拒绝发生在译文和 TM 落盘前。
+- `extract_chapter_num` 仅解析路径最后的文件名，兼容 `/` 和 `\`；多卷映射中的 `Volume 2/chapter10.md` 会选择第 10 章的故事摘要窗口及分章指导。
+- `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q`：129 项运行、126 项通过、3 项因 Windows 未授予符号链接创建权限跳过、0 项失败。
+- `.venv\Scripts\python.exe tests\run_tests.py`：4 个本地 mock E2E 方法通过，214.490 秒，退出码 0。修改涉及的 Python 文件 `py_compile`、`git diff --check` 通过。
+- 用户在普通 PowerShell 中复跑 `tests.test_security_path_traversal`：9 项运行、6 项通过、3 项仍因符号链接权限跳过；该运行未获得管理员令牌。
+- PR 自动审查曾报告两项 P2，分别涉及段落来源索引与嵌套路径章节号；以上修改和回归针对这两项。验证只使用合成 fixture 与本地 mock，未调用真实 Provider 或部署服务。
+
 ### 2026-11-14 TM 来源审计 CLI 输出边界
 
 - `scripts/validate_tm_provenance.py` 在 CLI 输出章节键、审计详情和异常消息前，将不可打印字符转成可见 `\uNNNN` / `\UNNNNNNNN` 文本；普通可打印 Unicode 保持原样，审计 findings API 不变。

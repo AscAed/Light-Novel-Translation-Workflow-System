@@ -118,3 +118,10 @@
 - 同一 CLI 拒绝空白 `TEST_WORKSPACE_DIR`，并在调用 `Config.load_config` 前返回错误；回归测试确认配置加载器不会被调用，避免空值被解析为系统临时目录。
 - 修复后 `tests.test_tm_provenance_unit` 14 项通过；六模块定向单测 125 项运行、122 项通过、3 项因 Windows 符号链接权限跳过、0 项失败；mock E2E 4 项通过（222.269 秒，退出码 0）；Python 编译及 `git diff --check` 通过。具体命令见 `docs/development.md`。
 - 剩余不确定性：支持的终端及 OSC 行为、真实部署是否配置转发代理/Provider gateway、真实凭据与 `PROVIDER_DATA_POLICY` 的变更权限均未检查。扫描用量遥测不代表 5 小时额度余量；额度状态仍不可见。
+
+## PR #56 复审跟进（2026-11-14）
+
+- 首轮 Codex PR Review 在 `3a7b665` 报告两项 P2：模型段落字符串含内部空行时，TM 来源索引与写出的 Markdown 段落数可能错位；嵌套映射路径中的卷号可能被误解析成章节号。
+- 已修复：共享段落校验会规范化首尾空白并拒绝内部空行；章节号提取现在只检查文件名末段。新增流水线回归确认格式错误在任何文件/TM 写入前被拒绝；另覆盖 `Volume 2/chapter10.md` 的摘要和指导都采用第 10 章。
+- 修复后六模块定向单测 129 项运行、126 项通过、3 项因 Windows 符号链接创建权限跳过、0 项失败；4 个 mock E2E 通过（214.490 秒）；编译和 `git diff --check` 通过，详见 `docs/development.md`。
+- 用户普通 PowerShell 复跑路径安全模块为 9 项运行、3 项跳过；系统未授予符号链接创建权限，当前执行器也不能取得 Windows 管理员令牌，故这 3 项仍未实测。
