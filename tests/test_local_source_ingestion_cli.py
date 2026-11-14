@@ -162,6 +162,22 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         self.assertEqual(manifest_source.read_bytes(), original_bytes)
         self.assertFalse((self.source_root / "source_checkpoint.json").exists())
 
+    def test_cli_rejects_manifest_that_aliases_the_catalog(self):
+        self._write_catalog([])
+        catalog_path = self.source_root / "catalog.json"
+        original_bytes = catalog_path.read_bytes()
+
+        result, stdout, stderr = self._run_cli(
+            output_root=self.source_root,
+            manifest="catalog.json",
+        )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertEqual(catalog_path.read_bytes(), original_bytes)
+        self.assertFalse((self.source_root / "source_checkpoint.json").exists())
+
     def test_cli_rejects_checkpoint_that_aliases_a_listed_source_file(self):
         checkpoint_source = self.source_root / "source_checkpoint.json"
         checkpoint_source.write_bytes(b"synthetic source checkpoint input")
