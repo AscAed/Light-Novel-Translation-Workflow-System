@@ -89,7 +89,13 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         metadata_artifact = next(
             artifact
             for artifact in manifest["artifacts"]
-            if artifact["artifact_id"] == "synthetic-work:episode:episode-10"
+            if artifact["kind"] == "episode"
+            and json.loads(
+                (self.output_root / artifact["relative_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )["episode_id"]
+            == "episode-10"
         )
         metadata = json.loads(
             (self.output_root / metadata_artifact["relative_path"]).read_text(

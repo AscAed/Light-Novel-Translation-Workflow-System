@@ -27,7 +27,7 @@
 - `部分实现` 路径边界：章节映射路径拒绝绝对路径、路径穿越和符号链接，译文/草稿采用排他新建，TM 采用原子替换；显式配置根目录仍由操作者负责，平台级并发链接竞态未完全封闭。
 - `部分实现` 配置：支持环境变量、项目目录及 JSON 配置路径；`API_TIMEOUT` 默认 10 秒并拒绝非有限或非正数，覆盖 OpenAI-compatible 聊天、Gemini 生成、RAG 和章节对齐 embedding；远端数据按 `PROVIDER_DATA_POLICY` 最小类别授权，默认拒绝。有基础 `requirements.txt`，但依赖未锁定，也没有完整部署配置。
 - `部分实现` 来源版本清单：`source_manifest.py` 提供本地 JSON schema v1、版本追加、SHA-256/相对路径语法和父版本图校验；图校验使用迭代算法，不受 Python 调用栈深度限制。`verify_manifest_files` 使用显式根目录和仓库现有安全路径解析，只读取清单列出的文件并核对原始字节哈希；`scripts/validate_source_manifest.py` 提供只读 CLI。目录扫描、生命周期状态/迁移、清单与流水线集成、采集和外部同步均未实现。
-- `部分实现` 来源接入核心：`source_ingestion.py` 定义注入式 `SourceAdapter` 和显式路径 `LocalFileAdapter`，`scripts/ingest_local_sources.py` 按 JSON catalog 只读归档指定本地文件。checkpoint v3 绑定适配器 `source_fingerprint`；本地指纹包含 catalog 顺序、元数据、相对路径和源文件 SHA-256，读取时复核文件未变化。快照变化拒绝恢复；无指纹的未完成 v1/v2 checkpoint 不自动续传，已完成旧 checkpoint 可迁移。source_ref 写入 episode metadata。无 HTTP 客户端、具体站点解析器、缺失/删除差分或 live 采集；未接入流水线。
+- `部分实现` 来源接入核心：`source_ingestion.py` 定义注入式 `SourceAdapter` 和显式路径 `LocalFileAdapter`，`scripts/ingest_local_sources.py` 按 JSON catalog 只读归档指定本地文件。checkpoint v4 同时绑定适配器 `source_fingerprint` 和目标 manifest 相对路径；本地指纹包含 catalog 顺序、元数据、相对路径和源文件 SHA-256，读取时复核文件未变化。快照或目标不匹配均拒绝恢复；缺少目标身份的旧 checkpoint 仅在无已完成条目时迁移，未完成 v1/v2 因缺少来源指纹拒绝恢复。artifact ID 由作品、类型和章节标识的规范化元组派生。source_ref 写入 episode metadata。无 HTTP 客户端、具体站点解析器、缺失/删除差分或 live 采集；未接入流水线。
 
 ## 计划
 

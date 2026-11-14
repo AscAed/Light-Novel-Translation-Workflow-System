@@ -12,7 +12,7 @@ from source_manifest import append_artifact, load_manifest, new_manifest
 from utils import open_regular_file, resolve_relative_path, write_text_atomically
 
 
-CHECKPOINT_SCHEMA_VERSION = 3
+CHECKPOINT_SCHEMA_VERSION = 4
 _LEGACY_CHECKPOINT_FIELDS = frozenset(
     {
         "schema_version",
@@ -28,7 +28,8 @@ _LEGACY_CHECKPOINT_FIELDS = frozenset(
         "pause_reason",
     }
 )
-_CHECKPOINT_FIELDS = _LEGACY_CHECKPOINT_FIELDS | {"source_fingerprint"}
+_CHECKPOINT_V3_FIELDS = _LEGACY_CHECKPOINT_FIELDS | {"source_fingerprint"}
+_CHECKPOINT_FIELDS = _CHECKPOINT_V3_FIELDS | {"manifest_relative_path"}
 _EPISODE_FIELDS_V1 = frozenset({"episode_id", "title", "position"})
 _EPISODE_FIELDS = _EPISODE_FIELDS_V1 | {"source_ref"}
 _PAUSE_REASONS = frozenset(
@@ -222,15 +223,22 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
-def new_checkpoint(work_id: str, source_fingerprint: str) -> dict:
+def new_checkpoint(
+    work_id: str,
+    source_fingerprint: str,
+    manifest_relative_path: str = "source_manifest.json",
+) -> dict:
     if not _valid_identifier(work_id):
         raise ValueError("Source checkpoint requires a valid work_id.")
     if not _valid_identifier(source_fingerprint):
         raise ValueError("Source checkpoint requires a valid source_fingerprint.")
+    if not _valid_identifier(manifest_relative_path):
+        raise ValueError("Source checkpoint requires a valid manifest path.")
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "work_id": work_id,
         "source_fingerprint": source_fingerprint,
+        "manifest_relative_path": manifest_relative_path,
         "cursor": None,
         "page_next_cursor": None,
         "page_loaded": False,
@@ -250,21 +258,26 @@ def validate_checkpoint(checkpoint: dict) -> None:
     if (
         isinstance(version, bool)
         or not isinstance(version, int)
-        or version not in {1, 2, CHECKPOINT_SCHEMA_VERSION}
+        or version not in {1, 2, 3, CHECKPOINT_SCHEMA_VERSION}
     ):
         raise ValueError("Unsupported source checkpoint schema_version.")
     expected_fields = (
         _CHECKPOINT_FIELDS if version == CHECKPOINT_SCHEMA_VERSION
+        else _CHECKPOINT_V3_FIELDS if version == 3
         else _LEGACY_CHECKPOINT_FIELDS
     )
     if set(checkpoint) != expected_fields:
         raise ValueError("Source checkpoint has an invalid field set.")
     if not _valid_identifier(checkpoint["work_id"]):
         raise ValueError("Source checkpoint has an invalid work_id.")
-    if version == CHECKPOINT_SCHEMA_VERSION and not _valid_identifier(
+    if version in {3, CHECKPOINT_SCHEMA_VERSION} and not _valid_identifier(
         checkpoint["source_fingerprint"]
     ):
         raise ValueError("Source checkpoint has an invalid source_fingerprint.")
+    if version == CHECKPOINT_SCHEMA_VERSION and not _valid_identifier(
+        checkpoint["manifest_relative_path"]
+    ):
+        raise ValueError("Source checkpoint has an invalid manifest path.")
 
     _validate_cursor(checkpoint["cursor"])
     _validate_cursor(checkpoint["page_next_cursor"])
@@ -307,7 +320,9 @@ def validate_checkpoint(checkpoint: dict) -> None:
         raise ValueError("Source checkpoint pending_episodes must be an array.")
     pending_ids = []
     for episode in pending:
-        expected_fields = _EPISODE_FIELDS if version in {2, 3} else _EPISODE_FIELDS_V1
+        expected_fields = (
+            _EPISODE_FIELDS if version in {2, 3, 4} else _EPISODE_FIELDS_V1
+        )
         if not isinstance(episode, dict) or set(episode) != expected_fields:
             raise ValueError("Source checkpoint has invalid episode metadata.")
         if not _valid_identifier(episode["episode_id"]):
@@ -502,6 +517,15 @@ def _artifact_version_id(
     return f"v-{hashlib.sha256(version_data).hexdigest()}"
 
 
+def _source_artifact_id(work_id: str, kind: str, episode_id: str) -> str:
+    identity = json.dumps(
+        [work_id, kind, episode_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"source-ingestion:v1:{hashlib.sha256(identity).hexdigest()}"
+
+
 def _latest_artifact(manifest: dict, artifact_id: str) -> dict | None:
     return next(
         (
@@ -576,7 +600,9 @@ def _persist_episode(
         separators=(",", ":"),
     ).encode("utf-8")
     metadata_hash = hashlib.sha256(metadata).hexdigest()
-    metadata_artifact_id = f"{work_id}:episode:{episode.episode_id}"
+    metadata_artifact_id = _source_artifact_id(
+        work_id, "episode", episode.episode_id
+    )
     latest_metadata = _latest_artifact(manifest, metadata_artifact_id)
 
     if latest_metadata and latest_metadata["content_sha256"] == metadata_hash:
@@ -610,7 +636,9 @@ def _persist_episode(
             metadata,
         )
 
-    raw_artifact_id = f"{work_id}:raw:{episode.episode_id}"
+    raw_artifact_id = _source_artifact_id(
+        work_id, "raw_source", episode.episode_id
+    )
     raw_hash = hashlib.sha256(content).hexdigest()
     latest_raw = _latest_artifact(manifest, raw_artifact_id)
     if (
@@ -660,9 +688,6 @@ def collect_source(
     root_path = Path(root).resolve(strict=True)
     if not root_path.is_dir():
         raise ValueError("Source collection root must be a directory.")
-    if manifest_relative_path.casefold() == checkpoint_relative_path.casefold():
-        raise ValueError("Manifest and checkpoint paths must be different.")
-
     manifest_path = resolve_relative_path(
         str(root_path),
         manifest_relative_path,
@@ -673,27 +698,51 @@ def collect_source(
         checkpoint_relative_path,
         allow_missing=True,
     )
+    manifest_identity = manifest_path.relative_to(root_path).as_posix()
+    checkpoint_identity = checkpoint_path.relative_to(root_path).as_posix()
+    if manifest_identity.casefold() == checkpoint_identity.casefold():
+        raise ValueError("Manifest and checkpoint paths must be different.")
     checkpoint = (
         _read_checkpoint(checkpoint_path)
         if checkpoint_path.exists()
-        else new_checkpoint(work_id, source_fingerprint)
+        else new_checkpoint(work_id, source_fingerprint, manifest_identity)
     )
     if checkpoint["work_id"] != work_id:
         raise ValueError("Source checkpoint belongs to a different work_id.")
     if checkpoint["schema_version"] != CHECKPOINT_SCHEMA_VERSION:
-        if checkpoint["status"] != "complete":
+        checkpoint_version = checkpoint["schema_version"]
+        if checkpoint["completed_episode_ids"]:
+            raise ValueError(
+                "Legacy source checkpoint has no destination manifest identity; "
+                "use a new checkpoint path after verifying existing output."
+            )
+        if checkpoint_version < 3 and checkpoint["status"] != "complete":
             raise ValueError(
                 "Legacy source checkpoint has no source_fingerprint; use a new "
                 "checkpoint path after verifying the source catalog."
             )
+        if (
+            checkpoint_version == 3
+            and checkpoint["source_fingerprint"] != source_fingerprint
+        ):
+            raise ValueError(
+                "Source checkpoint does not match the current source snapshot."
+            )
         checkpoint["schema_version"] = CHECKPOINT_SCHEMA_VERSION
-        checkpoint["source_fingerprint"] = source_fingerprint
+        if checkpoint_version < 3:
+            checkpoint["source_fingerprint"] = source_fingerprint
+        checkpoint["manifest_relative_path"] = manifest_identity
         validate_checkpoint(checkpoint)
         _write_json(root_path, checkpoint_relative_path, checkpoint)
-    elif checkpoint["source_fingerprint"] != source_fingerprint:
-        raise ValueError(
-            "Source checkpoint does not match the current source snapshot."
-        )
+    else:
+        if checkpoint["source_fingerprint"] != source_fingerprint:
+            raise ValueError(
+                "Source checkpoint does not match the current source snapshot."
+            )
+        if checkpoint["manifest_relative_path"] != manifest_identity:
+            raise ValueError(
+                "Source checkpoint does not match the destination manifest."
+            )
     if checkpoint["status"] == "complete":
         return _report(checkpoint)
     if (

@@ -29,7 +29,7 @@
 ## 本轮已完成
 
 - `已实现` I1 局部原型：`source_manifest.py` 提供 schema v1 版本清单校验/追加和显式文件 SHA-256 验证，使用迭代算法检查父版本图；`scripts/validate_source_manifest.py` 是只读 CLI；当前 18 项合成测试通过。
-- `已实现` I2 无网络导入子项：`LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 仅按 catalog 读取明确列出的本地文件；保存 source_ref、metadata/raw 版本和 checkpoint，源文件不修改。checkpoint v3 绑定 adapter source_fingerprint；快照变化拒绝续传；无指纹的未完成 v1/v2 checkpoint 不自动迁移，已完成旧 checkpoint 可迁移。20 项合成测试覆盖路径、失败恢复、快照错配拒绝和续传边界。没有 Kakuyomu/其他站点 HTTP/HTML 适配器、重试/退避、删除差分、并发锁或流水线接入。
+- `已实现` I2 无网络导入子项：`LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 仅按 catalog 读取明确列出的本地文件；保存 source_ref、metadata/raw 版本和 checkpoint，源文件不修改。checkpoint v4 绑定 adapter source_fingerprint 与目标 manifest 路径；快照或目标变化拒绝续传。缺少目标身份的旧 checkpoint 仅在没有已完成条目时迁移，未完成 v1/v2 checkpoint 另因缺少来源指纹而拒绝续传。artifact ID 使用作品、类型、章节组成的规范化身份元组。24 项合成测试覆盖路径、失败恢复、快照及目标错配拒绝、续传边界与身份碰撞。没有 Kakuyomu/其他站点 HTTP/HTML 适配器、重试/退避、删除差分、并发锁或流水线接入。
 - I1/I2 代码均未连接生产翻译流程；因此没有重跑本地 mock E2E。硬链接原子发布、目录写入和 checkpoint 流程只在本机 Windows 临时目录及合成数据上验证。
 - 空输入及目录歧义保护：`pipeline.py` 在授权预检后拒绝空章节列表；`scripts/align_chapters.py` 对空根目录扫描及全部译文缺失都以退出码 1 停止、不保存 TM。`Config.load_config(project=...)` 遇到 `生肉/` 或 `熟肉/` 子目录时要求显式 JSON 配置 `RAW_DIR`、`OUTPUT_DIR`，不再依 `os.listdir` 顺序选择首项。合成回归覆盖流水线空列表、嵌套原文章节、全部缺译文、平铺目录和项目模式歧义拒绝。定向两模块 65 项通过；六模块 105 项运行、103 项通过、2 项因 Windows 符号链接权限跳过、0 项失败；`tests/run_tests.py` 的 4 个本地 mock E2E 测试方法通过（204.662 秒，退出码 0）。没有调用真实项目 CLI、Provider 或书籍数据；首次单测运行因 Windows 临时目录沙箱权限失败，获批后的重跑通过。
 - `已实现` 阶段 1 子项：各模型阶段要求段落数组与原文对齐，并拒绝空或非文本段落；校对无效数据保留上一版有效译文，润色无效结果回退到校对结果。

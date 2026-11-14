@@ -150,11 +150,11 @@ python -m pip install -r requirements.txt
 
 ### 2026-11-14 I2 无网络采集编排核心
 
-- 新增 `source_ingestion.py`：平台适配器通过 `SourceAdapter` 注入目录页与原文 bytes，并提供稳定的 `source_fingerprint`；核心负责编排分页、checkpoint 续传、metadata/raw 版本写入、父版本关系、相同内容幂等、访问拒绝/限流/暂时不可用暂停及分页循环停止。恢复时指纹必须匹配。没有 HTTP 客户端、站点解析器、重试/退避策略、删除差分、并发锁或翻译流水线集成。
+- 新增 `source_ingestion.py`：平台适配器通过 `SourceAdapter` 注入目录页与原文 bytes，并提供稳定的 `source_fingerprint`；核心负责编排分页、checkpoint 续传、metadata/raw 版本写入、父版本关系、相同内容幂等、访问拒绝/限流/暂时不可用暂停及分页循环停止。checkpoint v4 同时绑定来源指纹与目标 manifest 相对路径，恢复前核对两者。artifact ID 来自作品 ID、artifact kind 和章节 ID 的规范化 JSON 元组哈希。没有 HTTP 客户端、站点解析器、重试/退避策略、删除差分、并发锁或翻译流水线集成。
 - 原文 bytes 先写入同目录临时文件、刷新并 `fsync`，再以不覆盖的硬链接发布；metadata、原文和 checkpoint 路径受显式根目录限制。该机制在本地 Windows 临时目录测试通过；其他文件系统对硬链接的支持仍需确认。意外 I/O 异常可能留下未引用文件，但不会把未完整写入的目标文件当作有效 artifact；重跑按内容寻址路径复用并核对哈希。
-- 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。checkpoint v3 保存适配器快照指纹；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。v1/v2 未完成 checkpoint 缺少可核验指纹，拒绝自动续传并要求操作者选择新 checkpoint 路径；已完成旧 checkpoint 可迁移。这样保留旧 pending 元数据不会被误当成当前 catalog 的来源证明。
-- 来源恢复回归覆盖同一 `work_id` 下 catalog/源文件快照变化时拒绝续传、文件初始化后变化时拒绝读取、旧未完成 checkpoint 不做无指纹续传、完成态旧 checkpoint 迁移及非法 checkpoint 状态类型。
-- `.\.venv\Scripts\python.exe -m unittest tests.test_source_ingestion tests.test_local_source_ingestion_cli -v`：当前 20 项合成测试通过，覆盖分页/续传、快照绑定、旧 checkpoint 迁移边界、显式本地路径、source_ref、失败恢复、幂等、路径边界和无正文 CLI 输出。
+- 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。checkpoint v4 绑定适配器快照指纹和规范化目标 manifest 路径；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。缺少目标身份的旧 checkpoint 仅在没有已完成条目时迁移；未完成 v1/v2 checkpoint 另因缺少可核验来源指纹而拒绝自动续传，需选择新 checkpoint 路径。
+- 来源恢复回归覆盖同一 `work_id` 下 catalog/源文件快照或目标 manifest 变化时拒绝续传、已完成 checkpoint 不能切换 manifest、旧 checkpoint 迁移边界、artifact ID 分隔符碰撞、文件初始化后变化时拒绝读取及非法 checkpoint 状态类型。
+- `.\.venv\Scripts\python.exe -m unittest tests.test_source_ingestion tests.test_local_source_ingestion_cli -v`：当前 24 项合成测试通过，覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、显式本地路径、source_ref、失败恢复、幂等、路径边界和无正文 CLI 输出。
 - 最小 catalog 示例（路径和标识均为合成值，不含书籍正文）：
 
   ```json
