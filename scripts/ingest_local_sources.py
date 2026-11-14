@@ -99,6 +99,17 @@ def _load_catalog(source_root: str, catalog_relative_path: str):
     return work_id, tuple(episodes), catalog_path
 
 
+def _paths_alias(first: Path, second: Path) -> bool:
+    if os.path.normcase(str(first)) == os.path.normcase(str(second)):
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValueError("Could not verify source/output path identity.") from exc
+
+
 def _validate_output_paths(
     source_root: str,
     output_root: str,
@@ -125,8 +136,7 @@ def _validate_output_paths(
         resolve_relative_path(str(source_root_path), episode.relative_path)
         for episode in episodes
     )
-    input_keys = {os.path.normcase(str(path)) for path in input_paths}
-    if any(os.path.normcase(str(path)) in input_keys for path in output_paths):
+    if any(_paths_alias(output, source) for output in output_paths for source in input_paths):
         raise ValueError("Source outputs must not overwrite catalog input files.")
 
 

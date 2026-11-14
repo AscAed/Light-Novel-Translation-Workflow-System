@@ -6,7 +6,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.ingest_local_sources import main
+from scripts.ingest_local_sources import _paths_alias, main
 from source_ingestion import new_checkpoint
 from source_manifest import load_manifest, verify_manifest_files
 
@@ -210,6 +210,22 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         collect_source.assert_not_called()
         self.assertEqual(checkpoint_source.read_bytes(), original_bytes)
         self.assertFalse((self.source_root / "source_manifest.json").exists())
+
+    def test_path_alias_check_uses_filesystem_identity(self):
+        first = self.source_root / "source_manifest.json"
+        case_variant = self.source_root / "SOURCE_MANIFEST.JSON"
+
+        with patch(
+            "scripts.ingest_local_sources.os.path.normcase",
+            side_effect=lambda value: str(value),
+        ):
+            with patch(
+                "scripts.ingest_local_sources.os.path.samefile",
+                return_value=True,
+            ) as samefile:
+                self.assertTrue(_paths_alias(first, case_variant))
+
+        samefile.assert_called_once_with(first, case_variant)
 
     def test_cli_rejects_duplicate_catalog_json_fields(self):
         (self.source_root / "catalog.json").write_text(
