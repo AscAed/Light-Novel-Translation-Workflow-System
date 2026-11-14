@@ -168,17 +168,17 @@ def audit_translation_memory(
         )
 
     for chapter, pairs in chapters.items():
+        if not isinstance(pairs, list):
+            findings.append(
+                _finding("invalid", chapter, "TM chapter entries must be an array.")
+            )
+            continue
         if chapter not in provenance_by_chapter:
             findings.append(
                 _finding("unindexed", chapter, "No source provenance is recorded.")
             )
             continue
         provenance = provenance_by_chapter[chapter]
-        if not isinstance(pairs, list):
-            findings.append(
-                _finding("invalid", chapter, "TM chapter entries must be an array.")
-            )
-            continue
         findings.extend(
             _audit_chapter(chapter, pairs, provenance, raw_dir, translation_dir)
         )

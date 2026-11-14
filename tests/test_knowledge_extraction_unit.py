@@ -61,11 +61,15 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "scripts.auto_extract_knowledge.get_openai_client",
             return_value=client,
         ) as client_factory:
-            asyncio.run(
-                auto_extract_knowledge.extract_knowledge(
-                    str(self.raw_dir), str(self.output_dir)
+            with patch(
+                "scripts.auto_extract_knowledge.get_api_key",
+                return_value=None,
+            ):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir), str(self.output_dir)
+                    )
                 )
-            )
 
         glossary_path = self.output_dir / "Glossary_draft.json"
         summary_path = self.output_dir / "STORY_SUMMARY_draft.md"

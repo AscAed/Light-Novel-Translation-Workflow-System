@@ -13,6 +13,7 @@ from pipeline import (
     ChapterSpec,
     Config,
     ContentBlockedError,
+    ResponseContractError,
     TranslationPipeline,
     UnifiedAgent,
     get_api_key,
@@ -856,7 +857,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "multiple paragraphs at index 1"):
             require_aligned_paragraphs(
-                ["source"], ["first\n \nsecond"], "Test"
+                ["source"], ["first\n\nsecond"], "Test"
             )
 
     def test_chapter_number_uses_filename_not_parent_directory(self):
@@ -1139,6 +1140,83 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
         polish_prompt = polisher.call.await_args.args[0]
         self.assertIn("proofread translation", polish_prompt)
         self.assertNotIn("retry", polish_prompt)
+
+    async def test_reflection_parse_error_keeps_proofread_translation(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "severe",
+                "critique": "synthetic critique",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        reflection_translator = Mock()
+        reflection_translator.call = AsyncMock(
+            side_effect=ResponseContractError("malformed response")
+        )
+        polisher = Mock()
+        polisher.call = AsyncMock(
+            return_value={"polished_paragraphs": ["polished translation"]}
+        )
+
+        with patch.object(Config, "STRICT_REFLECTION_MODE", True):
+            with patch(
+                "pipeline.UnifiedAgent",
+                side_effect=[proofreader, reflection_translator, polisher],
+            ):
+                result = await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(result, ["polished translation"])
+        polish_prompt = polisher.call.await_args.args[0]
+        self.assertIn("proofread translation", polish_prompt)
+        self.assertNotIn("initial translation", polish_prompt)
+
+    async def test_polisher_parse_error_returns_proofread_translation(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "minor",
+                "critique": "",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        polisher = Mock()
+        polisher.call = AsyncMock(
+            side_effect=ResponseContractError("malformed response")
+        )
+
+        with patch("pipeline.UnifiedAgent", side_effect=[proofreader, polisher]):
+            result = await pipeline._run_refinement_loop(
+                "source", ["initial translation"], "", []
+            )
+
+        self.assertEqual(result, ["proofread translation"])
+
+    async def test_polisher_authorization_error_is_not_swallowed(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "minor",
+                "critique": "",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        polisher = Mock()
+        polisher.call = AsyncMock(side_effect=make_api_status_error(401))
+
+        with patch("pipeline.UnifiedAgent", side_effect=[proofreader, polisher]):
+            with self.assertRaises(APIStatusError):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
 
     async def test_invalid_polish_response_returns_proofread_translation(self):
         pipeline = TranslationPipeline.__new__(TranslationPipeline)

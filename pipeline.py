@@ -64,6 +64,11 @@ if not hasattr(aiohttp, 'ClientConnectorDNSError'):
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+class ResponseContractError(ValueError):
+    """Raised when a model response cannot be parsed into its required contract."""
+
+
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
 def patched_proxy_bypass(host):
@@ -680,10 +685,11 @@ class UnifiedAgent:
             res_dict = extract_json(text)
             if not res_dict:
                 try:
-                    import json
                     return json.loads(text)
-                except:
-                    raise Exception("Failed to extract JSON from primary response")
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise ResponseContractError(
+                        "Failed to extract JSON from primary response"
+                    ) from exc
             return res_dict
             
         return text
@@ -729,7 +735,9 @@ class UnifiedAgent:
         if self.response_schema:
             res_dict = extract_json(resp.text)
             if not res_dict:
-                raise Exception("Failed to extract JSON from Gemini response")
+                raise ResponseContractError(
+                    "Failed to extract JSON from Gemini response"
+                )
             return res_dict
             
         return resp.text
@@ -1129,9 +1137,8 @@ class TranslationPipeline:
                     data_categories=["source_text", "translation_text", "book_knowledge"],
                     **Config.TRANSLATOR_PARAMS,
                 )
-                res = await translator.call(reflection_prompt)
-                
                 try:
+                    res = await translator.call(reflection_prompt)
                     reflection_translation = res["translated_paragraphs"]
                     require_aligned_paragraphs(
                         raw_paras, reflection_translation, "Reflection translation"
@@ -1168,7 +1175,13 @@ class TranslationPipeline:
         polish_json = json.dumps(polish_input, ensure_ascii=False, indent=2)
         polish_prompt = f"请润色以下翻译（要求返回1:1映射的JSON数组）：\n```json\n{polish_json}\n```"
         
-        polish_res = await polisher.call(polish_prompt)
+        try:
+            polish_res = await polisher.call(polish_prompt)
+        except ResponseContractError:
+            logger.warning(
+                "Polisher returned an unreadable response; retaining the proofread translation."
+            )
+            return corrected_list
         if isinstance(polish_res, dict) and "polished_paragraphs" in polish_res:
             try:
                 polished_paragraphs = polish_res["polished_paragraphs"]

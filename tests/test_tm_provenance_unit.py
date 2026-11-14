@@ -174,6 +174,15 @@ class TestTMProvenanceAudit(unittest.TestCase):
         self.assertEqual(findings[0]["status"], "unindexed")
         self.assertNotIn("source_provenance", tm_data)
 
+    def test_reports_malformed_chapter_before_missing_provenance(self):
+        findings = audit_translation_memory(
+            {"chapters": {"malformed.md": {}}},
+            str(self.raw_dir),
+            str(self.translation_dir),
+        )
+
+        self.assertEqual([finding["status"] for finding in findings], ["invalid"])
+
     def test_empty_translation_memory_is_not_reported_as_verified(self):
         findings = audit_translation_memory(
             {"chapters": {}}, str(self.raw_dir), str(self.translation_dir)

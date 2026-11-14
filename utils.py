@@ -332,7 +332,8 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
         normalized = paragraph.strip()
-        if re.search(r"(?:\r?\n)[ \t]*(?:\r?\n)", normalized):
+        split_result = split_paragraphs(normalized)
+        if len(split_result) != 1 or split_result[0] != normalized:
             raise ValueError(
                 f"{stage} returned multiple paragraphs at index {index}."
             )
