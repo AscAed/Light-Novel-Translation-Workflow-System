@@ -27,7 +27,7 @@
 - 两项问题在扫描基线之后的分支提交中修复：`utils.open_regular_file` 使用可用的非阻塞/不跟随链接标志并通过 `fstat` 限定普通文件；`scratch/test_filter.py` 改为显式 workspace 输入且仅输出计数。相应的 FIFO/模拟文件类型测试和合成输出隐私测试通过。扫描未覆盖这些后续提交，Codex Security 全仓复审仍未完成。
 - 路径安全模块存在多次独立运行记录：用户提供过 9 项运行、3 项跳过，以及 11 项运行、10 项通过、1 项因 Windows 不支持 `os.mkfifo` 跳过；这些输出没有绑定提交 SHA，不能合并或据此声称覆盖当前 PR head。当前检出模块有 11 个测试方法。
 - 当前 PR #57 的自动审查发现 checkpoint 未绑定目标 manifest、artifact ID 分隔符碰撞、无指纹的已完成旧 checkpoint 漏采、输入/输出别名覆盖和 checkpoint 特殊文件读取问题。已修复 checkpoint v4 的来源/目标绑定与旧版本 fail-closed 迁移、规范化 JSON 元组 artifact ID、采集前路径别名拒绝和普通文件 checkpoint 读取。
-- 代码提交 `da178bb0b48a93cd72e43860071675b23d4f27c9` 上，来源/本地 CLI 两模块 27 项测试全部通过；连同路径安全模块共运行 38 项，34 项通过、4 项跳过、无失败。当前 11 项路径安全模块中，3 项符号链接创建因 `WinError 1314` 缺少特权，1 项 FIFO 因 Windows 无 `os.mkfifo`。执行器未获得管理员令牌；这些行为仍需在可创建符号链接的管理员 PowerShell 中针对同一 SHA 验证。
+- 代码提交 `65d1f87f7b7b88441d5afdcb03a6ec6fd50d9c29` 上，来源/本地 CLI 两模块 27 项测试全部通过；连同路径安全模块共运行 38 项，34 项通过、4 项跳过、无失败。当前 11 项路径安全模块中，3 项符号链接创建因 `WinError 1314` 缺少特权，1 项 FIFO 因 Windows 无 `os.mkfifo`。执行器未获得管理员令牌；这些行为仍需在可创建符号链接的管理员 PowerShell 中针对同一 SHA 验证。
 - `StartUP.txt` 的本地凭据风险仍待所有者轮换/核验；该文件未读取。扫描排除了本地凭据文件、`.venv/`、历史 `.agents/` 记录和可能包含正文的项目数据。
 - 未运行依赖漏洞公告数据库扫描；`pip-audit` 不可用且未为此安装工具。未调用真实 Provider、Notion 或内容平台，未验证生产部署、凭据有效性或真实翻译质量。
 
