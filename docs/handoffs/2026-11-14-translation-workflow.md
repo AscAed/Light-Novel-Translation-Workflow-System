@@ -2,7 +2,7 @@
 
 > 状态基准：2026-11-14。目标仍在进行；本文件记录本轮可复用证据和下一步，不表示整条路线已完成。五小时执行额度的剩余额度不可见，本轮在自然阶段边界记录状态。
 
-> 本次审计基线：2026-11-14，分支 `codex/source-ingestion-audit-20261114` 起点 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并提交即该基线。审查开始时工作区有 7 份 Markdown 修改和 7 个未跟踪 Python 文件；本次审计补充见本文末尾。当前十模块定向单测 174 项运行、170 项通过、4 项跳过；管理员复跑路径安全模块 11 项运行、10 项通过、1 项跳过。用户另行提供的普通 PowerShell 模块输出为 9 项运行、3 项跳过，与当前模块测试数量不同。I2 adapter/CLI 20 项、I1 manifest 18 项、本地 mock E2E 4 项均通过；编译和 `pip check` 通过。提交与后续 PR 状态以本轮结束时的 Git/GitHub 核验及最终汇报为准。详情见[开发与验证](../development.md)。
+> 本次审计基线：2026-11-14，分支 `codex/source-ingestion-audit-20261114` 起点 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并提交即该基线。审查开始时工作区有 7 份 Markdown 修改和 7 个未跟踪 Python 文件；更晚的分支验证见本文末尾。原十模块定向单测 174 项运行、170 项通过、4 项跳过；管理员复跑路径安全模块 11 项运行、10 项通过、1 项跳过；I2 adapter/CLI 20 项、I1 manifest 18 项、本地 mock E2E 4 项均通过。用户另行提供的 9 项/3 项跳过输出没有 SHA 或逐项原因，单独保留。提交与 PR 状态以本文件末尾和 GitHub 最新核验为准。详情见[开发与验证](../development.md)。
 
 > 后续更新：2026-11-14 用户已选择审核 AI、远端 Provider、恢复策略及 `CODING_PLAN_*` 暂不支持等方向；下文相应“待决”措辞保留为交接时的历史记录。最新决策及仍需确认的具体输入见[决策记录](../decisions/README.md)。
 
@@ -29,7 +29,7 @@
 ## 本轮已完成
 
 - `已实现` I1 局部原型：`source_manifest.py` 提供 schema v1 版本清单校验/追加和显式文件 SHA-256 验证，使用迭代算法检查父版本图；`scripts/validate_source_manifest.py` 是只读 CLI；当前 18 项合成测试通过。
-- `已实现` I2 无网络导入子项：`LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 仅按 catalog 读取明确列出的本地文件；manifest/checkpoint 输出与 catalog/章节输入路径别名时会在写入前拒绝。checkpoint v4 绑定 adapter source_fingerprint 与目标 manifest 路径；快照或目标变化拒绝续传。缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且无已完成条目时可补齐目标身份。artifact ID 使用作品、类型、章节组成的规范化身份元组。27 项合成测试覆盖路径、失败恢复、快照及目标错配拒绝、旧 checkpoint 边界与身份碰撞。没有 Kakuyomu/其他站点 HTTP/HTML 适配器、重试/退避、删除差分、并发锁或流水线接入。
+- `已实现` I2 无网络导入子项：`LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 仅按 catalog 读取明确列出的本地文件；manifest/checkpoint 输出与 catalog/章节输入路径别名时会在写入前拒绝。checkpoint v4 绑定 adapter source_fingerprint 与目标 manifest 路径；快照或目标变化拒绝续传。缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且无已完成条目时可补齐目标身份。artifact ID 使用作品、类型、章节组成的规范化身份元组。28 项合成测试覆盖路径、失败恢复、快照及目标错配拒绝、旧 checkpoint 边界与身份碰撞。没有 Kakuyomu/其他站点 HTTP/HTML 适配器、重试/退避、删除差分、并发锁或流水线接入。
 - I1/I2 代码均未连接生产翻译流程；因此没有重跑本地 mock E2E。硬链接原子发布、目录写入和 checkpoint 流程只在本机 Windows 临时目录及合成数据上验证。
 - 空输入及目录歧义保护：`pipeline.py` 在授权预检后拒绝空章节列表；`scripts/align_chapters.py` 对空根目录扫描及全部译文缺失都以退出码 1 停止、不保存 TM。`Config.load_config(project=...)` 遇到 `生肉/` 或 `熟肉/` 子目录时要求显式 JSON 配置 `RAW_DIR`、`OUTPUT_DIR`，不再依 `os.listdir` 顺序选择首项。合成回归覆盖流水线空列表、嵌套原文章节、全部缺译文、平铺目录和项目模式歧义拒绝。定向两模块 65 项通过；六模块 105 项运行、103 项通过、2 项因 Windows 符号链接权限跳过、0 项失败；`tests/run_tests.py` 的 4 个本地 mock E2E 测试方法通过（204.662 秒，退出码 0）。没有调用真实项目 CLI、Provider 或书籍数据；首次单测运行因 Windows 临时目录沙箱权限失败，获批后的重跑通过。
 - `已实现` 阶段 1 子项：各模型阶段要求段落数组与原文对齐，并拒绝空或非文本段落；校对无效数据保留上一版有效译文，润色无效结果回退到校对结果。
@@ -151,3 +151,11 @@
 - Kakuyomu I0 初筛已记录在专题方案：官方条款、FAQ 与 robots 于 2026-11-14 查阅；用户明确确认指定作品已获授权。未访问作品页/章节正文；robots 禁止路径仍不得访问或绕过，Provider/Notion 的目标数据范围仍分别约束外发。
 - GitHub、单测与 E2E 均使用合成/本地数据；没有调用真实 Provider、作品站点或 Notion，没有打开真实书籍正文或凭据。仓库外部署、账户授权和真实翻译质量仍未知。
 - 作品授权门槛已按用户确认关闭；I1 状态生命周期、I2 获准站点接入方式、真实章节映射、Provider/Notion 目标和数据类别范围仍待处理。I2 输入目前没有大小/磁盘配额限制，根路径并发修改也没有目录句柄级保护；这些是扩大为不可信或大批量来源接入前的工程门槛。不得请求 robots 禁止路径或在未核定路径/映射时读取/写入忽略项目数据。
+
+## 最新来源导入验证（2026-11-14）
+
+- 精确代码提交：`a71e8ee149f7d20858e8334d8456ade74c7fa7e7`，分支 `codex/source-ingestion-audit-20261114`。
+- 来源核心与本地 CLI 定向测试 28 项全部通过；加上路径安全模块共 39 项，35 项通过、4 项跳过、无失败。普通权限下 3 个符号链接用例因 `[WinError 1314]` 跳过，FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- 同一代码提交的管理员 PowerShell 路径安全模块运行 11 项，10 项通过、仅 FIFO 用例跳过；3 个符号链接用例均实际通过。`compileall` 和 `git diff --check` 通过。
+- 用户另行提供的路径安全输出为 9 项运行、3 项跳过；未提供 SHA 或逐项跳过原因，不与上述提交绑定结果合并。
+- GitHub 推送后查询确认 PR #57 仍开放，head 为 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7`，base 为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`。该 head 的 combined status 与 Actions workflow runs 均为空。Codex 最新无发现审查仅覆盖前一 head `5dd5202`；CodeRabbit 对截至 `5dd5202` 的变更仍显示审查处理中，没有 `a71e8ee` 的最终审查结论。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并 SHA 为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`。Codex Security Standard 仍仅覆盖该基线且状态为 `partial`。

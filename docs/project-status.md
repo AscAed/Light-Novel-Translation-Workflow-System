@@ -52,7 +52,7 @@
 
 ## 最近一次验证记录
 
-2026-11-14 审计续接（基线 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9` 加当前工作树）：十模块定向单测 174 项运行、170 项通过、4 项跳过、0 项失败；管理员 PowerShell 的路径安全模块运行 11 项、10 项通过、1 项因 Windows 不支持 FIFO 跳过。用户另行提供的普通 PowerShell 输出为 9 项运行、3 项跳过，与当前模块 11 个测试方法不是同一测试数量，单独保留。来源原型/manifest/CLI 测试 38 项通过；本地 mock E2E 4 项通过（324.564 秒）；`compileall` 和 `pip check` 通过。均未验证真实 Provider、作品内容或部署。Codex Security Standard 报告针对精确基线 `e5c3154`，覆盖为 partial，审阅 31/121 个跟踪文件并报告两项低严重性发现；当前工作树已有独立修复和回归。详见[开发与验证](development.md)、[安全记录](security-notes.md)及[续接交接](handoffs/2026-11-14-translation-workflow.md)。
+2026-11-14 最新来源导入验证：代码提交 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7` 的来源/本地 CLI 两模块 28 项通过；连同路径安全模块共运行 39 项，35 项通过、4 项跳过。普通权限下 3 个符号链接用例受 `[WinError 1314]` 影响、FIFO 用例因 Windows 平台能力跳过；管理员 PowerShell 对同一代码提交运行路径安全模块 11 项，10 项通过、仅 FIFO 用例跳过，符号链接用例均通过。`compileall` 与 `git diff --check` 通过。用户另行提供的 9 项运行/3 项跳过输出没有 SHA 和逐项原因，独立保留。该验证只使用本地合成数据，不覆盖真实 Provider、站点或部署。更早的十模块 174 项与 mock E2E 4 项结果属于 `e5c3154` 基线工作树，不能替代当前提交验证。PR #57 仍开放，head 为 `a71e8ee`；该提交的 combined status 与 GitHub Actions workflow runs 均为空。Codex 当前无发现的审查只覆盖到 `5dd5202`，CodeRabbit 对该提交范围的审查仍在进行，均不构成 `a71e8ee` 的最终审查结论。Codex Security Standard 报告针对精确基线 `e5c3154`，覆盖为 partial，审阅 31/121 个跟踪文件并报告两项低严重性发现；当前代码提交未被该扫描覆盖。详见[开发与验证](development.md)、[安全记录](security-notes.md)及[续接交接](handoffs/2026-11-14-translation-workflow.md)。
 
 以下为各自提交基线下的历史验证记录，不表示当前工作树的验证结果：
 

@@ -154,8 +154,9 @@ python -m pip install -r requirements.txt
 - 原文 bytes 先写入同目录临时文件、刷新并 `fsync`，再以不覆盖的硬链接发布；metadata、原文和 checkpoint 路径受显式根目录限制。该机制在本地 Windows 临时目录测试通过；其他文件系统对硬链接的支持仍需确认。意外 I/O 异常可能留下未引用文件，但不会把未完整写入的目标文件当作有效 artifact；重跑按内容寻址路径复用并核对哈希。
 - 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。写入前拒绝 manifest/checkpoint 输出路径与 catalog 或章节输入文件别名。checkpoint v4 绑定适配器快照指纹和规范化目标 manifest 路径；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少可核验来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且没有已完成条目时可补齐目标身份。
 - 来源恢复回归覆盖同一 `work_id` 下 catalog/源文件快照或目标 manifest 变化时拒绝续传、已完成 checkpoint 不能切换 manifest、旧 checkpoint 迁移边界、artifact ID 分隔符碰撞、文件初始化后变化时拒绝读取及非法 checkpoint 状态类型。
-- `.\.venv\Scripts\python.exe -m unittest tests.test_source_ingestion tests.test_local_source_ingestion_cli -v`：在代码提交 `65d1f87f7b7b88441d5afdcb03a6ec6fd50d9c29` 上运行 27 项合成测试，全部通过。覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、输出与输入路径别名拒绝、显式本地路径、source_ref、失败恢复、幂等、路径边界和无正文 CLI 输出。
-- 同一代码提交上的三模块定向回归共 38 项，34 项通过、4 项跳过、无失败；`tests.test_security_path_traversal` 的 11 项中 3 项因 `[WinError 1314]` 无法创建符号链接、1 项因 Windows 不支持 `os.mkfifo` 而跳过。`compileall` 与 `git diff --check` 通过。用户另行提供的 9 项运行/3 项跳过结果没有 SHA 和逐项 skip 原因，独立保留，不替代本次结果。
+- 在代码提交 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7` 上，来源与本地 CLI 模块运行 28 项合成测试，全部通过。覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、输出与输入路径别名拒绝（含文件系统身份比较）、显式本地路径、`source_ref`、失败恢复、幂等、路径边界和无正文 CLI 输出。
+- 同一代码提交上的三模块定向回归共 39 项，35 项通过、4 项跳过、无失败；普通权限的 `tests.test_security_path_traversal` 中 3 项因 `[WinError 1314]` 无法创建符号链接、1 项因 Windows 不支持 `os.mkfifo` 而跳过。管理员 PowerShell 对同一提交复跑路径安全模块，11 项运行、10 项通过、仅 FIFO 用例因平台不支持而跳过，3 个符号链接用例均通过。`compileall` 与 `git diff --check` 通过。
+- 用户另行提供过路径安全模块 9 项运行、3 项跳过的输出；该输出未绑定 SHA，也未包含逐项跳过原因，作为独立运行记录保留，不替代上述当前提交结果。
 - 最小 catalog 示例（路径和标识均为合成值，不含书籍正文）：
 
   ```json
@@ -187,7 +188,7 @@ python -m pip install -r requirements.txt
 - 反思重译和润色将无效 JSON 归类为 `ResponseContractError` 并保留上一版译文；401 等鉴权错误、传输错误不吞掉。TM 溯源审计先校验章节值是否为数组，再区分畸形结构 `invalid` 与合法旧章节 `unindexed`。知识抽取测试显式 mock API key，不依赖宿主环境变量。
 - `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q`：133 项运行、130 项通过、3 项因 Windows 未授予符号链接创建权限跳过、0 项失败。
 - `.venv\Scripts\python.exe tests\run_tests.py`：4 个本地 mock E2E 方法通过，221.997 秒，退出码 0。修改涉及的 Python 文件 `py_compile`、`git diff --check` 通过。
-- 用户在普通 PowerShell 中复跑 `tests.test_security_path_traversal`：9 项运行、6 项通过、3 项仍因符号链接权限跳过；该运行未获得管理员令牌。
+- 用户在普通 PowerShell 中另行提供 `tests.test_security_path_traversal` 输出：9 项运行、3 项跳过；该输出没有 SHA 或逐项跳过原因，不能据此确定该运行所测代码与当前提交的关系。当前提交上的权限受限和管理员运行结果见本节“I2 无网络采集编排核心”。
 - PR 自动审查报告段落来源索引、嵌套路径章节号、可选阶段解析失败回退、TM 畸形章节分类和 API key 测试隔离；以上修改和回归覆盖这些问题。验证只使用合成 fixture 与本地 mock，未调用真实 Provider 或部署服务。
 
 ### 2026-11-14 TM 来源审计 CLI 输出边界
