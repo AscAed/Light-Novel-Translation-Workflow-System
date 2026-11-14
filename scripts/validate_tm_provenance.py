@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import (
+    open_regular_file,
     read_relative_text,
     split_paragraphs,
     validate_tm_source_provenance,
@@ -189,7 +190,7 @@ def _load_tm(path: str) -> dict:
     tm_path = Path(path)
     if tm_path.is_symlink():
         raise ValueError("Symbolic links are not allowed for translation memory.")
-    with tm_path.open("r", encoding="utf-8") as stream:
+    with open_regular_file(tm_path) as stream:
         return json.load(stream)
 
 
