@@ -122,7 +122,7 @@ python -m pip install -r requirements.txt
 - 审计分支 `codex/source-ingestion-audit-20261114` 的基线为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致；PR #56 已于 2026-11-14 10:04:56 UTC 合并为该提交。以下单测在该基线加当前未提交改动的工作树中运行。
 - 十模块定向单测命令运行 174 项、170 项通过、4 项跳过、0 项失败。普通 PowerShell 下 3 个符号链接测试因 `[WinError 1314]` 跳过，POSIX FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过；文件类型模拟测试通过。管理员 PowerShell 重跑 `tests.test_security_path_traversal` 后 11 项运行、10 项通过、1 项跳过、0 项失败，3 个符号链接路径行为均实际执行，FIFO 用例仍因平台能力跳过。
 - 用户另行提供的普通 PowerShell 路径安全模块输出为 `Ran 9 tests ... OK (skipped=3)`。当前工作树同一模块有 11 个测试方法；该 9 项结果保留为独立运行记录，不替代当前 11 项版本的管理员运行。
-- 来源原型/manifest/CLI 三模块运行 38 项、全部通过。回归覆盖恢复快照错配拒绝、本地文件变化检测、旧未完成 checkpoint 的 fail-closed 行为、已完成 checkpoint 迁移、非法状态类型及 1,200 节点无环版本链。
+- 较早的来源原型/manifest/CLI 三模块验证运行 38 项、全部通过。回归覆盖恢复快照错配拒绝、本地文件变化检测、旧 checkpoint 的 fail-closed 行为、非法状态类型及 1,200 节点无环版本链。
 - `.\.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 4 个方法通过，324.564 秒，退出码 0。负向 fixture 输出的 Provider 拦截和格式错误堆栈是预期结果；不是生产 API 调用或失败测试。
 - `.\.venv\Scripts\python.exe -m compileall -q pipeline.py rag_engine.py utils.py source_manifest.py source_ingestion.py scripts tests` 与 `.\.venv\Scripts\python.exe -m pip check` 均通过；后者报告 `No broken requirements found`。
 - 来源验证还修复两项终端/资源风险：普通文件 helper 使用非阻塞打开及 `fstat` 拒绝 FIFO；`scratch/test_filter.py` 移除本地绝对工作区路径和摘要/词条正文输出，改用 `--workspace` 或 `TRANSLATOR_WORKSPACE`，只打印计数。`tests.test_scratch_filter` 用合成目录验证无路径、摘要或原文内容泄露。
@@ -152,9 +152,10 @@ python -m pip install -r requirements.txt
 
 - 新增 `source_ingestion.py`：平台适配器通过 `SourceAdapter` 注入目录页与原文 bytes，并提供稳定的 `source_fingerprint`；核心负责编排分页、checkpoint 续传、metadata/raw 版本写入、父版本关系、相同内容幂等、访问拒绝/限流/暂时不可用暂停及分页循环停止。checkpoint v4 同时绑定来源指纹与目标 manifest 相对路径，恢复前核对两者。artifact ID 来自作品 ID、artifact kind 和章节 ID 的规范化 JSON 元组哈希。没有 HTTP 客户端、站点解析器、重试/退避策略、删除差分、并发锁或翻译流水线集成。
 - 原文 bytes 先写入同目录临时文件、刷新并 `fsync`，再以不覆盖的硬链接发布；metadata、原文和 checkpoint 路径受显式根目录限制。该机制在本地 Windows 临时目录测试通过；其他文件系统对硬链接的支持仍需确认。意外 I/O 异常可能留下未引用文件，但不会把未完整写入的目标文件当作有效 artifact；重跑按内容寻址路径复用并核对哈希。
-- 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。checkpoint v4 绑定适配器快照指纹和规范化目标 manifest 路径；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。缺少目标身份的旧 checkpoint 仅在没有已完成条目时迁移；未完成 v1/v2 checkpoint 另因缺少可核验来源指纹而拒绝自动续传，需选择新 checkpoint 路径。
+- 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。写入前拒绝 manifest/checkpoint 输出路径与 catalog 或章节输入文件别名。checkpoint v4 绑定适配器快照指纹和规范化目标 manifest 路径；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少可核验来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且没有已完成条目时可补齐目标身份。
 - 来源恢复回归覆盖同一 `work_id` 下 catalog/源文件快照或目标 manifest 变化时拒绝续传、已完成 checkpoint 不能切换 manifest、旧 checkpoint 迁移边界、artifact ID 分隔符碰撞、文件初始化后变化时拒绝读取及非法 checkpoint 状态类型。
-- `.\.venv\Scripts\python.exe -m unittest tests.test_source_ingestion tests.test_local_source_ingestion_cli -v`：当前 24 项合成测试通过，覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、显式本地路径、source_ref、失败恢复、幂等、路径边界和无正文 CLI 输出。
+- `.\.venv\Scripts\python.exe -m unittest tests.test_source_ingestion tests.test_local_source_ingestion_cli -v`：在代码提交 `da178bb0b48a93cd72e43860071675b23d4f27c9` 上运行 27 项合成测试，全部通过。覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、输出与输入路径别名拒绝、显式本地路径、source_ref、失败恢复、幂等、路径边界和无正文 CLI 输出。
+- 同一代码提交上的三模块定向回归共 38 项，34 项通过、4 项跳过、无失败；`tests.test_security_path_traversal` 的 11 项中 3 项因 `[WinError 1314]` 无法创建符号链接、1 项因 Windows 不支持 `os.mkfifo` 而跳过。`compileall` 与 `git diff --check` 通过。用户另行提供的 9 项运行/3 项跳过结果没有 SHA 和逐项 skip 原因，独立保留，不替代本次结果。
 - 最小 catalog 示例（路径和标识均为合成值，不含书籍正文）：
 
   ```json
