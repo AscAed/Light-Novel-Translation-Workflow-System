@@ -62,6 +62,10 @@ def main():
     env = os.environ.copy()
     env["MOCK_SERVER_PORT"] = str(port)
     env["GEMINI_API_KEY"] = "mock-test-key"
+    env["PROVIDER_DATA_POLICY"] = (
+        '{"gemini":["source_text","translation_text","book_knowledge",'
+        '"evaluation_samples"]}'
+    )
     
     print("\nRunning E2E tests...")
     test_proc = subprocess.run(

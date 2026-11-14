@@ -9,12 +9,16 @@
 * **术语强制对齐**：对比 `<GLOSSARY>`。若初译 Agent 遗漏或错误处理了术语，你必须强制修正回术语库要求的译名。
 * **双关与逻辑链条**：若初译对双关语的处理导致句子前后矛盾，你必须根据剧情基调修复其语境逻辑，使其在中文语境下逻辑自洽。
 * **漏译与赘余查验**：逐句比对。补齐初译遗漏的语气副词或小句，删除重复的「的」、「了」等口头禅式赘语。
+* **引号完整性**：逐段保留原文 `「」『』` 的种类、数量和先后顺序；校对不得遗漏、增添、互换或改写这些引号。
 * **严禁加戏**：如果初译虽然生硬但在逻辑上无误且完整，**请保持其生硬感**。一切修辞优化必须留给下游的润色 Agent。
 * **纯净输出**：输出必须为标准 JSON 格式，包含修复后的全文及关键修改点说明。
 
 ## Output Format
-Strictly output JSON:
+Strictly output JSON with one corrected string per input paragraph, in the same order. Use only `none`, `minor`, or `severe` for severity:
 {
-  "logic_fixed_text": "修复后的完整中文译文",
-  "fixed_errors": ["修改点1", "修改点2"]
+  "severity": "none",
+  "critique": "简要说明需要重译的严重问题；无问题时留空",
+  "corrected_text": [
+    "此处填写第1段的校订译文"
+  ]
 }

@@ -10,13 +10,17 @@
 
 | 顺序 | 当前阶段 | 责任 | 证据/边界 |
 | --- | --- | --- | --- |
-| 0 | 上下文标注 | 推断段落说话人和上下文提示 | `pipeline.py::_run_context_annotation`；请求校对模型 |
+| 0 | 上下文标注 | 推断段落说话人和上下文提示 | `pipeline.py::_run_context_annotation`；请求校对模型；校验结构化字段、段落顺序和源段落原样保留 |
 | 1 | 初译 | 使用书籍上下文及词条翻译段落数组 | `prompts/translator_skill.md`；要求 1:1 JSON 数组 |
 | 2 | 逻辑校对 | 对照原文和初译，返回严重度、意见、修订段落 | `prompts/proofreader_skill.md`；源码用 `STRICT_REFLECTION_MODE` 控制反思重试 |
 | 3 | 文风润色 | 对校对译文进行中文风格调整 | `prompts/polisher_skill.md`；接受结构化段落响应 |
-| 4 | 保存与学习 | 保存输出并将段落对写入 TM | `pipeline.py::run_chapter`；TM 写入自动进行 |
+| 4 | 保存与学习 | 校验段落映射、文本非空及每段日文引号序列，再保存输出并将段落对写入 TM | `pipeline.py::run_chapter`、`utils.py::require_aligned_paragraphs`；门禁失败时不写输出/TM；TM 写入失败时保留译文并报错，重跑仅在已有文件非空且缺少 TM 条目时警告，不自动恢复 |
 
 当前流程不是多 Agent 服务集群；各阶段在同一 Python 进程中顺序调用模型接口。
+
+未提供 `CHAPTER_MAP` 时，`pipeline.py::get_chapters` 与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描。项目名模式不会自动选取 `生肉/`、`熟肉/` 下的第一个子目录；发现嵌套目录时要求显式 `--config`，避免按文件系统枚举顺序选错卷或 EPUB。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。被忽略的本地书籍项目有两个原文卷目录和正文/EPUB 两个译文目录，根目录没有 Markdown。`CHAPTER_MAP` 通用映射契约已实现；该项目的真实章节配对、输出目标和 TM 键仍需逐项核验，见 D-12。核验前不要按文件名/章节号猜测对应关系或移动项目数据。
+
+显式 JSON 配置现支持 `CHAPTER_MAP`：每项包含 `raw_file`、`translation_file` 和唯一 `tm_key`。清单顺序就是处理顺序；路径相对各自根目录，输出父目录需预先存在。流水线输出、TM 段落对、章节对齐、知识抽取和来源审计使用相同映射。D-12 的通用契约已实现；忽略书籍目录的具体条目、章节对应关系及缺译文策略仍待核验，故当前没有启用任何真实书籍清单。配置示例与约束见[开发与验证](development.md)。
 
 ## 上下文来源
 
@@ -24,21 +28,28 @@
 - `Glossary.json`：按当前章节原文匹配的词条；解析器采用启发式切分。
 - `guidelines.txt`：全局及章节指导；缺失章节会尝试语义匹配/邻章回退。
 - `STORY_SUMMARY.md`：按当前章节裁剪的故事概要。
-- `translation_memory.json`：相似段落检索的译文示例。
+- `translation_memory.json`：相似段落检索的译文示例。新流水线/对齐写入会附带可选顶层 `source_provenance`（文件哈希与段落序号）；覆盖章节时若未提供新索引，会清除该章旧索引，避免其指向新条目。旧条目仍可读取且不会自动补录。来源索引不是审核或批准状态。
 
 检索结果是建议上下文，不是事实校验器。低置信度、冲突和缺失信息应标记出来，不得由 Agent 静默补全。
+
+## 未来原文来源与发布衔接
+
+- 当前章节输入来自项目配置目录/显式 `CHAPTER_MAP`；站点采集和来源许可管理尚未实现。
+- 计划中的每话 Markdown 将按稳定章节 ID 显式映射到现有流程；清洗版、原始采集版、译文和 TM 需通过版本 ID/哈希关联，不以文件名推测对应关系。
+- 全书预读和知识抽取是可选候选生成步骤；上下文超限时需分批并标明未整书输入，候选未审核前不得进入批准知识库。
+- Notion 备份与 EPUB 均为派生/副本路径，不替代本地权威内容。详细状态与依赖见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。
 
 ## 目标流程约束（待落实）
 
 1. 初译保留不确定点和源文依据，不自行批准新词条。
 2. 校对优先查漏译、误译、指代、因果和术语；对来源不足的判断标为待核查。
 3. 润色只优化中文表达；保留原文事实、角色声音、段落边界与已批准术语。
-4. 最终质量门禁逐项验证内容完整、段落映射、引号/格式、术语一致和知识变更状态。
-5. 输出质量检查失败时，不将失败结果作为已完成译文或已批准 TM 条目；具体恢复策略待设计。
+4. `已实现` 最终保存前验证非空文本、段落映射及每段 `「」『』` 的种类/数量/顺序；`计划` 术语一致性和知识变更状态仍需治理闭环。
+5. `已实现` 当前硬门禁失败时，不写该章节的译文或 TM；`计划` 通过现有格式门禁仍不代表语义正确或 TM 已获审核，后续发布与恢复策略待设计。
 
 ## Agent 输出契约
 
-- 当前契约分散在 `pipeline.py` 的 response schema 和 `prompts/*.md`。
+- 当前契约由 `pipeline.py` 的 response schema、inline 标注格式、`prompts/*.md` 及 `tests/test_pipeline_contracts.py` 共同表达；三种生产提示词输出字段须与调用端 schema 保持一致。
 - 新增/修改阶段时，必须同时检查输入字段、输出字段、失败响应、重试次数、日志敏感信息及调用方消费方式。
 - 提示词要求 JSON 不等于服务端强制 schema，也不代表响应内容经过语义验收。
-- 不在提示词中暴露密钥；发送原文到第三方 Provider 前须满足用户数据授权和 Provider 规则。
+- 不在提示词中暴露密钥。外部模型调用声明 `source_text`、`translation_text`、`book_knowledge` 等数据类别；仅当 `PROVIDER_DATA_POLICY` 对目标 Provider 覆盖该调用的所有类别时才发送。默认空策略拒绝远端书籍数据；loopback OpenAI-compatible endpoint 与 RAG 的直接本地 HTTP mock 使用本地路径，Gemini SDK 调用始终要求授权。E2E runner 仅为合成 fixture 显式设置 Gemini 测试 grant；用户授权矩阵仍待确认。

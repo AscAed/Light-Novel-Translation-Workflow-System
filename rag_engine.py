@@ -10,7 +10,15 @@ import numpy as np
 import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
-from utils import extract_chapter_num, read_child_text, write_text_atomically
+from utils import (
+    extract_chapter_num,
+    parse_api_timeout,
+    parse_provider_data_policy,
+    read_child_text,
+    require_provider_data_authorized,
+    validate_tm_source_provenance,
+    write_text_atomically,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +26,28 @@ logger = logging.getLogger(__name__)
 class RAGEngine:
     """RAGEngine handles similarity search, glossary parsing, and partitioned guidelines."""
 
-    def __init__(self, tm_path: str, glossary_path: str, guidelines_path: str):
+    def __init__(
+        self,
+        tm_path: str,
+        glossary_path: str,
+        guidelines_path: str,
+        api_timeout: Optional[float] = None,
+        provider_data_policy=None,
+    ):
         """Initialise paths and load initial database contents from disk."""
         self.logger = logging.getLogger(__name__)
 
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
+        self.api_timeout = parse_api_timeout(
+            api_timeout if api_timeout is not None else os.environ.get("API_TIMEOUT", 10.0)
+        )
+        self.provider_data_policy = parse_provider_data_policy(
+            provider_data_policy
+            if provider_data_policy is not None
+            else os.environ.get("PROVIDER_DATA_POLICY", {})
+        )
 
         # Initialise translation memory
         self.tm_data = {"chapters": {}}
@@ -76,24 +99,42 @@ class RAGEngine:
                 headers={"Content-Type": "application/json"}
             )
             try:
-                with urllib.request.urlopen(req, timeout=float(os.environ.get("API_TIMEOUT", 10.0))) as resp:
+                with urllib.request.urlopen(req, timeout=self.api_timeout) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
                     values = res_data.get("embedding", {}).get("values")
                     if not isinstance(values, list) or not values:
                         raise RuntimeError("Mock embedding response did not contain vector values.")
                     return values
             except (TimeoutError, urllib.error.URLError) as e:
-                logger.warning(f"Mock server request failed (timeout or URL error): {e}")
+                logger.warning(
+                    "Mock server request failed (timeout or URL error; %s).",
+                    type(e).__name__,
+                )
                 raise RuntimeError("Mock embedding request failed.") from e
             except Exception as e:
-                logger.warning(f"Mock server request failed with unexpected error: {e}")
+                logger.warning(
+                    "Mock server request failed with unexpected error (%s).",
+                    type(e).__name__,
+                )
                 raise RuntimeError("Mock embedding request failed.") from e
         else:
+            require_provider_data_authorized(
+                "gemini",
+                {"source_text"},
+                self.provider_data_policy,
+            )
             from google import genai
+            from google.genai import types
+
             api_key = os.environ.get("GEMINI_API_KEY")
             if not api_key:
                 raise RuntimeError("GEMINI_API_KEY is required for Gemini embeddings.")
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    timeout=int(self.api_timeout * 1000)
+                ),
+            )
             response = client.models.embed_content(
                 model="gemini-embedding-2",
                 contents=[text]
@@ -108,7 +149,10 @@ class RAGEngine:
         try:
             q_emb = self._generate_embedding_sync(raw_text)
         except Exception as e:
-            logger.warning(f"Failed to generate embedding for query: {e}")
+            logger.warning(
+                "Failed to generate embedding for query (%s).",
+                type(e).__name__,
+            )
             return []
 
         candidates = []
@@ -256,7 +300,13 @@ class RAGEngine:
                 best_chap = num
         return best_chap
 
-    def _semantic_fallback(self, target_chap: float, chapter_dict: dict, chapter_filename: str) -> str:
+    def _semantic_fallback(
+        self,
+        target_chap: float,
+        chapter_dict: dict,
+        chapter_filename: str,
+        current_raw_text: Optional[str] = None,
+    ) -> str:
         """Perform semantic similarity fallback matching among adjacent chapters."""
         if not chapter_dict:
             return ""
@@ -265,7 +315,11 @@ class RAGEngine:
             closest_num = min(chapter_dict.keys(), key=lambda k: abs(k - target_chap))
             return chapter_dict[closest_num]
         try:
-            curr_text = self._load_current_chapter_raw(chapter_filename)
+            curr_text = (
+                current_raw_text
+                if current_raw_text is not None
+                else self._load_current_chapter_raw(chapter_filename)
+            )
             paras = [p.strip() for p in curr_text.split("\n\n") if p.strip()][:3]
             if paras:
                 curr_embs = [self._generate_embedding_sync(p) for p in paras]
@@ -274,12 +328,20 @@ class RAGEngine:
                 if best_chap is not None:
                     return chapter_dict[best_chap]
         except Exception as e:
-            logger.warning(f"Semantic fallback failed for chapter {chapter_filename}: {e}")
+            logger.warning(
+                "Semantic fallback failed for chapter %s (%s).",
+                chapter_filename,
+                type(e).__name__,
+            )
             pass
         closest_num = min(candidates, key=lambda k: abs(k - target_chap))
         return chapter_dict[closest_num]
 
-    def get_partitioned_guidelines(self, chapter_filename: str) -> str:
+    def get_partitioned_guidelines(
+        self,
+        chapter_filename: str,
+        current_raw_text: Optional[str] = None,
+    ) -> str:
         """Retrieve global and matching/semantic-fallback chapter guidelines under 10KB."""
         global_guidelines, chapter_dict = self._parse_guidelines_content()
         target_chap = extract_chapter_num(chapter_filename, default=0.0)
@@ -287,7 +349,12 @@ class RAGEngine:
         if target_chap in chapter_dict:
             matched_content = chapter_dict[target_chap]
         else:
-            matched_content = self._semantic_fallback(target_chap, chapter_dict, chapter_filename)
+            matched_content = self._semantic_fallback(
+                target_chap,
+                chapter_dict,
+                chapter_filename,
+                current_raw_text=current_raw_text,
+            )
 
         combined = f"{global_guidelines}\n\n{matched_content}".strip()
 
@@ -300,8 +367,29 @@ class RAGEngine:
 
         return combined
 
-    def update_translation_memory(self, chapter_filename: str, paragraph_pairs: List[Dict[str, Any]]):
+    def update_translation_memory(
+        self,
+        chapter_filename: str,
+        paragraph_pairs: List[Dict[str, Any]],
+        source_provenance: Optional[dict] = None,
+    ):
         """Append paragraph pairs with embedding vectors and persist updated database."""
+        provenance_by_chapter = self.tm_data.get("source_provenance")
+        if (
+            "source_provenance" in self.tm_data
+            and not isinstance(provenance_by_chapter, dict)
+        ):
+            raise ValueError("TM source_provenance must be an object.")
+
+        if source_provenance is not None:
+            pair_count = sum(
+                1
+                for pair in paragraph_pairs
+                if pair.get("raw", "").strip()
+                and pair.get("translated", "").strip()
+            )
+            validate_tm_source_provenance(source_provenance, pair_count)
+
         new_pairs = []
         for pair in paragraph_pairs:
             raw_text = pair.get("raw", "")
@@ -313,13 +401,26 @@ class RAGEngine:
                 try:
                     embedding = self._generate_embedding_sync(raw_text)
                 except Exception as e:
-                    logger.warning(f"Failed to generate embedding for raw text: {e}")
+                    logger.warning(
+                        "Failed to generate embedding for raw text (%s).",
+                        type(e).__name__,
+                    )
                     embedding = []
             new_pairs.append({
                 "raw": raw_text,
                 "translated": translated_text,
                 "embedding": embedding
             })
+
+        if source_provenance is not None:
+            if provenance_by_chapter is None:
+                provenance_by_chapter = {}
+            provenance_by_chapter[chapter_filename] = source_provenance
+            self.tm_data["source_provenance"] = provenance_by_chapter
+        elif provenance_by_chapter is not None:
+            provenance_by_chapter.pop(chapter_filename, None)
+            if not provenance_by_chapter:
+                self.tm_data.pop("source_provenance", None)
 
         self.tm_data.setdefault("chapters", {})[chapter_filename] = new_pairs
         if hasattr(self, '_chapter_tm_embeddings_cache') and chapter_filename in self._chapter_tm_embeddings_cache:

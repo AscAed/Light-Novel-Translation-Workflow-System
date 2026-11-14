@@ -72,14 +72,35 @@ def _mock_stage_response(prompt, stage, prefix=""):
             translated = current.replace("【校对】", "【润色】")
         result.append(translated)
 
+    if stage == "proofread":
+        response = {
+            "severity": "none",
+            "critique": "",
+            target_key: result,
+        }
+    else:
+        response = {target_key: result}
+
     if stage == "translation" and SERVER_STATE.get("line_count_mismatch_active"):
         if len(result) > 1:
             result = result[:-1]
         else:
             result.append(f"{prefix}额外段落")
+        response[target_key] = result
     if stage == "proofread" and SERVER_STATE.get("quote_mismatch_active") and result:
-        result[0] += "「"
-    return {target_key: result}
+        for opening, closing in (("「", "」"), ("『", "』")):
+            open_index = result[0].find(opening)
+            close_index = result[0].rfind(closing)
+            if 0 <= open_index < close_index:
+                result[0] = (
+                    result[0][:open_index]
+                    + closing
+                    + result[0][open_index + 1 : close_index]
+                    + opening
+                    + result[0][close_index + 1 :]
+                )
+        response[target_key] = result
+    return response
 
 
 class MockServerRequestHandler(http.server.BaseHTTPRequestHandler):
