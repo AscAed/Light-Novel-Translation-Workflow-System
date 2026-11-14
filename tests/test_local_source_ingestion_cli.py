@@ -32,7 +32,13 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _run_cli(self):
+    def _run_cli(
+        self,
+        *,
+        output_root=None,
+        manifest="source_manifest.json",
+        checkpoint="source_checkpoint.json",
+    ):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -43,9 +49,13 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
                     "--catalog",
                     "catalog.json",
                     "--output-root",
-                    str(self.output_root),
+                    str(output_root or self.output_root),
                     "--page-size",
                     "1",
+                    "--manifest",
+                    manifest,
+                    "--checkpoint",
+                    checkpoint,
                 ]
             )
         return result, stdout.getvalue(), stderr.getvalue()
@@ -128,6 +138,52 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         self.assertEqual(stderr, "ERROR: ValueError\n")
         self.assertFalse((self.output_root / "source_manifest.json").exists())
         self.assertEqual(outside.read_bytes(), b"synthetic private text")
+
+    def test_cli_rejects_manifest_that_aliases_a_listed_source_file(self):
+        manifest_source = self.source_root / "source_manifest.json"
+        manifest_source.write_bytes(b"synthetic source manifest input")
+        original_bytes = manifest_source.read_bytes()
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Chapter One",
+                    "position": 1,
+                    "relative_path": "source_manifest.json",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli(output_root=self.source_root)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertEqual(manifest_source.read_bytes(), original_bytes)
+        self.assertFalse((self.source_root / "source_checkpoint.json").exists())
+
+    def test_cli_rejects_checkpoint_that_aliases_a_listed_source_file(self):
+        checkpoint_source = self.source_root / "source_checkpoint.json"
+        checkpoint_source.write_bytes(b"synthetic source checkpoint input")
+        original_bytes = checkpoint_source.read_bytes()
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Chapter One",
+                    "position": 1,
+                    "relative_path": "source_checkpoint.json",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli(output_root=self.source_root)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertEqual(checkpoint_source.read_bytes(), original_bytes)
+        self.assertFalse((self.source_root / "source_manifest.json").exists())
 
     def test_cli_rejects_duplicate_catalog_json_fields(self):
         (self.source_root / "catalog.json").write_text(

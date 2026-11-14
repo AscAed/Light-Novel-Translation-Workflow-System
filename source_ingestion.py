@@ -826,10 +826,11 @@ def _read_checkpoint(path: Path) -> dict:
     if path.is_symlink() or not path.is_file():
         raise ValueError("Source checkpoint path must be a regular file.")
     try:
-        checkpoint = json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_reject_duplicate_keys,
-        )
+        with open_regular_file(path) as checkpoint_file:
+            checkpoint = json.load(
+                checkpoint_file,
+                object_pairs_hook=_reject_duplicate_keys,
+            )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("Source checkpoint could not be read as valid JSON.") from exc
     validate_checkpoint(checkpoint)

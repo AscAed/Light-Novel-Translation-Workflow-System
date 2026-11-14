@@ -96,7 +96,38 @@ def _load_catalog(source_root: str, catalog_relative_path: str):
             )
         )
 
-    return work_id, tuple(episodes)
+    return work_id, tuple(episodes), catalog_path
+
+
+def _validate_output_paths(
+    source_root: str,
+    output_root: str,
+    catalog_path: Path,
+    episodes: tuple[LocalEpisodeFile, ...],
+    manifest_relative_path: str,
+    checkpoint_relative_path: str,
+) -> None:
+    source_root_path = Path(source_root).resolve(strict=True)
+    output_root_path = Path(output_root).resolve(strict=True)
+    if not source_root_path.is_dir() or not output_root_path.is_dir():
+        raise ValueError("Source and output roots must be directories.")
+
+    output_paths = (
+        resolve_relative_path(
+            str(output_root_path), manifest_relative_path, allow_missing=True
+        ),
+        resolve_relative_path(
+            str(output_root_path), checkpoint_relative_path, allow_missing=True
+        ),
+    )
+    input_paths = [catalog_path]
+    input_paths.extend(
+        resolve_relative_path(str(source_root_path), episode.relative_path)
+        for episode in episodes
+    )
+    input_keys = {os.path.normcase(str(path)) for path in input_paths}
+    if any(os.path.normcase(str(path)) in input_keys for path in output_paths):
+        raise ValueError("Source outputs must not overwrite catalog input files.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,7 +150,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        work_id, episodes = _load_catalog(args.source_root, args.catalog)
+        work_id, episodes, catalog_path = _load_catalog(args.source_root, args.catalog)
+        _validate_output_paths(
+            args.source_root,
+            args.output_root,
+            catalog_path,
+            episodes,
+            args.manifest,
+            args.checkpoint,
+        )
         adapter = LocalFileAdapter(
             args.source_root,
             episodes,
