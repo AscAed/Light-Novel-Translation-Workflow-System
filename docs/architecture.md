@@ -11,38 +11,47 @@ CLI
     └── providers: Sakura-compatible endpoint / DeepSeek-compatible endpoint / Gemini SDK
 
 scripts/align_chapters.py -> 双语章节 -> 对齐段落 -> Gemini embeddings -> translation_memory.json
+scripts/validate_tm_provenance.py -> translation_memory.json + 生肉/熟肉 -> 只读核验
 tests/run_tests.py -> tests/mock_server.py -> tests/test_e2e.py
 ```
 
 该图仅描述仓库代码。没有证据表明存在独立服务、云部署、Web UI、Agent 编排平台或持续集成。
+
+原文多平台采集、Notion 同步和 EPUB 构建尚未实现；候选分层与工作包见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。规划中的来源适配器、不可变原始归档、规范化版本和导出副本不得被误读为现有模块。
+
+显式 JSON 的 `CHAPTER_MAP` 为嵌套项目提供逐章映射：原文根目录相对路径、译文根目录相对路径和唯一 TM 键由操作者逐项指定。流水线、对齐器、知识抽取和 TM 来源审计消费同一清单；省略时仍使用平铺目录发现。实际书籍映射需要单独核验，不会从章节编号推测。
 
 ## 模块职责
 
 | 模块 | 当前责任 | 主要输入/输出 |
 | --- | --- | --- |
 | `pipeline.py` | 配置解析、章节循环、阶段调用、输出保存 | Markdown 章节、项目知识文件、模型响应 |
-| `rag_engine.py` | TM 相似检索、词条匹配、指导检索、TM 更新 | `Knowledge` 文件；查询上下文；写入 JSON TM |
-| `scripts/align_chapters.py` | 对已有双语章节做段落对齐并生成嵌入 | `生肉/`、`熟肉/` -> `translation_memory.json` |
-| `scripts/auto_extract_knowledge.py` | 实验性生成知识草稿 | 原文前几章 -> `Glossary_draft.json` 与摘要草稿 |
+| `rag_engine.py` | TM 相似检索、词条匹配、指导检索、TM 更新 | `Knowledge` 文件；查询上下文；写入 JSON TM 和可选来源索引 |
+| `scripts/align_chapters.py` | 对已有双语章节做段落对齐、生成嵌入与段落来源映射 | `生肉/`、`熟肉/` -> `translation_memory.json` |
+| `scripts/validate_tm_provenance.py` | 只读核对 TM 来源哈希、段落索引和原译词对 | TM JSON、`生肉/`、`熟肉/` -> 状态报告 |
+| `scripts/auto_extract_knowledge.py` | 实验性生成知识和来源清单草稿 | 原文前几章 -> `Glossary_draft.json`、概要及 `KNOWLEDGE_PROVENANCE_draft.json` |
 | `prompts/*.md` | 阶段角色的指令文本 | 被 `TranslationPipeline` 按路径读取 |
 | `tests/` | Mock API 和本地行为测试 | 临时项目目录；无真实模型质量验证 |
 
 ## 当前阶段数据流
 
-1. `Config.load_config` 从项目参数、JSON 配置或环境变量解析路径；代码还会尝试读取仓库根目录 `.env`。
+1. `Config.load_config` 从项目参数、JSON 配置或环境变量解析路径；代码还会尝试读取仓库根目录 `.env`。项目名模式不再自动选择 `生肉/`、`熟肉/` 下的第一个子目录；检测到子目录时要求通过显式 `--config` 指定 `RAW_DIR`、`OUTPUT_DIR`，并可逐章配置 `CHAPTER_MAP`。
 2. `TranslationPipeline` 读取作品信息、概要，并创建 `RAGEngine`。
 3. 每章检索指导、TM、词条和概要上下文。
 4. 按阶段调用上下文标注、初译、逻辑校对、润色。
-5. 校验各阶段段落数组与原文段落数量一致，再创建译文文件并按数组位置形成段落对更新 TM。TM 以同目录临时文件加原子替换写入；嵌入失败时保留词对但不写入伪造向量。
-6. `align_chapters.py` 通过章节子路径校验读取原译文件；锚点不匹配时使用 Gale-Church 对齐，验证 embedding 数量后原子更新 TM。
+5. 校验阶段结果是非空文本数组、段落数与原文一致，并在每段内核对 `「」『』` 的字符数量和序列；验证失败时停止且不创建译文/TM。通过后先排他新建译文，再按数组位置形成段落对更新 TM。TM 以同目录临时文件加原子替换写入；嵌入失败时保留词对但不写入伪造向量。若 TM 持久化失败，译文文件保留且章节调用报错；后续运行会跳过已有译文，并仅在该文件非空且缺少 TM 章节记录时警告，不自动重建。该门禁不验证语义准确性，也不构成知识审核。
+6. `align_chapters.py` 按 `CHAPTER_MAP` 或平铺扫描结果读取原译文件；锚点不匹配时使用 Gale-Church 对齐，验证 embedding 数量后原子更新 TM。溯源记录保存原文/译文相对路径；只读审计用相同路径验证文件哈希和段落引用。
 
 ## 外部集成与约束
 
 - 源码默认初译模型名 `sakura-14b`，Sakura base URL 为 `http://127.0.0.1:6006/v1`。
 - 源码默认校对/润色模型名分别为 `deepseek-v4-flash`、`deepseek-v4-pro`；base URL 默认 `https://api.deepseek.com/v1`。
-- `UnifiedAgent` 默认不跨 Provider 回退。仅显式设置 `ENABLE_GEMINI_FALLBACK=true` 时，普通调用异常会将相同请求发送至 Gemini；Provider 内容拦截为终止状态，不触发跨 Provider 回退。Gemini 请求未显式放宽安全阈值。模型可用性和服务端版本未验证。
+- `UnifiedAgent` 默认不跨 Provider 回退。仅显式设置 `ENABLE_GEMINI_FALLBACK=true` 时，连接/超时、HTTP 408/429 和 5xx 错误会将相同请求发送至 Gemini；鉴权/请求错误、响应 schema 错误和 Provider 内容拦截不回退。Gemini 请求未显式放宽安全阈值。真实模型可用性和服务端版本未验证。
+- `API_TIMEOUT` 默认 10 秒，必须为有限正数，配置为请求超时并应用到 OpenAI-compatible 聊天及 Gemini 生成、RAG embedding 和章节对齐 embedding；Gemini SDK 的超时值按毫秒传入。实际 Provider 延迟需在获准端点单独验收。
+- `PROVIDER_DATA_POLICY` 是按 Provider 和数据类别配置的外发 allowlist，默认 `{}`，拒绝远端请求；请求所需类别必须全部获准。类别为 `source_text`、`translation_text`、`book_knowledge`、`evaluation_samples`。loopback OpenAI-compatible endpoint 和 RAG 的直接本地 mock 请求不经过外发授权检查；Gemini SDK 调用始终需要 Gemini 授权，不以 `MOCK_SERVER_PORT` 环境变量代替授权。测试 runner 只为合成 fixture 显式注入 Gemini mock grant。流水线启动前会检查各生成阶段权限；直接调用、Gemini 回退、RAG、章节对齐和知识抽取也会在请求边界检查。
+- Gemini embedding 未获 `source_text` 授权时，RAG 查询/写入按现有异常降级处理，不发送文本；查询不返回语义匹配，TM 可保留无向量条目。章节对齐和知识抽取若缺少必要授权则停止，避免写入部分结果。Provider 授权矩阵仍待用户确认。
 - `rag_engine.py` 与对齐脚本当前请求 `gemini-embedding-2`；本地 mock 仅用于测试，不能证明真实模型可用。
-- 翻译和对齐章节读取拒绝直接子文件符号链接并限制为配置目录下的文件；知识提取脚本也使用该读取校验。TM 更新采用原子替换；知识草稿使用排他新建。显式配置根目录仍由操作者负责，跨进程并发写入未实现。
+- 翻译、对齐、知识抽取和 TM 审计的映射路径拒绝绝对路径、路径穿越和符号链接；嵌套输出目录必须预先存在。TM 更新采用原子替换；译文和知识草稿使用排他新建。显式配置根目录仍由操作者负责，跨进程并发写入未实现。
 - 项目名解析会检查已解析路径仍位于 `projects/` 下；显式 JSON 配置路径不存在时立即报错。JSON 配置中的目录仍可由操作者显式指定到仓库外。
 - README 曾描述的 Sakura/DeepSeek/Gemini 型号、`DEVELOPMENT_PLAN.md` 的旧模型栈与现行源码不完全一致。以源码默认值为实现事实，以真实账户/服务实测为可用性事实。
 - 项目级数据目录 `projects/*` 默认被忽略，仅示例项目例外。真实项目知识、译文和 TM 通常不在版本控制中。

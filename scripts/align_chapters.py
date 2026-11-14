@@ -6,11 +6,19 @@ import os
 import sys
 import logging
 import json
+import hashlib
 import re
 import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import read_child_text, write_text_atomically
+from utils import (
+    parse_api_timeout,
+    read_relative_text,
+    require_provider_data_authorized,
+    split_paragraphs,
+    validate_tm_source_provenance,
+    write_text_atomically,
+)
 
 # If running in a test context, dynamically mock the google-genai library
 # so the script calls the local mock server instead of real API endpoints.
@@ -35,7 +43,7 @@ if mock_port:
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
-            timeout = float(os.environ.get("API_TIMEOUT", "10.0"))
+            timeout = parse_api_timeout(os.environ.get("API_TIMEOUT", "10.0"))
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     res_data = json.loads(resp.read().decode("utf-8"))
@@ -47,16 +55,25 @@ if mock_port:
             return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
 
     class MockClient:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, http_options=None):
             self.models = MockModels()
+
+    class MockHttpOptions:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
 
     import types as pytypes
     google_module = pytypes.ModuleType("google")
     genai_module = pytypes.ModuleType("google.genai")
     genai_module.Client = MockClient
+    types_module = pytypes.ModuleType("google.genai.types")
+    types_module.HttpOptions = MockHttpOptions
+    genai_module.types = types_module
     google_module.genai = genai_module
     sys.modules["google"] = google_module
     sys.modules["google.genai"] = genai_module
+    sys.modules["google.genai.types"] = types_module
 
 
 TN_PATTERN = r'^\s*[\(（](?:译|注|T/N|翻译|意为|此处)[:：].*?[\)）]\s*$'
@@ -212,12 +229,48 @@ def align_chapter(raw_content: str, trans_content: str) -> list[tuple[str, str]]
         return gale_church_align(raw_paras, trans_paras)
 
 
+def _find_ordered_paragraph_indices(
+    source_paragraphs: list[str],
+    aligned_text: str,
+    start_index: int = 0,
+) -> tuple[list[int], int]:
+    """Map aligned text paragraphs back to ordered source paragraph numbers."""
+    mapped_indices = []
+    cursor = start_index
+    for paragraph in split_paragraphs(aligned_text):
+        match_index = next(
+            (
+                index
+                for index in range(cursor, len(source_paragraphs))
+                if source_paragraphs[index] == paragraph
+            ),
+            None,
+        )
+        if match_index is None:
+            return [], start_index
+        mapped_indices.append(match_index + 1)
+        cursor = match_index + 1
+    return mapped_indices, cursor
+
+
 def generate_embeddings_batched(texts: list[str], batch_size: int = 50) -> list[list[float]]:
     """Generate paragraph embeddings in batches to prevent rate limits."""
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than zero.")
+    from pipeline import Config
+
+    require_provider_data_authorized(
+        "gemini",
+        {"source_text"},
+        Config.PROVIDER_DATA_POLICY,
+    )
     from google import genai
-    client = genai.Client()
+    from google.genai import types
+
+    timeout = parse_api_timeout(os.environ.get("API_TIMEOUT", Config.API_TIMEOUT))
+    client = genai.Client(
+        http_options=types.HttpOptions(timeout=int(timeout * 1000))
+    )
     embeddings = []
     dimensions = None
     for i in range(0, len(texts), batch_size):
@@ -263,6 +316,17 @@ def save_tm(tm_path: str, tm_data: dict):
     """Save the updated translation memory database to disk."""
     if not isinstance(tm_data, dict) or not isinstance(tm_data.get("chapters"), dict):
         raise ValueError("Translation memory must contain a chapters object.")
+    provenance_by_chapter = tm_data.get("source_provenance")
+    if provenance_by_chapter is not None:
+        if not isinstance(provenance_by_chapter, dict):
+            raise ValueError("TM source_provenance must be an object.")
+        for chapter_filename, provenance in provenance_by_chapter.items():
+            pairs = tm_data["chapters"].get(chapter_filename)
+            if not isinstance(pairs, list):
+                raise ValueError(
+                    "TM source provenance must reference an existing chapter."
+                )
+            validate_tm_source_provenance(provenance, len(pairs))
     write_text_atomically(tm_path, json.dumps(tm_data, ensure_ascii=False, indent=2))
 
 
@@ -276,7 +340,7 @@ def main():
     
     # Import Config to dynamically resolve paths based on project/config options
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from pipeline import Config
+    from pipeline import Config, get_chapter_specs
     Config.load_config(project=args.project, config_file=args.config)
     
     raw_dir = Config.RAW_DIR
@@ -288,35 +352,93 @@ def main():
         print("Error: Raw or output directory does not exist.")
         sys.exit(1)
 
-    raw_files = [f for f in os.listdir(raw_dir) if f.endswith(".md")]
-    def sort_key(filename):
-        match = re.search(r'第(\d+)話', filename)
-        return int(match.group(1)) if match else float('inf')
-    raw_files = sorted(raw_files, key=sort_key)
+    try:
+        chapter_specs = get_chapter_specs(
+            raw_dir, output_dir, Config.CHAPTER_MAP
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            f"Error resolving chapter map ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not chapter_specs:
+        print(
+            "Error: No Markdown chapters found directly in the raw directory.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     tm_data = load_existing_tm(tm_path)
+    aligned_count = 0
 
-    for f in raw_files:
+    for spec in chapter_specs:
         try:
-            translated_content = read_child_text(output_dir, f)
+            translated_content = read_relative_text(
+                output_dir, spec.translation_file
+            )
         except FileNotFoundError:
-            print(f"Skipping {f} (translation not found)")
+            print(f"Skipping {spec.translation_file} (translation not found)")
             continue
 
-        raw_content = read_child_text(raw_dir, f)
+        raw_content = read_relative_text(raw_dir, spec.raw_file)
 
         try:
             aligned_pairs = align_chapter(raw_content, translated_content)
         except Exception as e:
-            print(f"Error aligning chapter {f}: {e}")
+            print(
+                f"Error aligning chapter {spec.raw_file} ({type(e).__name__}).",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         # Filter out empty pairs to prevent database pollution
         valid_pairs = [(r, t) for r, t in aligned_pairs if r.strip() and t.strip()]
+        raw_paragraphs = split_paragraphs(raw_content)
+        translation_paragraphs = split_paragraphs(translated_content)
+        raw_cursor = 0
+        translation_cursor = 0
+        pair_mappings = []
+        for index, (raw_pair, translated_pair) in enumerate(valid_pairs, start=1):
+            raw_indices, next_raw_cursor = _find_ordered_paragraph_indices(
+                raw_paragraphs, raw_pair, raw_cursor
+            )
+            translation_indices, next_translation_cursor = (
+                _find_ordered_paragraph_indices(
+                    translation_paragraphs, translated_pair, translation_cursor
+                )
+            )
+            if raw_indices:
+                raw_cursor = next_raw_cursor
+            if translation_indices:
+                translation_cursor = next_translation_cursor
+            trace_status = (
+                "matched"
+                if raw_indices and translation_indices
+                else "partial"
+                if raw_indices or translation_indices
+                else "unmatched"
+            )
+            pair_mappings.append(
+                {
+                    "pair_index": index,
+                    "raw_paragraph_indices": raw_indices,
+                    "translation_paragraph_indices": translation_indices,
+                    "trace_status": trace_status,
+                }
+            )
 
         # Generate embeddings in batches for the raw paragraphs
         raw_texts = [r for r, _ in valid_pairs]
-        embeddings = generate_embeddings_batched(raw_texts)
+        try:
+            embeddings = generate_embeddings_batched(raw_texts)
+        except Exception as exc:
+            print(
+                f"Error generating embeddings for chapter {spec.raw_file} "
+                f"({type(exc).__name__}).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         chapter_pairs = []
         for (r, t), embedding in zip(valid_pairs, embeddings):
@@ -326,8 +448,33 @@ def main():
                 "embedding": embedding
             })
 
-        tm_data["chapters"][f] = chapter_pairs
-        print(f"Successfully aligned chapter {f} with {len(chapter_pairs)} paragraphs.")
+        tm_data["chapters"][spec.tm_key] = chapter_pairs
+        provenance_by_chapter = tm_data.setdefault("source_provenance", {})
+        if not isinstance(provenance_by_chapter, dict):
+            raise ValueError("TM source_provenance must be an object.")
+        provenance_by_chapter[spec.tm_key] = {
+            "schema_version": 1,
+            "producer": "scripts/align_chapters.py",
+            "raw_file": spec.raw_file,
+            "raw_sha256": hashlib.sha256(raw_content.encode("utf-8")).hexdigest(),
+            "translation_file": spec.translation_file,
+            "translation_sha256": hashlib.sha256(
+                translated_content.encode("utf-8")
+            ).hexdigest(),
+            "pair_mappings": pair_mappings,
+        }
+        aligned_count += 1
+        print(
+            f"Successfully aligned chapter {spec.raw_file} "
+            f"with {len(chapter_pairs)} paragraphs."
+        )
+
+    if not aligned_count:
+        print(
+            "Error: No chapters were aligned; all translations are missing.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     save_tm(tm_path, tm_data)
     print(f"Alignment database written to {tm_path}")

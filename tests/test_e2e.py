@@ -348,6 +348,43 @@ class E2ETestSuite(unittest.TestCase):
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "「こんにちは」\n\n『テスト』")
             res = self.run_pipeline()
             self.assertEqual(res.returncode, 0)
+            with open(
+                os.path.join(self.output_dir, "第12話.md"), "r", encoding="utf-8"
+            ) as f:
+                self.assertEqual(
+                    f.read(), "【润色】「こんにちは」\n\n【润色】『テスト』"
+                )
+            with open(
+                os.path.join(self.knowledge_dir, "translation_memory.json"),
+                "r",
+                encoding="utf-8",
+            ) as f:
+                tm_data = json.load(f)
+                tm_pairs = tm_data["chapters"]["第12話.md"]
+            self.assertEqual(
+                [(pair["raw"], pair["translated"]) for pair in tm_pairs],
+                [
+                    ("「こんにちは」", "【润色】「こんにちは」"),
+                    ("『テスト』", "【润色】『テスト』"),
+                ],
+            )
+            self.assertEqual(
+                tm_data["source_provenance"]["第12話.md"]["pair_mappings"],
+                [
+                    {
+                        "pair_index": 1,
+                        "raw_paragraph_indices": [1],
+                        "translation_paragraph_indices": [1],
+                        "trace_status": "matched",
+                    },
+                    {
+                        "pair_index": 2,
+                        "raw_paragraph_indices": [2],
+                        "translation_paragraph_indices": [2],
+                        "trace_status": "matched",
+                    },
+                ],
+            )
 
         with self.subTest("Case 28: Line count mismatch aborts before writing"):
             self.set_mock_state({"line_count_mismatch_active": True})
@@ -356,11 +393,28 @@ class E2ETestSuite(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0)
             self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
-        with self.subTest("Case 29: Quote mismatch triggers warning and local retry"):
+        with self.subTest("Case 29: Quote order mismatch blocks output and TM update"):
             self.set_mock_state({"quote_mismatch_active": True})
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "「こんにちは」")
+            tm_path = os.path.join(self.knowledge_dir, "translation_memory.json")
+            if os.path.exists(tm_path):
+                with open(tm_path, "r", encoding="utf-8") as f:
+                    tm_before = json.load(f)
+            else:
+                tm_before = None
+
             res = self.run_pipeline()
-            self.assertEqual(res.returncode, 0)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn(
+                "Final translation changed Japanese quote marks in paragraph 1",
+                res.stderr,
+            )
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
+            if tm_before is None:
+                self.assertFalse(os.path.exists(tm_path))
+            else:
+                with open(tm_path, "r", encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), tm_before)
 
         with self.subTest("Case 30: Persistent mismatch fails chapter gracefully"):
             # Set state to permanently cause line count mismatch
@@ -403,6 +457,17 @@ class E2ETestSuite(unittest.TestCase):
             self.assertEqual(pairs[0]["raw"], "段落一\n\n段落二")
             self.assertEqual(pairs[0]["translated"], "译文段落一")
             self.assertTrue(pairs[0]["embedding"])
+            self.assertEqual(
+                data["source_provenance"]["第12話.md"]["pair_mappings"],
+                [
+                    {
+                        "pair_index": 1,
+                        "raw_paragraph_indices": [1, 2],
+                        "translation_paragraph_indices": [1],
+                        "trace_status": "matched",
+                    }
+                ],
+            )
 
         with self.subTest("Case 35: Invalid JSON TM stops the pipeline"):
             self.write_file(os.path.join(self.knowledge_dir, "translation_memory.json"), "{invalid json}")
@@ -523,6 +588,13 @@ class E2ETestSuite(unittest.TestCase):
             self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
             res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
             self.assertEqual(res.returncode, 0)
+
+        with self.subTest("Case 59: Explicit failover stops on provider authentication errors"):
+            self.set_mock_state({"deepseek_status_code": 401})
+            self.write_file(os.path.join(self.raw_dir, "第12話.md"), "测试")
+            res = self.run_pipeline(extra_env={"ENABLE_GEMINI_FALLBACK": "true"})
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(self.output_dir, "第12話.md")))
 
         # Safety Boundaries (50-53)
         with self.subTest("Case 50: Provider content block stops before fallback"):

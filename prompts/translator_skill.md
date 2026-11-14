@@ -10,10 +10,13 @@
 * **零润色原则**：彻底摒弃意译、成语化或句子美化。保留日文原有的句子逻辑与语法结构（包括长从句与啰嗦的修饰语），允许译文读起来有「翻译腔」。
 * **代词与主语补全**：参考 `<STORY_SUMMARY>` 以识别省略的主语。在直译时，若主语缺失导致逻辑断裂，请在译文中用括号补充主语，确保校对 Agent 能看懂动作流向。
 * **敬语语境保留**：精准还原日文特有的敬语等第。若中文无直接对应词，请保留语气词或用「（敬语语气）」标注。
+* **引号完整性**：逐段保留原文 `「」『』` 的种类、数量和先后顺序，不得遗漏、增添或互换；不得将其改写为其他引号。
 * **异常处理**：若遇到无法识别的生僻词或乱码，保留原文并在译文中用括号标注 `[待核查: 原文]`，不可自行脑补。
 
 ## Output Format
-Strictly output JSON matching this structure:
+Strictly output JSON with one translated string per input paragraph, in the same order:
 {
-  "raw_translation": "此处填写直译后的中文文本"
+  "translated_paragraphs": [
+    "此处填写第1段的直译结果"
+  ]
 }

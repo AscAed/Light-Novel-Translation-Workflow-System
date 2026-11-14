@@ -2,8 +2,9 @@
 
 ## 项目状态
 
-- 状态基准日：2026-11-13。
+- 状态基准日：2026-11-14。
 - 当前实现：Python CLI 翻译流水线、RAG 检索模块、章节对齐脚本和 mock 测试。
+- 外部 Provider 的书籍数据发送默认拒绝；逐 Provider/数据类别授权配置见[开发与验证](docs/development.md)。
 - 当前工作目标：日语轻小说译为中文；通用多语言、多文本类型是长期目标，不是现有能力。
 - 事实、限制和未知项见[项目现状](docs/project-status.md)。
 
@@ -18,6 +19,9 @@
 | [知识库治理](docs/knowledge-governance.md) | 当前知识数据与建议的审核、写入规则 |
 | [开发与验证](docs/development.md) | 环境、配置、命令、测试事实和限制 |
 | [路线图](docs/roadmap.md) | 分阶段目标、依赖、交付物与验收条件 |
+| [模型与 API 配置方案](docs/model-provider-configuration-plan.md) | 模型候选、职责分配、配置交互、安全边界与实施计划（计划，未经实测） |
+| [原文采集与成果归档方案](docs/source-ingestion-and-publication-plan.md) | 来源许可、原文版本、翻译衔接、EPUB 与 Notion 备份工作包（计划，未实现） |
+| [当前续接交接](docs/handoffs/2026-11-14-translation-workflow.md) | 本轮实现、验证、保留的工作区改动和下一步 |
 | [决策记录](docs/decisions/README.md) | 已确认决策与待决事项索引 |
 | [本地凭据风险记录](docs/security-notes.md) | 凭据暴露边界与需人工处理事项 |
 
@@ -30,6 +34,7 @@ python -m pip install -r requirements.txt
 
 python pipeline.py --project <项目目录名>
 python scripts/align_chapters.py --project <项目目录名>
+python scripts/validate_tm_provenance.py --project <项目目录名>
 python tests/run_tests.py
 ```
 

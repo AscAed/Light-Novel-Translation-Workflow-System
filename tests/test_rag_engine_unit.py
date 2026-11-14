@@ -8,6 +8,7 @@ import unittest
 import tempfile
 import shutil
 import numpy as np
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, MagicMock
 from rag_engine import RAGEngine
 
@@ -130,6 +131,18 @@ Chapter 2 specific guidelines.
         self.assertIn("Chapter 1 specific guidelines.", res)
         self.assertNotIn("Chapter 2 specific guidelines.", res)
 
+    def test_mapped_filename_uses_chapter_number_not_volume_number(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.guidelines_raw = (
+            "《翻译指导原则》 - [第 2 章]\nVolume 2 guidance.\n"
+            "《翻译指导原则》 - [第 10 章]\nChapter 10 guidance."
+        )
+
+        result = engine.get_partitioned_guidelines("Volume 2/chapter10.md")
+
+        self.assertIn("Chapter 10 guidance.", result)
+        self.assertNotIn("Volume 2 guidance.", result)
+
     @patch("rag_engine.RAGEngine._load_current_chapter_raw")
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_get_partitioned_guidelines_absolute_fallback(self, mock_embed, mock_load):
@@ -143,6 +156,26 @@ Chapter 2 specific guidelines.
         res = engine.get_partitioned_guidelines("第3話.md")
         self.assertIn("Global guidelines content.", res)
         self.assertIn("Chapter 2 specific guidelines.", res)
+
+    @patch("rag_engine.RAGEngine._load_current_chapter_raw")
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    @patch("rag_engine.RAGEngine._find_best_semantic_match")
+    def test_guideline_fallback_uses_supplied_mapped_source_text(
+        self, mock_best_match, mock_embed, mock_load
+    ):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        mock_embed.return_value = [0.1] * 768
+        mock_best_match.return_value = 1
+
+        result = engine.get_partitioned_guidelines(
+            "Volume1/第3話.md",
+            current_raw_text="synthetic mapped source",
+        )
+
+        self.assertIn("Chapter 1 specific guidelines.", result)
+        mock_load.assert_not_called()
+        mock_embed.assert_called_once_with("synthetic mapped source")
+        mock_best_match.assert_called_once()
 
     def test_get_partitioned_guidelines_truncation(self):
         """Verify combined guidelines are truncated when exceeding size limits."""
@@ -161,30 +194,145 @@ Chapter 2 specific guidelines.
         engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
         
         pairs = [{"raw": "新原文", "translated": "新译文"}]
-        engine.update_translation_memory("第2話.md", pairs)
+        source_provenance = {
+            "schema_version": 1,
+            "producer": "pipeline",
+            "raw_file": "第2話.md",
+            "raw_sha256": "a" * 64,
+            "translation_file": "第2話.md",
+            "translation_sha256": "b" * 64,
+            "pair_mappings": [
+                {
+                    "pair_index": 1,
+                    "raw_paragraph_indices": [1],
+                    "translation_paragraph_indices": [1],
+                    "trace_status": "matched",
+                }
+            ],
+        }
+        engine.update_translation_memory(
+            "第2話.md", pairs, source_provenance=source_provenance
+        )
         
         # Verify it was updated in memory
         self.assertIn("第2話.md", engine.tm_data["chapters"])
         self.assertEqual(engine.tm_data["chapters"]["第2話.md"][0]["raw"], "新原文")
         self.assertEqual(engine.tm_data["chapters"]["第2話.md"][0]["embedding"], [0.5] * 768)
+        self.assertEqual(
+            engine.tm_data["source_provenance"]["第2話.md"],
+            source_provenance,
+        )
 
         # Verify it was saved to file
         with open(self.tm_path, "r", encoding="utf-8") as f:
             data = json.load(f)
             self.assertIn("第2話.md", data["chapters"])
+            self.assertEqual(
+                data["source_provenance"]["第2話.md"],
+                source_provenance,
+            )
 
-    @patch("rag_engine.RAGEngine._generate_embedding_sync", side_effect=RuntimeError("offline"))
-    def test_embedding_failure_does_not_store_a_synthetic_vector(self, mock_embed):
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    def test_invalid_tm_source_provenance_is_rejected_before_embedding(
+        self, mock_embed
+    ):
         engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        with self.assertRaisesRegex(ValueError, "valid raw_sha256"):
+            engine.update_translation_memory(
+                "第2話.md",
+                [{"raw": "新原文", "translated": "新译文"}],
+                source_provenance={
+                    "schema_version": 1,
+                    "producer": "pipeline",
+                    "raw_file": "第2話.md",
+                    "raw_sha256": "invalid",
+                    "translation_file": "第2話.md",
+                    "translation_sha256": "b" * 64,
+                    "pair_mappings": [],
+                },
+            )
+
+        mock_embed.assert_not_called()
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
+    def test_overwriting_chapter_without_provenance_clears_stale_mapping(
+        self, mock_embed
+    ):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        stale_mapping = {
+            "schema_version": 1,
+            "producer": "pipeline",
+            "raw_file": "第2話.md",
+            "raw_sha256": "a" * 64,
+            "translation_file": "第2話.md",
+            "translation_sha256": "b" * 64,
+            "pair_mappings": [
+                {
+                    "pair_index": 1,
+                    "raw_paragraph_indices": [1],
+                    "translation_paragraph_indices": [1],
+                    "trace_status": "matched",
+                }
+            ],
+        }
+        other_chapter_mapping = dict(stale_mapping, raw_file="第3話.md")
+        engine.tm_data["chapters"]["第2話.md"] = [
+            {"raw": "旧原文", "translated": "旧译文", "embedding": [0.1] * 768}
+        ]
+        engine.tm_data["source_provenance"] = {
+            "第2話.md": stale_mapping,
+            "第3話.md": other_chapter_mapping,
+        }
+
         engine.update_translation_memory(
-            "第3話.md",
+            "第2話.md",
             [{"raw": "新原文", "translated": "新译文"}],
         )
+
+        self.assertNotIn("第2話.md", engine.tm_data["source_provenance"])
+        self.assertEqual(
+            engine.tm_data["source_provenance"]["第3話.md"],
+            other_chapter_mapping,
+        )
+        with open(self.tm_path, "r", encoding="utf-8") as f:
+            saved_data = json.load(f)
+        self.assertNotIn("第2話.md", saved_data["source_provenance"])
+        self.assertEqual(
+            saved_data["source_provenance"]["第3話.md"],
+            other_chapter_mapping,
+        )
+
+        engine.update_translation_memory(
+            "第3話.md",
+            [{"raw": "第三章新原文", "translated": "第三章新译文"}],
+        )
+
+        self.assertNotIn("source_provenance", engine.tm_data)
+        with open(self.tm_path, "r", encoding="utf-8") as f:
+            saved_data = json.load(f)
+        self.assertNotIn("source_provenance", saved_data)
+        self.assertEqual(mock_embed.call_count, 2)
+
+    @patch(
+        "rag_engine.RAGEngine._generate_embedding_sync",
+        side_effect=RuntimeError("SYNTHETIC_PRIVATE_ERROR"),
+    )
+    def test_embedding_failure_does_not_store_a_synthetic_vector(self, mock_embed):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        with self.assertLogs("rag_engine", level="WARNING") as captured:
+            engine.update_translation_memory(
+                "第3話.md",
+                [{"raw": "新原文", "translated": "新译文"}],
+            )
 
         saved_pair = engine.tm_data["chapters"]["第3話.md"][0]
         self.assertEqual(saved_pair["raw"], "新原文")
         self.assertEqual(saved_pair["translated"], "新译文")
         self.assertEqual(saved_pair["embedding"], [])
+        self.assertNotIn(
+            "SYNTHETIC_PRIVATE_ERROR", "\n".join(captured.output)
+        )
 
     @patch("rag_engine.write_text_atomically", side_effect=OSError("disk full"))
     @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
@@ -208,6 +356,76 @@ Chapter 2 specific guidelines.
                 engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
                 with self.assertRaisesRegex(RuntimeError, "Mock embedding request failed"):
                     engine._generate_embedding_sync("query")
+
+    def test_gemini_embedding_client_uses_configured_request_timeout(self):
+        client = MagicMock()
+        client.models.embed_content.return_value = SimpleNamespace(
+            embeddings=[SimpleNamespace(values=[0.5] * 768)]
+        )
+        google_module = ModuleType("google")
+        genai_module = ModuleType("google.genai")
+        types_module = ModuleType("google.genai.types")
+        http_options_args = {}
+
+        def make_http_options(**kwargs):
+            http_options_args.update(kwargs)
+            return SimpleNamespace(**kwargs)
+
+        types_module.HttpOptions = make_http_options
+        genai_module.Client = MagicMock(return_value=client)
+        google_module.genai = genai_module
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "google": google_module,
+                "google.genai": genai_module,
+                "google.genai.types": types_module,
+            },
+        ):
+            with patch.dict(
+                os.environ,
+                {
+                    "GEMINI_API_KEY": "test-key",
+                    "API_TIMEOUT": "3.5",
+                    "PROVIDER_DATA_POLICY": '{"gemini":["source_text"]}',
+                },
+                clear=True,
+            ):
+                engine = RAGEngine(
+                    self.tm_path, self.glossary_path, self.guidelines_path
+                )
+                result = engine._generate_embedding_sync("query")
+
+        self.assertEqual(result, [0.5] * 768)
+        self.assertEqual(http_options_args, {"timeout": 3500})
+        genai_module.Client.assert_called_once_with(
+            api_key="test-key",
+            http_options=SimpleNamespace(timeout=3500),
+        )
+
+    def test_external_embedding_is_blocked_without_explicit_data_grant(self):
+        with patch.dict(os.environ, {}, clear=True):
+            engine = RAGEngine(
+                self.tm_path, self.glossary_path, self.guidelines_path
+            )
+            with self.assertRaisesRegex(PermissionError, "not authorized"):
+                engine._generate_embedding_sync("source paragraph")
+
+    def test_mock_embedding_uses_validated_timeout_in_seconds(self):
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            api_timeout=3.5,
+        )
+        response = json.dumps({"embedding": {"values": [0.5] * 768}}).encode("utf-8")
+        with patch.dict(os.environ, {"MOCK_SERVER_PORT": "12345"}, clear=True):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value.read.return_value = response
+                self.assertEqual(engine._generate_embedding_sync("query"), [0.5] * 768)
+
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 3.5)
 
 
 if __name__ == "__main__":

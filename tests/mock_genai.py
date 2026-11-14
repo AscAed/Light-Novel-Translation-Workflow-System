@@ -23,6 +23,12 @@ class MockGenerateContentConfig:
             setattr(self, key, value)
 
 
+class MockHttpOptions:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
 class MockModels:
     def __init__(self, port):
         self.port = port
@@ -97,6 +103,7 @@ def install_mock_genai():
     types_module.Part = MockPart
     types_module.Content = MockContent
     types_module.GenerateContentConfig = MockGenerateContentConfig
+    types_module.HttpOptions = MockHttpOptions
 
     google_module = types.ModuleType("google")
     google_module.genai = genai_module
