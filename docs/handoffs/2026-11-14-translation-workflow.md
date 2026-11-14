@@ -140,7 +140,7 @@
 - 已修复：共享段落校验规范化首尾空白并依据 `split_paragraphs` 拒绝序列化后会拆成多段的项目；章节号提取只检查文件名末段。回归确认格式错误在任何文件/TM 写入前被拒绝，并覆盖 `Volume 2/chapter10.md` 的第 10 章摘要与指导选择。
 - CodeRabbit 追加报告可选阶段解析失败未回退、畸形 TM 章节被误报为 `unindexed`、知识抽取测试依赖环境 API key，并重复提示段落拆分规则。已新增 `ResponseContractError`，反思/润色解析失败保留上一版译文、鉴权/传输错误继续上抛；TM 审计先校验章节数组；测试显式 mock API key。
 - 最新六模块定向单测 133 项运行、130 项通过、3 项因 Windows 符号链接创建权限跳过、0 项失败；4 个 mock E2E 通过（221.997 秒）；编译和 `git diff --check` 通过，详见 `docs/development.md`。
-- 用户普通 PowerShell 复跑路径安全模块为 9 项运行、3 项因 `[WinError 1314]` 跳过。后续管理员 PowerShell 运行同一模块，9 项通过、0 项跳过；符号链接用例已实际覆盖。
+- 用户普通 PowerShell 的 `-q` 输出为 9 项运行、3 项跳过。旧版 `684dea2` 中该模块恰有 9 个测试方法，其中 3 个是符号链接创建用例，因此该输出与缺少符号链接权限的运行相符；但输出本身没有列出跳过项，也未绑定 SHA，不能单凭汇总断言具体原因。此前记录的管理员 PowerShell 9 项通过、0 项跳过属于该旧版模块；当前模块有 11 项，当前代码提交的管理员验证见下文。
 
 ## 当前验证与剩余门槛（2026-11-14）
 
@@ -158,4 +158,4 @@
 - 来源核心与本地 CLI 定向测试 28 项全部通过；加上路径安全模块共 39 项，35 项通过、4 项跳过、无失败。普通权限下 3 个符号链接用例因 `[WinError 1314]` 跳过，FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
 - 同一代码提交的管理员 PowerShell 路径安全模块运行 11 项，10 项通过、仅 FIFO 用例跳过；3 个符号链接用例均实际通过。`compileall` 和 `git diff --check` 通过。
 - 用户另行提供的路径安全输出为 9 项运行、3 项跳过；未提供 SHA 或逐项跳过原因，不与上述提交绑定结果合并。
-- PR #57 在 head `a7550745020cca001b59ba3fa764ab8648c4a236` 查询时仍开放；该 head 相对已审查代码仅增加文档状态行。PR combined status 与 Actions workflow runs 均为空。Codex 对前一提交 `caf804d55c472d6b7bf7aeed0a3e44734a413e6c` 的代码审查已完成且无发现。CodeRabbit 自动审查已暂停，最后审阅提交为 `5dd520209cc46153b2a8a17ccfedbc933bf91b1f`，没有覆盖 `a71e8ee` 及后续文档提交。3 条旧问题线程经代码与测试复核后均已在 GitHub 标记解决：目标 manifest 绑定、artifact ID 无歧义编码、无来源指纹的已完成旧 checkpoint 拒绝迁移。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并 SHA 为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`。Codex Security Standard 仍仅覆盖该基线且状态为 `partial`。
+- GitHub 后续状态查询时，PR #57 base 为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`、head 为 `ac553cfaaea178db0a50db0a1aa29c1320a988e4`，仍为 open 且 `mergeable=true`；combined status 与 Actions workflow runs 均为空。当前返回的 PR review submissions 中，Codex 锚定 `a3e7b56291bd385d7423cc1a74cfa36349bccca3`、CodeRabbit 最新记录锚定 `654a9634e5377e64e44c5641e8897036d39fa92b`，均早于 `a71e8ee` 代码提交；返回的 8 条 review threads 均已解决。读取 `main` 分支保护规则的 GitHub API 请求返回 403，所需审批/检查规则无法确认，因此本次未合并 PR #57。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并 SHA 为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`。Codex Security Standard 仍仅覆盖该基线且状态为 `partial`。
