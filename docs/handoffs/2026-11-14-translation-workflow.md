@@ -2,13 +2,15 @@
 
 > 状态基准：2026-11-14。目标仍在进行；本文件记录本轮可复用证据和下一步，不表示整条路线已完成。五小时执行额度的剩余额度不可见，本轮在自然阶段边界记录状态。
 
+> 本次审计基线：2026-11-14，分支 `codex/source-ingestion-audit-20261114` 起点 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致。PR #56 已于 2026-11-14 10:04:56 UTC 合并，合并提交即该基线。审查开始时工作区有 7 份 Markdown 修改和 7 个未跟踪 Python 文件；本次审计补充见本文末尾。当前十模块定向单测 174 项运行、170 项通过、4 项跳过；管理员复跑路径安全模块 11 项运行、10 项通过、1 项跳过。用户另行提供的普通 PowerShell 模块输出为 9 项运行、3 项跳过，与当前模块测试数量不同。I2 adapter/CLI 20 项、I1 manifest 18 项、本地 mock E2E 4 项均通过；编译和 `pip check` 通过。提交与后续 PR 状态以本轮结束时的 Git/GitHub 核验及最终汇报为准。详情见[开发与验证](../development.md)。
+
 > 后续更新：2026-11-14 用户已选择审核 AI、远端 Provider、恢复策略及 `CODING_PLAN_*` 暂不支持等方向；下文相应“待决”措辞保留为交接时的历史记录。最新决策及仍需确认的具体输入见[决策记录](../decisions/README.md)。
 
 ## 目标与资料
 
 - 目标：从既有会话、项目文档和当前实现中整理翻译工作流需求与计划，并按阶段实施可完成的改动。
 - 已读取会话：`thread://01a1d41d-9f87-74b1-9589-421496c452ed`（翻译工作流文档体系）；`thread://01a1d5a2-a18a-7381-b24a-82fc4d5d4894`（翻译工作流计划方案）。两者均可访问。第一条记录 AI 优先的文档结构及证据约束；第二条最近补充模型/API 候选、配置、安全和 M0–M6 计划。
-- 当前权威文档：`README.md`、`docs/project-status.md`、`docs/architecture.md`、`docs/translation-workflow.md`、`docs/knowledge-governance.md`、`docs/development.md`、`docs/roadmap.md`、`docs/decisions/README.md`、`docs/model-provider-configuration-plan.md`。
+- 当前权威文档：`README.md`、`docs/project-status.md`、`docs/architecture.md`、`docs/translation-workflow.md`、`docs/knowledge-governance.md`、`docs/development.md`、`docs/roadmap.md`、`docs/decisions/README.md`、`docs/model-provider-configuration-plan.md`、`docs/source-ingestion-and-publication-plan.md`。
 - `.agents/` 下的 context/progress/handoff 属历史记录；其中旧模型名、“71 项测试”以及“引号重试已实现”等表述与当前实现不一致。不要把它们作为当前事实。
 
 ## 已核实的现状
@@ -19,12 +21,16 @@
 - 2026-11-14 本机快照：`.venv` 为 Python 3.14.7，`pip check` 无损坏依赖；代码默认 Sakura 地址 `127.0.0.1:6006` 不可达。实际数据目录已定位为被 `.gitignore` 排除的 `projects/祝福のネトラレラ`；目录/文件清单与 TM 键核对只使用元数据。之后的只读启发式诊断将 18 组同名原译章节载入本地内存计算映射；正文没有打印、写入日志或传输，知识文件未打开。外侧同名工作区 `..\祝福のネトラレラ_祝福的寝取系女主` 只有 `.gitattributes` 和 `.gitignore`。
 - TM 通过现有格式门禁后仍自动写入。人工审核方式和写入责任尚未决策，见 `docs/decisions/README.md` 的 D-01；逐 Provider、逐数据类别的外发授权见 D-02。
 - 当前代码的 Gemini 回退默认关闭；显式启用后仅连接/超时、HTTP 408/429 和 5xx 会触发。鉴权/请求错误、响应 schema 错误和内容拦截不回退。不要把旧 handoff 中“拦截后自动切 Gemini”当作现状。
-- 真实 Provider 状态、数据来源/授权、凭据轮换状态和真实翻译质量仍未知；本轮未访问或修改密钥文件、未调用外部 Provider。
+- 真实 Provider 状态、实际数据目录映射、凭据轮换状态和真实翻译质量仍未知；用户于 2026-11-14 明确确认指定作品已获授权，但 Provider/Notion 数据范围和 Kakuyomu 自动化路径另行判断。本轮未访问或修改密钥文件、未调用外部 Provider。
+- 作品授权已按用户明确确认处理，不再作为阻塞。官方条款及访问规则核查只解决文档证据收集，不构成法律判断，也没有发现足以支持当前实现自动采集的明确官方许可；robots 读取记录见专题方案。本轮没有请求作品页或章节正文，也没有尝试替代路径。
 - 本地忽略项目有 48 个原文 Markdown（`生肉/1.神んてらの世界` 18 个、`生肉/2.小学五年生` 30 个；39 个匹配“第 N 话”命名）、19 个译文 Markdown（`熟肉/Ntera神的世界` 18 个章节，另一个是 EPUB README）和 19 个 TM 章节键。两个根目录第一层均没有 Markdown；此前 `Config.load_config(project=...)` 会分别依 `os.listdir` 首项选择 RAW_DIR/OUTPUT_DIR，可能漏掉原文卷或选择 EPUB。现已改为项目模式遇到任一子目录就要求显式 JSON 配置。TM 的 19 个键都能对应原文，但 `第19話.md` 没有同名译文；来源审计对 19 章全部报告 `unindexed`，退出码 2。18 组递归同名章节的只读启发式映射产生 1,376 个精确位置映射，仍有 31 个原文段落和 1 个译文段落未映射。该结果不说明内容质量或数据来源授权。
 - 主请求按模型名选择 Sakura/DeepSeek 专属 URL 和 API key。旧 `get_base_url` 会在 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口 URL 时覆盖已选 Provider URL；仓库默认 DashScope URL 本身没有显式端口。现已移除这项非 mock 覆盖，回归测试用带显式端口配置验证旧行为；`CODING_PLAN_*` 字段是否应成为受支持 Provider 仍待 D-10 决策。
 
 ## 本轮已完成
 
+- `已实现` I1 局部原型：`source_manifest.py` 提供 schema v1 版本清单校验/追加和显式文件 SHA-256 验证，使用迭代算法检查父版本图；`scripts/validate_source_manifest.py` 是只读 CLI；当前 18 项合成测试通过。
+- `已实现` I2 无网络导入子项：`LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 仅按 catalog 读取明确列出的本地文件；保存 source_ref、metadata/raw 版本和 checkpoint，源文件不修改。checkpoint v3 绑定 adapter source_fingerprint；快照变化拒绝续传；无指纹的未完成 v1/v2 checkpoint 不自动迁移，已完成旧 checkpoint 可迁移。20 项合成测试覆盖路径、失败恢复、快照错配拒绝和续传边界。没有 Kakuyomu/其他站点 HTTP/HTML 适配器、重试/退避、删除差分、并发锁或流水线接入。
+- I1/I2 代码均未连接生产翻译流程；因此没有重跑本地 mock E2E。硬链接原子发布、目录写入和 checkpoint 流程只在本机 Windows 临时目录及合成数据上验证。
 - 空输入及目录歧义保护：`pipeline.py` 在授权预检后拒绝空章节列表；`scripts/align_chapters.py` 对空根目录扫描及全部译文缺失都以退出码 1 停止、不保存 TM。`Config.load_config(project=...)` 遇到 `生肉/` 或 `熟肉/` 子目录时要求显式 JSON 配置 `RAW_DIR`、`OUTPUT_DIR`，不再依 `os.listdir` 顺序选择首项。合成回归覆盖流水线空列表、嵌套原文章节、全部缺译文、平铺目录和项目模式歧义拒绝。定向两模块 65 项通过；六模块 105 项运行、103 项通过、2 项因 Windows 符号链接权限跳过、0 项失败；`tests/run_tests.py` 的 4 个本地 mock E2E 测试方法通过（204.662 秒，退出码 0）。没有调用真实项目 CLI、Provider 或书籍数据；首次单测运行因 Windows 临时目录沙箱权限失败，获批后的重跑通过。
 - `已实现` 阶段 1 子项：各模型阶段要求段落数组与原文对齐，并拒绝空或非文本段落；校对无效数据保留上一版有效译文，润色无效结果回退到校对结果。
 - `已实现` 阶段 1 子项：保存前逐段比较 `「」『』` 的字符数量和顺序。门禁失败时章节报错，译文文件和 TM 均不写入。
@@ -71,14 +77,14 @@
 - README 与 `docs/` 下 11 份活动 Markdown 的本地文件链接目标检查通过，无缺失文件目标；未检查标题锚点或仓库其他示例/历史 Markdown。未验证真实 Provider、部署或翻译质量。
 - 普通沙盒拒绝系统 temp 与仓库 `scratch/` 中临时 fixture 的访问。获批后将 `TEMP/TMP` 指向 ignored `scratch/` 并在沙盒外运行，上述测试通过。
 
-## 需要保留的工作区改动
+## 工作区变更记录
 
-任务开始时已有以下用户/先前任务文档改动；本轮保留并在必要位置合并，没有重置或覆盖其他内容：
+以下记录任务开始时已经存在的用户/先前任务文档改动；本轮保留并在必要位置合并，没有重置或覆盖其他内容。这是历史工作区快照，不代表当前仍有未提交改动：
 
 - 已修改：`README.md`、`docs/decisions/README.md`、`docs/development.md`、`docs/knowledge-governance.md`、`docs/project-status.md`、`docs/roadmap.md`。
 - 未跟踪：`docs/model-provider-configuration-plan.md`。
 
-本轮新增/修改还包括 `.env.example`、`pipeline.py`、`rag_engine.py`、`scripts/align_chapters.py`、`scripts/auto_extract_knowledge.py`、`scripts/validate_tm_provenance.py`、`utils.py`、三个 `prompts/*_skill.md`、`tests/run_tests.py`、`tests/test_pipeline_contracts.py`、`tests/test_align_chapters_unit.py`、`tests/test_rag_engine_unit.py`、`tests/test_security_path_traversal.py`、`tests/test_knowledge_extraction_unit.py`、`tests/test_tm_provenance_unit.py`、`tests/test_e2e.py`、`tests/mock_genai.py`、`tests/mock_server.py`、`README.md`、`docs/architecture.md`、`docs/development.md`、`docs/knowledge-governance.md`、`docs/project-status.md`、`docs/roadmap.md`、`docs/translation-workflow.md` 和本交接文件。所有这些工作区变更都应保留。
+本轮新增/修改还包括 `.env.example`、`pipeline.py`、`rag_engine.py`、`scripts/align_chapters.py`、`scripts/auto_extract_knowledge.py`、`scripts/validate_tm_provenance.py`、`utils.py`、三个 `prompts/*_skill.md`、`tests/run_tests.py`、`tests/test_pipeline_contracts.py`、`tests/test_align_chapters_unit.py`、`tests/test_rag_engine_unit.py`、`tests/test_security_path_traversal.py`、`tests/test_knowledge_extraction_unit.py`、`tests/test_tm_provenance_unit.py`、`tests/test_e2e.py`、`tests/mock_genai.py`、`tests/mock_server.py`、`README.md`、`docs/architecture.md`、`docs/development.md`、`docs/knowledge-governance.md`、`docs/project-status.md`、`docs/roadmap.md`、`docs/translation-workflow.md` 和本交接文件。以上实现和文档现由当前分支提交跟踪；后续工作开始前仍应先检查 Git 状态并保留新的用户改动。
 
 ## D-12 显式映射续接（2026-11-14）
 
@@ -86,16 +92,16 @@
 - 已实现：显式 JSON `CHAPTER_MAP`；每项包含 `raw_file`、`translation_file`、`tm_key`。安全路径工具验证根相对路径、文件类型、符号链接、重复路径/键及已存在输出父目录。流水线按清单顺序翻译，输出到映射位置并以 TM 键写记忆；对齐器和知识抽取读取同一映射；TM 溯源审计支持嵌套路径；RAG 分章指导使用已经读取的原文。项目模式仍拒绝任意选择嵌套目录。
 - 依据：忽略项目的根目录没有 Markdown，原文和译文位于多个子目录；过去按 `os.listdir` 首项选择目录会漏卷或选中 EPUB。项目当前文件分布、审计状态和不完整段落对应详见本文件的“已核实的现状”；实现 schema/示例见 `docs/development.md` 与 D-12。
 - 验收：`.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q` 为 116 项运行、113 项通过、3 项因 Windows 符号链接权限跳过；知识来源键追加测试 9 项通过；`.venv\Scripts\python.exe tests\run_tests.py` 为 4 个 mock E2E 方法通过（最终运行 205.064 秒，退出码 0）。最终 Python 文件 `py_compile`、`git diff --check` 通过；README 与 `docs/` 下共 11 份 Markdown 的本地链接目标全部存在。链接目标检查不验证标题锚点。
-- 未完成：尚未用忽略项目真实文件生成或运行映射清单。原文/译文章节配对、TM 键映射、缺失第 19 话的处理、数据来源授权及任何 Provider 使用均需确认；合成测试不能替代这些确认。本轮没有读取章节正文、写入真实项目或调用模型。
-- 下一步：在获得项目映射和数据使用授权后，由维护者逐项复核 `CHAPTER_MAP`，先运行只读 TM 来源审计；只有清单、章节对应、缺译文处理和授权都已确认，才考虑对齐或翻译。当前不要运行真实项目的翻译/知识抽取或写入 TM。
+- 未完成：尚未用忽略项目真实文件生成或运行映射清单。原文/译文章节配对、TM 键映射、缺失第 19 话的处理、获授权作品与本地数据目录是否对应均需确认；用户授权声明不替代这些文件映射核验。本轮没有读取章节正文、写入真实项目或调用模型。
+- 下一步：维护者逐项复核 `CHAPTER_MAP` 并先运行只读 TM 来源审计；按用户确认的作品授权推进允许范围内的工作，但不得请求 Kakuyomu robots 禁止路径或绕过访问规则。Provider/Notion 按 D-02/D-14 核对目标与数据类别；未明确前只使用合成 fixture。
 - 五小时额度状态不可见；没有判断是否触及 10% 阈值。
 
 ## 下一步
 
-1. 当前工作区最终核对已完成：起始时已有的文档改动和未跟踪的模型配置方案仍保留；本轮代码、提示词、测试及文档改动均在工作区，`git diff --check` 通过。继续工作前先重新运行 `git status --short --branch`，不要清理这些未提交变更。
+1. 续接前先运行 `git status --short --branch` 并保留当前所有改动。本次审计起点为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`；当时 7 份 Markdown 修改和 7 个未跟踪 Python 文件均已纳入审查，不要从旧 handoff 记录推断它们仍未提交。
 2. 阶段 1 的当前代码/提示词 schema 契约和 mock 正反向文件/TM 检查已完成并通过本地验证。下一步如需扩展非引号格式门禁，先取得获准的代表性章节及明确格式标准；仓库现有实现/活动文档没有定义更多硬规则，不要自行推定。
 3. 阶段 2 的抽取草稿和新 TM 来源索引已有本地实现，但阶段整体仍需处理 `D-01`：决定 TM 采用逐条人工审核、抽样审核或明确的自动门禁，并确认正式知识审核责任。当前实际项目 TM 的 19 章全部缺少来源索引；`第19話.md` 也缺少同名译文。来源索引不代表批准，历史 TM 未回填；不要对其自动重建或发布。
-4. 阶段 0 已定位忽略项目 `projects/祝福のネトラレラ` 的原文、译文和 TM 目录；D-12 的通用 `CHAPTER_MAP` schema 已实现，但真实章节映射、缺失译文处理、数据来源/授权、凭据轮换状态、Provider 数据范围及端点部署仍待确认。先由维护者逐项核对真实清单；不得按章节号自动猜测、改写或搬动项目数据。未获 D-02 授权前，不要将真实书籍数据发送给任何 Provider。阶段 0 的这些门槛不阻止合成 fixture 的本地验证。
+4. 阶段 0 已定位忽略项目 `projects/祝福のネトラレラ` 的原文、译文和 TM 目录；用户于 2026-11-14 明确确认指定作品已获授权，按用户确认记录，不再把作品权利本身列为阻塞。D-12 的通用 `CHAPTER_MAP` schema 已实现，但真实章节映射、缺失译文处理、凭据轮换、Provider 数据范围及端点部署仍待确认。不得按章节号自动猜测、改写或搬动项目数据。Kakuyomu robots 禁止路径不可抓取或绕过；平台其他自动化接入方式须依专题方案记录并在实现前复核。Provider/Notion 具体接收方和数据类别分别遵守 D-02/D-14。
 5. Provider 配置按 `docs/model-provider-configuration-plan.md` 的 M0/M1 先定义契约；D-10 确认 `CODING_PLAN_*` 是否代表待支持 Provider。UI、真实 API、账户额度和模型默认值仍需决策/授权/实测，不因文档方案而视为已实现。
 6. D-11 决定译文文件和 TM 跨文件写入失败后的恢复责任；当前做法是保留译文、对非空译文缺失 TM 条目发出警告，不自动发布或重建 TM。若采用人工恢复，明确章节对齐脚本和验收步骤；若采用自动恢复，先定义审核状态与可恢复的提交记录。
 7. 阶段 3 下一步实现通用 Provider/能力接口前，先处理 M0/M1 与 D-02/D-09/D-10：明确获准 Provider 和数据类别、回退目标/重复计费策略、`CODING_PLAN_*` 的用途及配置契约。默认拒绝门禁已经实现，但当前无真实 Provider 授权；错误分类改进不解除真实 Provider 数据授权和兼容性验收门槛。
@@ -107,7 +113,16 @@
 - 阶段 0 干净安装复核：在一次性 Python 3.14.7 venv 中按未锁定的 `requirements.txt` 安装当日解析版本，`pip check` 无损坏依赖；55 项流水线契约和 4 项 mock E2E 通过（203.436 秒）。标准 `venv` 的 `ensurepip` 未成功，使用既有 pip 的 `--python <venv>` 目标模式安装；因此只证明本机单一 Python/Windows 解析集可运行，不证明版本范围或其他平台兼容。临时 venv 已清理，未修改依赖清单。
 - 文档一致性复核：修正阶段 3 路由/URL 定向测试数为 23；决策索引新增状态列，明确 `未知`、`部分实现`、`未验证` 与所需的人类决策，不将默认建议写成已确认决策。
 - 本轮代码/测试验证使用合成 fixture，未调用真实 Provider，也未由测试读取真实书籍章节；同日另有一项只读启发式诊断将 18 组原译章节载入本地内存，未打印、写入日志或传输，详见“已核实的现状”。`git diff --check` 通过；README 与 `docs/` 下 11 份活动 Markdown 的 40 个本地链接目标均存在，未检查标题锚点。
-- 尚无不依赖外部决策且已确认的后续代码改动：阶段 0 的真实映射/授权/凭据，阶段 2 的 D-01 知识审核责任和 D-11 写入恢复策略，阶段 3 的 D-02/D-09/D-10 Provider 范围与回退政策，及真实 Provider/质量验收均未关闭。五小时额度仍不可见；此状态不是额度阈值判断。
+- 尚无不依赖外部决策且已确认的后续代码改动：阶段 0 的真实章节映射、凭据轮换和 Provider/Notion 收件方数据范围，阶段 2 的 D-01 知识审核责任和 D-11 写入恢复策略，阶段 3 的 D-02/D-09/D-10 Provider 范围与回退政策，及真实 Provider/质量验收均未关闭。指定作品权利已按用户确认，不列为阻塞。五小时额度仍不可见；此状态不是额度阈值判断。
+- 历史记录：来源原型首次合并回归为 166 项运行、163 项通过、3 项 Windows 符号链接权限跳过；随后加入快照绑定和深层图回归，最新 174 项结果见本文“当前验证与剩余门槛”。该旧结果不代表当前改动版本。
+
+## I1/I2 续接
+
+1. 首先运行开发文档中的 10 模块单测命令和 `git diff --check`，确认当前工作区未发生新的外部改动。
+2. I2 的本地文件导入子项已实现，指定作品授权已由用户明确确认，不再作为阻塞。若确认符合 Kakuyomu/其他平台规则的自动化接入方式，再编写独立 parser/adapter contract 与纯本地 HTTP fixture；否则仅使用用户明确指定的本地文件，不请求 live URL，不尝试绕开 robots 路径。
+3. 已通过失败注入测试核实原文 artifact 发布后、manifest 更新失败时 checkpoint 保持待处理且重跑复用已落盘文件并完成 manifest；未实现 orphan artifact 清理。后续若增加清理/对账功能，先定义所有权和保留规则，不删除可能属于用户的文件。
+4. I1 后续补充状态生命周期、schema 迁移、清单引用文件完整性及与规范化/翻译版本的映射契约；I2/I1 真实数据接入前仍要确认保留/删除策略。
+5. 更新 `docs/roadmap.md`、`docs/project-status.md`、`docs/development.md` 和本 handoff 的状态/命令/验证证据。不要仅因用户确认作品授权就推断 Provider 或 Notion 收件方的数据类别授权；也不要将合成 fixture 结果表述为 live 平台或翻译质量验收。
 
 ## 安全差异审查续接（2026-11-14）
 
@@ -125,4 +140,14 @@
 - 已修复：共享段落校验规范化首尾空白并依据 `split_paragraphs` 拒绝序列化后会拆成多段的项目；章节号提取只检查文件名末段。回归确认格式错误在任何文件/TM 写入前被拒绝，并覆盖 `Volume 2/chapter10.md` 的第 10 章摘要与指导选择。
 - CodeRabbit 追加报告可选阶段解析失败未回退、畸形 TM 章节被误报为 `unindexed`、知识抽取测试依赖环境 API key，并重复提示段落拆分规则。已新增 `ResponseContractError`，反思/润色解析失败保留上一版译文、鉴权/传输错误继续上抛；TM 审计先校验章节数组；测试显式 mock API key。
 - 最新六模块定向单测 133 项运行、130 项通过、3 项因 Windows 符号链接创建权限跳过、0 项失败；4 个 mock E2E 通过（221.997 秒）；编译和 `git diff --check` 通过，详见 `docs/development.md`。
-- 用户普通 PowerShell 复跑路径安全模块为 9 项运行、3 项跳过；系统未授予符号链接创建权限，当前执行器也不能取得 Windows 管理员令牌，故这 3 项仍未实测。
+- 用户普通 PowerShell 复跑路径安全模块为 9 项运行、3 项因 `[WinError 1314]` 跳过。后续管理员 PowerShell 运行同一模块，9 项通过、0 项跳过；符号链接用例已实际覆盖。
+
+## 当前验证与剩余门槛（2026-11-14）
+
+- 在 PR #56 合并后的 `e5c3154` 基线与当前 I1/I2/本地文件读取及 scratch 输出修复工作树上，十模块定向单测 174 项运行、170 项通过、4 项环境/平台跳过、0 项失败；管理员复跑路径安全模块 11 项运行、10 项通过、1 项 FIFO 平台跳过。用户另行提供的普通 PowerShell 路径模块结果为 9 项运行、3 项跳过，不与当前模块测试计数合并。I2 adapter/CLI 独立测试 20 项，I1 manifest 测试 18 项通过。`tests/run_tests.py` 的 4 个本地 mock E2E 方法复跑通过（324.564 秒）；负向 fixture 的拦截/格式错误堆栈是预期输出。
+- 基线代码安全审查发现 TM 溯源路径可能指向 FIFO 并阻塞读取；当前工作树以 `O_NONBLOCK`/`fstat` 拒绝特殊文件，并增加模拟描述符与 POSIX FIFO 回归。Scratch 过滤诊断原先会打印摘要片段和词条名称；当前改为只输出计数、使用显式 workspace 参数，并由合成夹具验证未输出正文。
+- `compileall` 和 `pip check` 通过；GitHub 查询确认 PR #56 状态 `MERGED`，合并提交 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`。CodeRabbit 检查在合并后显示 `CANCELLED`，因此不能报告它以成功结论完成审查。
+- Codex Security Standard 报告 ID `9c221b31-2fd4-4018-b7e5-cfa8887dfd23` 已封存，目标精确基线 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，状态 `partial`；审阅 31/121 个 tracked files，21 项延期、69 项显式排除，报告两项低严重性发现。它不覆盖当前未提交 I1/I2 工作树，也不是全仓无问题结论。详情见[安全记录](../security-notes.md)。
+- Kakuyomu I0 初筛已记录在专题方案：官方条款、FAQ 与 robots 于 2026-11-14 查阅；用户明确确认指定作品已获授权。未访问作品页/章节正文；robots 禁止路径仍不得访问或绕过，Provider/Notion 的目标数据范围仍分别约束外发。
+- GitHub、单测与 E2E 均使用合成/本地数据；没有调用真实 Provider、作品站点或 Notion，没有打开真实书籍正文或凭据。仓库外部署、账户授权和真实翻译质量仍未知。
+- 作品授权门槛已按用户确认关闭；I1 状态生命周期、I2 获准站点接入方式、真实章节映射、Provider/Notion 目标和数据类别范围仍待处理。I2 输入目前没有大小/磁盘配额限制，根路径并发修改也没有目录句柄级保护；这些是扩大为不可信或大批量来源接入前的工程门槛。不得请求 robots 禁止路径或在未核定路径/映射时读取/写入忽略项目数据。

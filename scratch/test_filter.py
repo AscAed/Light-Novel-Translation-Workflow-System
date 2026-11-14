@@ -1,12 +1,9 @@
+import argparse
 import os
 import json
 import re
 from typing import List, Dict, Any, Optional
 from utils import extract_chapter_num
-
-WORKSPACE_DIR = r"d:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ_祝福的牛头人"
-GLOSSARY_PATH = os.path.join(WORKSPACE_DIR, "Glossary.json")
-STORY_SUMMARY_PATH = os.path.join(WORKSPACE_DIR, "STORY_SUMMARY.md")
 
 # Robust Glossary Parser
 def load_glossary(path: str) -> Dict[str, Any]:
@@ -33,11 +30,6 @@ def load_glossary(path: str) -> Dict[str, Any]:
             # If parsing fails, move forward to find next '{'
             pos = start + 1
     return merged
-
-# 1. Load data
-glossary = load_glossary(GLOSSARY_PATH)
-with open(STORY_SUMMARY_PATH, 'r', encoding='utf-8') as f:
-    story_summary = f.read()
 
 # 2. Define functions
 def extract_match_keywords(key: str) -> List[str]:
@@ -107,47 +99,71 @@ def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_
         result += "尚无符合条件的故事概要。"
     return result
 
-# 3. Test on raw chapter (we will use Chapter 23 or 10, or first raw file)
-raw_dir_1 = os.path.join(WORKSPACE_DIR, "生肉", "1.神んてらの世界")
-raw_dir_2 = os.path.join(WORKSPACE_DIR, "生肉", "2.小学五年生")
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run local glossary and story-summary filtering diagnostics."
+    )
+    parser.add_argument(
+        "--workspace",
+        default=os.environ.get("TRANSLATOR_WORKSPACE"),
+        help="Workspace containing Glossary.json, STORY_SUMMARY.md, and 生肉/.",
+    )
+    args = parser.parse_args(argv)
+    if not args.workspace:
+        parser.error("--workspace or TRANSLATOR_WORKSPACE is required.")
 
-test_chapter_file = None
-if os.path.exists(raw_dir_1):
-    for f in os.listdir(raw_dir_1):
-        if "第10" in f:
-            test_chapter_file = os.path.join(raw_dir_1, f)
+    workspace_dir = os.path.abspath(args.workspace)
+    glossary_path = os.path.join(workspace_dir, "Glossary.json")
+    summary_path = os.path.join(workspace_dir, "STORY_SUMMARY.md")
+    glossary = load_glossary(glossary_path)
+    with open(summary_path, "r", encoding="utf-8") as summary_file:
+        story_summary = summary_file.read()
+
+    raw_dirs = (
+        os.path.join(workspace_dir, "生肉", "1.神んてらの世界"),
+        os.path.join(workspace_dir, "生肉", "2.小学五年生"),
+    )
+    test_chapter_file = None
+    for raw_dir, chapter_marker in zip(raw_dirs, ("第10", "第23")):
+        if not os.path.exists(raw_dir):
+            continue
+        test_chapter_file = next(
+            (
+                os.path.join(raw_dir, filename)
+                for filename in os.listdir(raw_dir)
+                if chapter_marker in filename
+            ),
+            None,
+        )
+        if test_chapter_file:
             break
-if not test_chapter_file and os.path.exists(raw_dir_2):
-    for f in os.listdir(raw_dir_2):
-        if "第23" in f:
-            test_chapter_file = os.path.join(raw_dir_2, f)
-            break
 
-if not test_chapter_file:
-    if os.path.exists(raw_dir_1) and os.listdir(raw_dir_1):
-        test_chapter_file = os.path.join(raw_dir_1, os.listdir(raw_dir_1)[0])
+    if not test_chapter_file and os.path.exists(raw_dirs[0]):
+        files = os.listdir(raw_dirs[0])
+        if files:
+            test_chapter_file = os.path.join(raw_dirs[0], files[0])
 
-if test_chapter_file:
-    print(f"Testing on file: {test_chapter_file}")
-    with open(test_chapter_file, 'r', encoding='utf-8') as f:
-        raw_text = f.read()
-    
-    filename = os.path.basename(test_chapter_file)
-    chap_num = extract_chapter_num(filename)
+    if not test_chapter_file:
+        print("No raw chapter file found for testing.")
+        return 0
+
+    with open(test_chapter_file, "r", encoding="utf-8") as chapter_file:
+        raw_text = chapter_file.read()
+
+    chap_num = extract_chapter_num(os.path.basename(test_chapter_file))
     print(f"Parsed chapter number: {chap_num}")
-    
-    # Test Glossary Filtering
+
     filtered = filter_glossary(raw_text, glossary)
     print(f"Glossary Total Terms parsed: {len(glossary)}")
     print(f"Glossary Filtered Terms: {len(filtered)}")
-    print("Matched Terms list sample:", list(filtered.keys())[:10])
-    
-    # Test Story Summary Slicing
+
     if chap_num is not None:
         sliced_summary = get_sliced_story_summary(story_summary, chap_num)
         print("Story Summary Sliced Length (chars):", len(sliced_summary))
         print("Original Story Summary Length (chars):", len(story_summary))
-        print("\n--- Sliced Summary Sample ---")
-        print(sliced_summary[:400] + "\n...")
-else:
-    print("No raw chapter file found for testing.")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

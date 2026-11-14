@@ -2,6 +2,7 @@ import re
 import os
 import math
 import json
+import stat
 import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import List, Optional
@@ -171,21 +172,36 @@ def resolve_relative_path(
     return resolved
 
 
+def open_regular_file(path: str | Path, *, binary: bool = False):
+    """Open a regular file without blocking on special files such as FIFOs."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Path must refer to a regular file.")
+        if binary:
+            return os.fdopen(descriptor, "rb")
+        return os.fdopen(descriptor, "r", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def read_child_text(root: str, filename: str) -> str:
     """Read a regular file after checking that it stays directly under root."""
     path = resolve_child_path(root, filename)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+    with open_regular_file(path) as stream:
         return stream.read()
 
 
 def read_relative_text(root: str, relative_path: str) -> str:
     """Read a mapped file under root after checking each path component."""
     path = resolve_relative_path(root, relative_path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+    with open_regular_file(path) as stream:
         return stream.read()
 
 
