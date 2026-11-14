@@ -649,7 +649,7 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(adapter.catalog_calls, [])
         self.assertEqual(adapter.episode_calls, [])
 
-    def test_completed_legacy_checkpoint_migrates_without_fetching(self):
+    def test_completed_legacy_checkpoint_without_fingerprint_refuses_migration(self):
         checkpoint = new_checkpoint("work-1", "legacy-source")
         checkpoint["schema_version"] = 2
         checkpoint["status"] = "complete"
@@ -660,22 +660,24 @@ class SourceIngestionTests(unittest.TestCase):
             encoding="utf-8",
         )
         adapter = SyntheticSourceAdapter(
-            {None: CatalogPage((), None)},
-            {},
+            {
+                None: CatalogPage(
+                    (EpisodeMetadata("ep-1", "Episode", 1),),
+                    None,
+                )
+            },
+            {"ep-1": b"synthetic raw"},
         )
+        checkpoint_before = (self.root / "source_checkpoint.json").read_bytes()
 
-        report = collect_source(adapter, root=self.root, work_id="work-1")
+        with self.assertRaisesRegex(ValueError, "no source_fingerprint"):
+            collect_source(adapter, root=self.root, work_id="work-1")
 
-        migrated = json.loads(
-            (self.root / "source_checkpoint.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(report["status"], "complete")
-        self.assertEqual(migrated["schema_version"], 4)
-        self.assertEqual(migrated["source_fingerprint"], adapter.source_fingerprint)
         self.assertEqual(
-            migrated["manifest_relative_path"],
-            "source_manifest.json",
+            (self.root / "source_checkpoint.json").read_bytes(),
+            checkpoint_before,
         )
+        self.assertFalse((self.root / "source_manifest.json").exists())
         self.assertEqual(adapter.catalog_calls, [])
         self.assertEqual(adapter.episode_calls, [])
 

@@ -716,7 +716,7 @@ def collect_source(
                 "Legacy source checkpoint has no destination manifest identity; "
                 "use a new checkpoint path after verifying existing output."
             )
-        if checkpoint_version < 3 and checkpoint["status"] != "complete":
+        if checkpoint_version < 3:
             raise ValueError(
                 "Legacy source checkpoint has no source_fingerprint; use a new "
                 "checkpoint path after verifying the source catalog."
