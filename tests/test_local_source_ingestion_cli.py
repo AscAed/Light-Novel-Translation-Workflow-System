@@ -4,8 +4,10 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.ingest_local_sources import main
+from source_ingestion import new_checkpoint
 from source_manifest import load_manifest, verify_manifest_files
 
 
@@ -180,7 +182,10 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
 
     def test_cli_rejects_checkpoint_that_aliases_a_listed_source_file(self):
         checkpoint_source = self.source_root / "source_checkpoint.json"
-        checkpoint_source.write_bytes(b"synthetic source checkpoint input")
+        checkpoint_source.write_text(
+            json.dumps(new_checkpoint("synthetic-work", "synthetic-fingerprint")),
+            encoding="utf-8",
+        )
         original_bytes = checkpoint_source.read_bytes()
         self._write_catalog(
             [
@@ -193,11 +198,16 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
             ]
         )
 
-        result, stdout, stderr = self._run_cli(output_root=self.source_root)
+        with patch(
+            "scripts.ingest_local_sources.collect_source",
+            return_value={"status": "complete"},
+        ) as collect_source:
+            result, stdout, stderr = self._run_cli(output_root=self.source_root)
 
         self.assertEqual(result, 1)
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "ERROR: ValueError\n")
+        collect_source.assert_not_called()
         self.assertEqual(checkpoint_source.read_bytes(), original_bytes)
         self.assertFalse((self.source_root / "source_manifest.json").exists())
 
