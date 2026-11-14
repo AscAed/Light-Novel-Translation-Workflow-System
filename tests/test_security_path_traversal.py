@@ -1,9 +1,13 @@
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from utils import (
+    open_regular_file,
     read_child_text,
     read_relative_text,
     resolve_child_path,
@@ -27,6 +31,38 @@ class TestChapterPathBoundaries(unittest.TestCase):
             chapter = Path(temp_dir) / "chapter.md"
             chapter.write_text("chapter", encoding="utf-8")
             self.assertEqual(read_child_text(temp_dir, chapter.name), "chapter")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation is unavailable.")
+    def test_rejects_fifo_without_blocking(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fifo = root / "chapter.md"
+            os.mkfifo(fifo)
+
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                read_relative_text(str(root), fifo.name)
+
+    def test_open_regular_file_rejects_non_regular_descriptor(self):
+        with tempfile.TemporaryFile() as regular_file:
+            descriptor = os.dup(regular_file.fileno())
+            with (
+                patch("utils.os.open", return_value=descriptor) as open_file,
+                patch(
+                    "utils.os.fstat",
+                    return_value=SimpleNamespace(st_mode=stat.S_IFIFO),
+                ),
+                patch("utils.os.close") as close_file,
+            ):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    open_regular_file("synthetic-fifo", binary=True)
+
+            os.close(descriptor)
+            flags = open_file.call_args.args[1]
+            self.assertEqual(
+                flags & getattr(os, "O_NONBLOCK", 0),
+                getattr(os, "O_NONBLOCK", 0),
+            )
+            close_file.assert_called_once_with(descriptor)
 
     def test_reads_and_creates_files_under_explicit_relative_directories(self):
         with tempfile.TemporaryDirectory() as temp_dir:

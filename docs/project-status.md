@@ -1,6 +1,6 @@
 # 项目现状
 
-> 状态基准：2026-11-14。代码基线 HEAD 为 `5b6f7f5`（`Harden translation workflow audit findings (#55)`）。本次工作区还包含本地响应契约、章节格式门禁、Provider 路由统一解析、显式回退错误分类、请求超时、知识候选来源记录、TM 来源核验及审计 CLI 输出净化；未调用真实 Provider 或验证部署。工作区变更清单见[续接交接](handoffs/2026-11-14-translation-workflow.md)。状态不是生产部署声明。
+> 状态基准：2026-11-14。审查分支 `codex/source-ingestion-audit-20261114` 起点为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致；该提交包含已合并的 PR #56。本轮审查 I1/I2 原型、补充修复与文档，最终版本状态见[续接交接](handoffs/2026-11-14-translation-workflow.md)。已有主流程包括本地响应契约、章节格式门禁、Provider 路由/超时与数据授权检查、知识候选来源记录、TM 来源核验及审计 CLI 输出净化。来源原型只使用合成适配器/临时目录，未连接网络或读取作品内容。验证证据见[开发与验证](development.md)。
 
 ## 已实现
 
@@ -26,6 +26,8 @@
 - `部分实现` 运行日志隐私：校对严重意见不再输出；RAG embedding 失败日志、知识抽取和章节对齐 CLI 的已处理错误不输出异常正文；TM 来源审计 CLI 会转义不可打印字符，且拒绝空白 `TEST_WORKSPACE_DIR`。第三方 SDK、测试 runner 和其他外围工具仍可能产生自己的诊断输出，未做全局日志脱敏保证。
 - `部分实现` 路径边界：章节映射路径拒绝绝对路径、路径穿越和符号链接，译文/草稿采用排他新建，TM 采用原子替换；显式配置根目录仍由操作者负责，平台级并发链接竞态未完全封闭。
 - `部分实现` 配置：支持环境变量、项目目录及 JSON 配置路径；`API_TIMEOUT` 默认 10 秒并拒绝非有限或非正数，覆盖 OpenAI-compatible 聊天、Gemini 生成、RAG 和章节对齐 embedding；远端数据按 `PROVIDER_DATA_POLICY` 最小类别授权，默认拒绝。有基础 `requirements.txt`，但依赖未锁定，也没有完整部署配置。
+- `部分实现` 来源版本清单：`source_manifest.py` 提供本地 JSON schema v1、版本追加、SHA-256/相对路径语法和父版本图校验；图校验使用迭代算法，不受 Python 调用栈深度限制。`verify_manifest_files` 使用显式根目录和仓库现有安全路径解析，只读取清单列出的文件并核对原始字节哈希；`scripts/validate_source_manifest.py` 提供只读 CLI。目录扫描、生命周期状态/迁移、清单与流水线集成、采集和外部同步均未实现。
+- `部分实现` 来源接入核心：`source_ingestion.py` 定义注入式 `SourceAdapter` 和显式路径 `LocalFileAdapter`，`scripts/ingest_local_sources.py` 按 JSON catalog 只读归档指定本地文件，并在写入前拒绝输出路径与 catalog/章节输入文件别名。checkpoint v4 同时绑定适配器 `source_fingerprint` 和目标 manifest 相对路径；本地指纹包含 catalog 顺序、元数据、相对路径和源文件 SHA-256，读取时复核文件未变化。快照或目标不匹配均拒绝恢复；缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且无已完成条目时可补齐目标身份。artifact ID 由作品、类型和章节标识的规范化元组派生。source_ref 写入 episode metadata。无 HTTP 客户端、具体站点解析器、缺失/删除差分或 live 采集；未接入流水线。
 
 ## 计划
 
@@ -38,7 +40,7 @@
 - `未知` Sakura 服务实际部署位置、模型权重/版本和运行参数。代码默认 URL 为 `http://127.0.0.1:6006/v1`；2026-11-14 本次 `Test-NetConnection` 复核该端口不可达，其他地址未探测。
 - `未知` DeepSeek/Gemini 凭据是否已轮换、账户权限、配额、API 兼容性和真实端到端翻译质量。本次未调用外部 API。
 - `未知` 除当前工作区外是否存在云端部署、自动化任务或用户界面；仓库未找到相关部署清单或 CI 工作流。
-- `未知` 数据来源授权和章节完整性：已定位被 `.gitignore` 排除的 `projects/祝福のネトラレラ`；有 48 个原文 Markdown，其中 39 个文件名匹配“第 N 话”；译文目录有 19 个 Markdown，其中 18 个章节与原文同名，另有 EPUB `README.md`。原文分在两个卷目录，译文分在正文和 EPUB 两个目录，根目录没有 Markdown。此前项目模式按各自 `os.listdir` 首项选子目录，可能只覆盖一个原文卷或选择 EPUB；现已改为遇到子目录时拒绝自动选择，需通过 JSON 明确路径。TM 有 19 个章节键，均对应原文，其中 `第19話.md` 没有同名译文；其余 18 组递归同名章节经现有启发式映射后，仍有 31 个原文段落和 1 个译文段落未映射。只读来源审计返回 19 个 `unindexed`、退出码 2；原文来源、授权、内容质量及其他数据位置仍未确认。外侧同名工作区只有 `.gitattributes` 和 `.gitignore`；完整目录映射见 D-12。
+- `未知` 数据位置、章节完整性及其与授权作品的对应关系：已定位被 `.gitignore` 排除的 `projects/祝福のネトラレラ`；有 48 个原文 Markdown，其中 39 个文件名匹配“第 N 话”；译文目录有 19 个 Markdown，其中 18 个章节与原文同名，另有 EPUB `README.md`。原文分在两个卷目录，译文分在正文和 EPUB 两个目录，根目录没有 Markdown。此前项目模式按各自 `os.listdir` 首项选子目录，可能只覆盖一个原文卷或选择 EPUB；现已改为遇到子目录时拒绝自动选择，需通过 JSON 明确路径。TM 有 19 个章节键，均对应原文，其中 `第19話.md` 没有同名译文；其余 18 组递归同名章节经现有启发式映射后，仍有 31 个原文段落和 1 个译文段落未映射。只读来源审计返回 19 个 `unindexed`、退出码 2；以上数据与用户已确认获得授权的试点作品是否为同一数据集尚未核对。作品授权已由用户明确确认；Kakuyomu 自动化访问方式及 Provider/Notion 的逐目标范围见专题方案。
 - `未知` `TEST_READY.md` 中历史“71”计数与当前测试的对应关系；最近一次测试报告按实际 unittest 方法和命令记录，不沿用该计数。
 - `未知` 不同操作系统对无符号链接打开标志和目录并发修改的实际保证；最近一次回归测试状态见[开发与验证](development.md)。
 
@@ -49,6 +51,10 @@
 - `.agents/` 中的旧计划、handoff 和测试结论来自不同工作阶段，含旧路径和过期“71 项”状态，只作历史记录，不作为当前运行、部署或验收证据。
 
 ## 最近一次验证记录
+
+2026-11-14 最新来源导入验证：代码提交 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7` 的来源/本地 CLI 两模块 28 项通过；连同路径安全模块共运行 39 项，35 项通过、4 项跳过。普通权限下 3 个符号链接用例受 `[WinError 1314]` 影响、FIFO 用例因 Windows 平台能力跳过；管理员 PowerShell 对同一代码提交运行路径安全模块 11 项，10 项通过、仅 FIFO 用例跳过，符号链接用例均通过。`compileall` 与 `git diff --check` 通过。用户另行提供的 9 项运行/3 项跳过输出没有 SHA 和逐项原因，独立保留。该验证只使用本地合成数据，不覆盖真实 Provider、站点或部署。更早的十模块 174 项与 mock E2E 4 项结果属于 `e5c3154` 基线工作树，不能替代当前提交验证。GitHub 在 PR #57 当前 head `a755074` 上查询时显示仍开放，combined status 与 Actions workflow runs 均为空；该 head 相对已审查代码仅包含文档状态更新。Codex 对 `caf804d` 的审查已完成且无发现。CodeRabbit 自动审查已暂停：最后审阅提交为 `5dd5202`，当前 head `a755074` 未被其审阅。三条旧问题线程已逐项复核并解决。Codex Security Standard 报告针对精确基线 `e5c3154`，覆盖为 partial，审阅 31/121 个跟踪文件并报告两项低严重性发现；当前代码提交未被该扫描覆盖。详见[开发与验证](development.md)、[安全记录](security-notes.md)及[续接交接](handoffs/2026-11-14-translation-workflow.md)。
+
+以下为各自提交基线下的历史验证记录，不表示当前工作树的验证结果：
 
 2026-11-14 PR 复审修复后，六模块定向单测 133 项运行、130 项通过、3 项因 Windows 符号链接权限跳过、0 项失败；mock E2E 4 项通过（221.997 秒）；Python 编译和 `git diff --check` 通过。覆盖段落来源映射、多卷章节号、可选阶段解析回退、TM 畸形结构分类和测试 API key 隔离；均使用合成数据。细节见[开发与验证](development.md)。
 
@@ -65,4 +71,4 @@
 - 当时涉及的 Python 文件 `py_compile` 通过；活动 Markdown 链接检查和暂存差异检查结果见[开发与验证](development.md)。
 - 当时本机 `127.0.0.1:6006` 连通性检查失败。
 - E2E 只连接本机 mock server；没有真实 Provider、生产部署或翻译质量验收证据。
-- Codex Security 自动扫描未生成正式报告；详细限制见[安全记录](security-notes.md)。
+- 2026-11-13 的一次历史 Codex Security 扫描未生成正式报告；2026-11-14 后续 Standard 扫描已形成 `partial` 报告，覆盖限制见[安全记录](security-notes.md)。

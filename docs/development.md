@@ -87,6 +87,7 @@ python -m unittest tests.test_align_chapters_unit
 python -m unittest tests.test_rag_engine_unit
 python -m unittest tests.test_knowledge_extraction_unit
 python -m unittest tests.test_tm_provenance_unit
+python -m unittest tests.test_source_manifest
 ```
 
 `validate_tm_provenance.py` 不写入 TM。退出码 `0` 表示有来源索引的条目与当前文件匹配且无未索引章节；`1` 表示索引结构、哈希或段落内容不一致；`2` 表示存在旧 TM 无索引、部分/未匹配来源或无法读取的源文件。退出码 `2` 不代表审计通过。
@@ -116,6 +117,70 @@ python -m pip install -r requirements.txt
 
 ## 最近一次验证记录
 
+### 2026-11-14 审计续接与来源安全修复
+
+- 审计分支 `codex/source-ingestion-audit-20261114` 的基线为 `e5c315452fdef7efa71b06adabbe3fc8ccaa23f9`，与 `origin/main` 一致；PR #56 已于 2026-11-14 10:04:56 UTC 合并为该提交。以下单测在该基线加当前未提交改动的工作树中运行。
+- 十模块定向单测命令运行 174 项、170 项通过、4 项跳过、0 项失败。普通 PowerShell 下 3 个符号链接测试因 `[WinError 1314]` 跳过，POSIX FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过；文件类型模拟测试通过。管理员 PowerShell 重跑 `tests.test_security_path_traversal` 后 11 项运行、10 项通过、1 项跳过、0 项失败，3 个符号链接路径行为均实际执行，FIFO 用例仍因平台能力跳过。
+- 用户另行提供的普通 PowerShell 路径安全模块输出为 `Ran 9 tests ... OK (skipped=3)`。当前工作树同一模块有 11 个测试方法；该 9 项结果保留为独立运行记录，不替代当前 11 项版本的管理员运行。
+- 较早的来源原型/manifest/CLI 三模块验证运行 38 项、全部通过。回归覆盖恢复快照错配拒绝、本地文件变化检测、旧 checkpoint 的 fail-closed 行为、非法状态类型及 1,200 节点无环版本链。
+- `.\.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 4 个方法通过，324.564 秒，退出码 0。负向 fixture 输出的 Provider 拦截和格式错误堆栈是预期结果；不是生产 API 调用或失败测试。
+- `.\.venv\Scripts\python.exe -m compileall -q pipeline.py rag_engine.py utils.py source_manifest.py source_ingestion.py scripts tests` 与 `.\.venv\Scripts\python.exe -m pip check` 均通过；后者报告 `No broken requirements found`。
+- 来源验证还修复两项终端/资源风险：普通文件 helper 使用非阻塞打开及 `fstat` 拒绝 FIFO；`scratch/test_filter.py` 移除本地绝对工作区路径和摘要/词条正文输出，改用 `--workspace` 或 `TRANSLATOR_WORKSPACE`，只打印计数。`tests.test_scratch_filter` 用合成目录验证无路径、摘要或原文内容泄露。
+- 未安装 `pip-audit`，本轮未运行依赖漏洞公告扫描；`pip check` 只检查已安装依赖的版本约束一致性，不能替代 CVE/advisory 检查。没有为此安装新工具或联网解析依赖。
+- 上述测试只使用合成输入和本地 mock；没有调用真实 Provider、平台、Notion，没有访问被忽略的书籍项目内容，也没有检查真实凭据或仓库外部署。依赖仍未锁定；CI/部署和真实模型质量未验证。
+
+### 2026-11-14 历史任务分支复核（`684dea2`）
+
+- 基线：`codex/translation-workflow-20261114`，HEAD `684dea245b91ebbb4b9998935d8eb1e044c3035f`；本次执行的是该提交的本地工作区。
+- `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q`：133 项运行、130 项通过、3 项因 Windows 未授予符号链接创建权限跳过、0 项失败。
+- `.venv\Scripts\python.exe tests\run_tests.py`：4 个本地 mock E2E 方法通过，213.837 秒，退出码 0。
+- 生产与相关测试 Python 文件 `py_compile` 通过。README 与 `docs/` 下 12 份活动 Markdown 的 65 个本地目标链接均存在；此检查不验证标题锚点。
+- 仅使用合成 fixture 和本地 mock；没有调用真实 Provider、访问作品页面、读取/改写书籍正文，或测试 Notion、采集、EPUB 集成。3 项符号链接行为仍未覆盖。
+- 本次复核额度信息不可见，未判断是否达到任何额度阈值。
+
+### 2026-11-14 I1 来源版本清单原型
+
+- 新增 `source_manifest.py`、只读 CLI `scripts/validate_source_manifest.py` 与 `tests/test_source_manifest.py`。schema v1 校验逻辑/版本 ID、内容 SHA-256、相对路径语法、唯一文件路径、父版本存在性及无环关系；追加操作使用既有原子替换 helper。`verify_manifest_files(root, manifest)` 仅核验显式清单列出文件的字节 SHA-256，使用 `utils.resolve_relative_path` 限定范围，不扫描目录。
+- `.\.venv\Scripts\python.exe -m unittest tests.test_source_manifest -v`：当前 18 项合成测试通过。覆盖清单 schema/父版本、1,200 节点深层无环链、正确和错误文件哈希、无路径元数据项、路径穿越与缺失文件拒绝、CLI 成功/失败、失败不打印正文和不修改源文件。
+- `.\.venv\Scripts\python.exe -m py_compile source_manifest.py scripts\validate_source_manifest.py tests\test_source_manifest.py`：通过；`.\.venv\Scripts\python.exe scripts\validate_source_manifest.py --help`：通过。
+- I2 编排核心完成前，将 I1 加入六个既有定向单元模块后运行 150 项，147 项通过、3 项因 Windows 符号链接权限跳过、0 项失败；这是当时的阶段记录，不是当前合并测试总数。
+- 首轮单测发现夹具把 `raw_source` 与 `normalized_source` 错用为同一逻辑 ID，并且重复版本 ID 的断言先遇到路径冲突；已拆分逻辑 ID 并调整校验顺序，复跑通过。
+- 此原型只在显式调用文件核验函数/CLI 且给出根目录时读取被清单列出的文件字节；不扫描或修改目录，不实现状态生命周期/旧 schema 迁移/流水线集成/采集。完整 mock E2E 未因该隔离模块改动而重跑；真实作品内容未访问。
+- 用户于 2026-11-14 明确确认指定作品已获授权。该用户声明记录为人类确认；Kakuyomu 自动化访问方式与 Provider/Notion 的接收方/数据类别边界仍分别处理，见专题方案。
+
+### 2026-11-14 I2 无网络采集编排核心
+
+- 新增 `source_ingestion.py`：平台适配器通过 `SourceAdapter` 注入目录页与原文 bytes，并提供稳定的 `source_fingerprint`；核心负责编排分页、checkpoint 续传、metadata/raw 版本写入、父版本关系、相同内容幂等、访问拒绝/限流/暂时不可用暂停及分页循环停止。checkpoint v4 同时绑定来源指纹与目标 manifest 相对路径，恢复前核对两者。artifact ID 来自作品 ID、artifact kind 和章节 ID 的规范化 JSON 元组哈希。没有 HTTP 客户端、站点解析器、重试/退避策略、删除差分、并发锁或翻译流水线集成。
+- 原文 bytes 先写入同目录临时文件、刷新并 `fsync`，再以不覆盖的硬链接发布；metadata、原文和 checkpoint 路径受显式根目录限制。该机制在本地 Windows 临时目录测试通过；其他文件系统对硬链接的支持仍需确认。意外 I/O 异常可能留下未引用文件，但不会把未完整写入的目标文件当作有效 artifact；重跑按内容寻址路径复用并核对哈希。
+- 新增 `LocalFileAdapter` 和 `scripts/ingest_local_sources.py`：根据显式 JSON catalog 只读指定本地文件；拒绝越界/符号链接路径、重复 episode 和重复文件路径。每个 episode metadata 保存 `source_ref`；未指定时使用 source-root 相对路径。输入 catalog 不被复制；metadata 记录 catalog 中的逐话来源字段。命令不联网、不打印原文；完成返回 0、暂停返回 2、输入/处理错误返回 1。写入前拒绝 manifest/checkpoint 输出路径与 catalog 或章节输入文件别名。checkpoint v4 绑定适配器快照指纹和规范化目标 manifest 路径；本地指纹覆盖目录顺序、元数据、相对路径和源文件 SHA-256，读取时再次校验内容。缺少目标身份且已有已完成条目的旧 checkpoint 拒绝迁移；v1/v2 因缺少可核验来源指纹一律拒绝自动迁移；v3 仅在指纹匹配且没有已完成条目时可补齐目标身份。
+- 来源恢复回归覆盖同一 `work_id` 下 catalog/源文件快照或目标 manifest 变化时拒绝续传、已完成 checkpoint 不能切换 manifest、旧 checkpoint 迁移边界、artifact ID 分隔符碰撞、文件初始化后变化时拒绝读取及非法 checkpoint 状态类型。
+- 在代码提交 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7` 上，来源与本地 CLI 模块运行 28 项合成测试，全部通过。覆盖分页/续传、快照与目标绑定、旧 checkpoint 迁移边界、输出与输入路径别名拒绝（含文件系统身份比较）、显式本地路径、`source_ref`、失败恢复、幂等、路径边界和无正文 CLI 输出。
+- 同一代码提交上的三模块定向回归共 39 项，35 项通过、4 项跳过、无失败；普通权限的 `tests.test_security_path_traversal` 中 3 项因 `[WinError 1314]` 无法创建符号链接、1 项因 Windows 不支持 `os.mkfifo` 而跳过。管理员 PowerShell 对同一提交复跑路径安全模块，11 项运行、10 项通过、仅 FIFO 用例因平台不支持而跳过，3 个符号链接用例均通过。`compileall` 与 `git diff --check` 通过。
+- 用户另行提供过路径安全模块 9 项运行、3 项跳过的输出；该输出未绑定 SHA，也未包含逐项跳过原因，作为独立运行记录保留，不替代上述当前提交结果。
+- 最小 catalog 示例（路径和标识均为合成值，不含书籍正文）：
+
+  ```json
+  {
+    "schema_version": 1,
+    "work_id": "sample-work",
+    "episodes": [
+      {
+        "episode_id": "sample-episode-001",
+        "title": "Sample Episode",
+        "position": 1,
+        "relative_path": "volume-1/episode-001.md",
+        "source_ref": "local:volume-1/episode-001.md"
+      }
+    ]
+  }
+  ```
+
+  CLI 示例：`.\.venv\Scripts\python.exe scripts\ingest_local_sources.py --source-root "D:\path\to\source" --catalog source_catalog.json --output-root "D:\path\to\archive"`。catalog schema v1 根对象字段为 `schema_version`、`work_id`、`episodes`；episode 字段为 `episode_id`、`title`、`position`、`relative_path`，`source_ref` 可选。catalog 和每个 source file 都必须位于 `--source-root` 下；`--output-root` 必须是已存在目录。成功只表示显式本地文件已归档，不证明文件来源获取方式获平台许可。
+- 原来源原型阶段在 `684dea2` 基线上运行 166 项、163 项通过、3 项因 Windows 符号链接创建权限跳过；这是历史结果，当前审计续接后的 174 项结果见本节顶部。I1 清单当前 18 项、I2 adapter/CLI 当前 20 项通过。
+- Python 编译：`.\.venv\Scripts\python.exe -m py_compile source_manifest.py source_ingestion.py scripts\validate_source_manifest.py scripts\ingest_local_sources.py tests\test_source_manifest.py tests\test_source_ingestion.py tests\test_local_source_ingestion_cli.py`。CLI 入口检查：`.\.venv\Scripts\python.exe scripts\ingest_local_sources.py --help` 和 `.\.venv\Scripts\python.exe scripts\validate_source_manifest.py --help`；以上命令均通过。
+- 当时未因 I1/I2 与生产翻译路径隔离而重跑 mock E2E；后续审计续接已重跑，结果见本节顶部。没有访问作品页、真实书籍正文、真实 Provider 或 Notion。作品授权已按用户明确确认记录；平台自动化访问方式、Provider/Notion 接收方和数据类别仍分别处理。
+- 作品授权已按用户 2026-11-14 明确确认记录，不再列作阻塞。Kakuyomu 官方规则核查见[专题方案](source-ingestion-and-publication-plan.md#kakuyomu-i0-规则核查-2026-11-14)：具体自动化接入方式仍未知，因此 I2 仅提供本地显式文件导入与平台无关核心，不实现 Kakuyomu live 适配器。
+
 ### 2026-11-14 PR #56 复审修复
 
 - 段落校验先去除模型输出的首尾空白，再用 `split_paragraphs` 拒绝会被保存格式拆分成多个段落的项目；回归确认拒绝发生在译文和 TM 落盘前。
@@ -123,7 +188,7 @@ python -m pip install -r requirements.txt
 - 反思重译和润色将无效 JSON 归类为 `ResponseContractError` 并保留上一版译文；401 等鉴权错误、传输错误不吞掉。TM 溯源审计先校验章节值是否为数组，再区分畸形结构 `invalid` 与合法旧章节 `unindexed`。知识抽取测试显式 mock API key，不依赖宿主环境变量。
 - `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q`：133 项运行、130 项通过、3 项因 Windows 未授予符号链接创建权限跳过、0 项失败。
 - `.venv\Scripts\python.exe tests\run_tests.py`：4 个本地 mock E2E 方法通过，221.997 秒，退出码 0。修改涉及的 Python 文件 `py_compile`、`git diff --check` 通过。
-- 用户在普通 PowerShell 中复跑 `tests.test_security_path_traversal`：9 项运行、6 项通过、3 项仍因符号链接权限跳过；该运行未获得管理员令牌。
+- 用户在普通 PowerShell 中另行提供 `tests.test_security_path_traversal` 输出：9 项运行、3 项跳过；该输出没有 SHA 或逐项跳过原因，不能据此确定该运行所测代码与当前提交的关系。当前提交上的权限受限和管理员运行结果见本节“I2 无网络采集编排核心”。
 - PR 自动审查报告段落来源索引、嵌套路径章节号、可选阶段解析失败回退、TM 畸形章节分类和 API key 测试隔离；以上修改和回归覆盖这些问题。验证只使用合成 fixture 与本地 mock，未调用真实 Provider 或部署服务。
 
 ### 2026-11-14 TM 来源审计 CLI 输出边界
@@ -247,7 +312,7 @@ python -m pip install -r requirements.txt
 - 当时涉及的生产和测试 Python 文件通过 `py_compile` 编译。
 - 当时活动 Markdown 链接检查为 20 份文档、44 个本地链接，无缺失目标；`.agents/` 历史记录不纳入活动文档检查。最终暂存差异 `git diff --cached --check` 通过。
 - 本机 `127.0.0.1:6006` 不可达；未调用 Sakura、DeepSeek 或 Gemini 外部服务。可访问的书籍数据目录没有预期章节文件。
-- Codex Security 自动扫描未生成正式报告，原因和覆盖限制记录于[安全记录](security-notes.md)；不能将其解释为扫描通过。
+- 此前一次 Codex Security 自动扫描未生成正式报告；2026-11-14 后续 Standard 扫描已生成 `partial` 报告，覆盖与限制见[安全记录](security-notes.md)。此前失败记录不能解释为扫描通过。
 
 当时的 E2E 测试将 `TEMP`/`TMP` 指向仓库 `scratch/` 后运行；普通沙盒曾对临时文件创建返回 `Access denied`。其他环境需保证 Python 临时目录可写。运行期间的预期负向用例会打印 Provider 拦截或格式校验失败日志；以 unittest 最终退出码和汇总为准。
 
