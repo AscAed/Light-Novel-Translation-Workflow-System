@@ -47,6 +47,11 @@ from source_manifest import (  # noqa: E402
     load_manifest,
     verify_manifest_artifact,
 )
+from translation_plan_approval import (  # noqa: E402
+    translation_plan_sha256,
+    verify_approval_receipt,
+    write_new_json,
+)
 from utils import (  # noqa: E402
     open_regular_file,
     read_relative_text,
@@ -270,8 +275,10 @@ def preview_translation_plan(
         "schema_version": 1,
         "status": "ready_for_review" if not issues else "blocked",
         "work_id": work_id,
+        "source_root": str(source_path),
         "catalog": catalog.replace("\\", "/"),
         "manifest": manifest.replace("\\", "/"),
+        "translation_root": str(translation_path),
         "episode_count": len(planned_episodes),
         "verified_source_count": sum(
             episode["source_version_id"] is not None
@@ -293,13 +300,7 @@ def preview_translation_plan(
         "episodes": planned_episodes,
         "issues": issues,
     }
-    canonical_plan = json.dumps(
-        plan,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    plan["plan_sha256"] = hashlib.sha256(canonical_plan).hexdigest()
+    plan["plan_sha256"] = translation_plan_sha256(plan)
     return plan
 
 
@@ -414,6 +415,7 @@ def run_workflow(
     work_url: str | None = None,
     translation_root: str,
     config_file: str,
+    approval_receipt: str | None = None,
     discovered_catalog: str = "source_catalog.discovered.json",
     manifest: str = "source_manifest.json",
     checkpoint: str | None = None,
@@ -428,6 +430,11 @@ def run_workflow(
         raise ValueError("Specify exactly one of catalog or work_url.")
     source_path, translation_path = _resolve_roots(
         source_root, translation_root
+    )
+    discovered_catalog_path = resolve_relative_path(
+        str(source_path),
+        discovered_catalog,
+        allow_missing=True,
     )
     config_path = Path(config_file).resolve(strict=True)
     if not config_path.is_file():
@@ -468,6 +475,7 @@ def run_workflow(
         work_id, episodes, catalog_path = _load_catalog(
             str(source_path), catalog
         )
+    uses_discovered_catalog = catalog_path == discovered_catalog_path
     _validate_output_paths(
         str(source_path),
         str(source_path),
@@ -515,7 +523,7 @@ def run_workflow(
             "pending_count": source_report["pending_count"],
             "discovered_catalog": (
                 str(catalog_path.relative_to(source_path))
-                if discovery is not None
+                if uses_discovered_catalog
                 else None
             ),
         }
@@ -539,6 +547,35 @@ def run_workflow(
         )
 
     Config.CHAPTER_MAP = chapter_map
+    plan_catalog = (
+        catalog.replace("\\", "/")
+        if catalog is not None
+        else str(catalog_path.relative_to(source_path)).replace("\\", "/")
+    )
+    plan = preview_translation_plan(
+        source_root=str(source_path),
+        catalog=plan_catalog,
+        translation_root=str(translation_path),
+        manifest=manifest,
+    )
+    if approval_receipt is None:
+        status = (
+            "approval_required"
+            if plan["status"] == "ready_for_review"
+            else "translation_plan_blocked"
+        )
+        return {
+            "status": status,
+            "work_id": work_id,
+            "discovered_catalog": (
+                str(catalog_path.relative_to(source_path))
+                if uses_discovered_catalog
+                else None
+            ),
+            "plan": plan,
+        }
+    approval = verify_approval_receipt(approval_receipt, plan)
+
     pipeline = TranslationPipeline()
     tm_data = pipeline.rag.tm_data
     tm_chapters = tm_data.get("chapters", {})
@@ -573,9 +610,12 @@ def run_workflow(
     return {
         "status": "complete",
         "work_id": work_id,
+        "translation_plan_sha256": plan["plan_sha256"],
+        "approval_reviewer": approval["approved_by"],
+        "approval_at_utc": approval["approved_at_utc"],
         "discovered_catalog": (
             str(catalog_path.relative_to(source_path))
-            if discovery is not None
+            if uses_discovered_catalog
             else None
         ),
         "discovery_fingerprint": (
@@ -628,6 +668,17 @@ def main(argv: list[str] | None = None) -> int:
             "provider-free chapter mapping preview."
         ),
     )
+    parser.add_argument(
+        "--plan-output",
+        help=(
+            "Write the --plan-only JSON report to a new file; existing files "
+            "are never overwritten."
+        ),
+    )
+    parser.add_argument(
+        "--approval-receipt",
+        help="Required local human-approval receipt for translation execution.",
+    )
     parser.add_argument("--manifest", default="source_manifest.json")
     parser.add_argument("--checkpoint")
     parser.add_argument(
@@ -652,12 +703,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.plan_only:
         if args.config:
             parser.error("--config is not used with --plan-only.")
+        if args.approval_receipt:
+            parser.error("--approval-receipt is only used for translation.")
         if args.work_url:
             parser.error("--plan-only requires an existing --catalog; it does not access the network.")
         if not args.catalog:
             parser.error("--plan-only requires --catalog.")
+        if args.plan_output is not None and not args.plan_output.strip():
+            parser.error("--plan-output must be a non-empty path.")
     elif not args.config:
         parser.error("--config is required unless --plan-only is set.")
+    elif not args.approval_receipt:
+        parser.error("--approval-receipt is required for translation execution.")
+    elif args.plan_output:
+        parser.error("--plan-output can only be used with --plan-only.")
     if (args.catalog is None) == (args.work_url is None):
         if not args.plan_only:
             parser.error("Specify exactly one of --catalog or --work-url.")
@@ -670,6 +729,9 @@ def main(argv: list[str] | None = None) -> int:
                 translation_root=args.translation_root,
                 manifest=args.manifest,
             )
+            if args.plan_output:
+                report["filesystem_writes"] = 1
+                write_new_json(args.plan_output, report)
         else:
             report = run_workflow(
                 source_root=args.source_root,
@@ -677,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
                 work_url=args.work_url,
                 translation_root=args.translation_root,
                 config_file=args.config,
+                approval_receipt=args.approval_receipt,
                 discovered_catalog=args.discovered_catalog,
                 manifest=args.manifest,
                 checkpoint=args.checkpoint,

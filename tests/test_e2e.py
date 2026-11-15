@@ -15,6 +15,7 @@ from unittest.mock import patch
 from scripts.ingest_local_sources import main as ingest_local_sources_main
 from scripts.run_kakuyomu_workflow import run_workflow
 from source_ingestion import collect_source, materialize_episode_markdown
+from translation_plan_approval import create_approval_receipt, write_new_json
 from tests.test_kakuyomu_page_source import (
     EPISODE_ID as KAKUYOMU_EPISODE_ID,
     EXPECTED_TEXT as KAKUYOMU_EXPECTED_TEXT,
@@ -270,7 +271,7 @@ class E2ETestSuite(unittest.TestCase):
 
     def test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation(self):
         from kakuyomu_page_source import discover_kakuyomu_work_catalog
-        from pipeline import Config
+        from pipeline import Config, TranslationPipeline
 
         work_html = make_kakuyomu_work_page_html(
             KAKUYOMU_WORK_ID,
@@ -295,15 +296,18 @@ class E2ETestSuite(unittest.TestCase):
             }
         )
         clock = KakuyomuFakeClock()
+        discovered_works = []
 
         def discover_test_work(work_url, **options):
-            return discover_kakuyomu_work_catalog(
+            discovered = discover_kakuyomu_work_catalog(
                 work_url,
                 opener=opener,
                 sleep=clock.sleep,
                 clock=clock.now,
                 **options,
             )
+            discovered_works.append(discovered)
+            return discovered
 
         def load_test_config(*, config_file):
             self.assertEqual(config_file, config_path)
@@ -343,9 +347,13 @@ class E2ETestSuite(unittest.TestCase):
                 "rag_engine.RAGEngine._generate_embedding_sync",
                 return_value=[0.1] * 768,
             ),
+            patch(
+                "scripts.run_kakuyomu_workflow.TranslationPipeline",
+                wraps=TranslationPipeline,
+            ) as pipeline_factory,
             redirect_stdout(workflow_output),
         ):
-            report = run_workflow(
+            preview_report = run_workflow(
                 source_root=self.raw_dir,
                 work_url=KAKUYOMU_WORK_URL,
                 translation_root=self.output_dir,
@@ -354,6 +362,32 @@ class E2ETestSuite(unittest.TestCase):
                 config_loader=load_test_config,
                 discovery_factory=discover_test_work,
             )
+            self.assertEqual(preview_report["status"], "approval_required")
+            pipeline_factory.assert_not_called()
+            receipt_path = os.path.join(
+                self.test_dir, "translation-plan-approval.json"
+            )
+            write_new_json(
+                receipt_path,
+                create_approval_receipt(
+                    preview_report["plan"],
+                    "synthetic reviewer",
+                ),
+            )
+            report = run_workflow(
+                source_root=self.raw_dir,
+                catalog=preview_report["discovered_catalog"],
+                translation_root=self.output_dir,
+                config_file=config_path,
+                approval_receipt=receipt_path,
+                checkpoint="source_checkpoint.discovered.json",
+                config_loader=load_test_config,
+                adapter_factory=lambda *_args: (
+                    discovered_works[0].create_page_adapter()
+                ),
+            )
+            self.assertEqual(report["status"], "complete", report)
+            pipeline_factory.assert_called_once()
 
         self.assertEqual(report["status"], "complete")
         self.assertEqual(
