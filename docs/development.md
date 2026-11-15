@@ -1,5 +1,18 @@
 # 开发与验证
 
+## 2026-11-16 主线复核（PR #63 后）
+
+- 基线：`main` HEAD `fe43ea3fb9ff6ac3a901e4c73641bcb9c6af38e6`；该提交只同步 Markdown，代码基线为 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`。本轮基于该主线创建 PR #64 文档分支，代码未变更。
+- 当前 checkout 普通权限运行 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 项符号链接测试因 `WinError 1314` 缺少创建权限，1 项 FIFO 测试因 Windows 不提供 `os.mkfifo` 跳过。
+- 经用户授权在管理员 PowerShell 下重跑同一模块：11 项运行、10 项通过、1 项因 Windows FIFO 能力跳过；3 项符号链接测试均执行并通过。管理员运行命令为 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`。
+- 用户另行提供的 `-q` 结果为 9 项、3 项跳过；该汇总不含测试名称/原因，且测试数与当前 checkout 的 11 个测试方法不符，因此不将其归属到当前 SHA。当前 checkout 的普通权限和管理员结果以上述 verbose 运行记录为准。
+- GitHub 复核确认 PR #56、#58、#62、#63 均已合并；创建本次 PR #64 前，`gh pr list --state open` 返回空列表。PR #62 合并提交为 `c988c4b`，PR #63 文档同步提交为 `fe43ea3`。
+- 当前代码基线完整非 E2E 回归：按 `tests/test_*.py` 扫描并排除 `test_e2e.py`，发现 21 个模块；运行 368 项、0 失败、4 项跳过（3 项符号链接权限限制、1 项 Windows FIFO 能力限制）。该结果运行于 PR #64 的文档分支，代码未偏离 `c988c4b`。
+- 当前完整 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、全部通过，242.450 秒，退出码 0。输出中的内容过滤和段落错配异常来自预期负向 fixture；请求只发往本机 mock server。
+- `.venv\Scripts\python.exe -m compileall -q pipeline.py rag_engine.py utils.py source_manifest.py source_ingestion.py chapter_transaction.py story_summary_review.py tm_review.py epub_builder.py scripts tests` 与 `.venv\Scripts\python.exe -m pip check` 通过；后者输出 `No broken requirements found.`。
+- 本次只检查配置是否存在，没有读取任何密钥值：仓库根 `.env` 不存在，当前进程未设置 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`。本次没有调用真实 Provider、Notion 或部署环境。
+- 试点本地数据只读复核：`scripts/validate_source_manifest.py --root <试点生肉目录> --manifest source_manifest.json` 返回 `schema_version=1 artifacts=267 files_verified=267`。同一原文根和译文根运行 `scripts/run_kakuyomu_workflow.py --catalog source_catalog.discovered.json --manifest source_manifest.json --plan-only` 返回 `ready_for_review`，88/88 来源通过核验、0 问题；报告记录 0 网络请求、0 Provider 调用、0 文件写入，且 `source_text_included=false`。当前译文根文件数为 0。映射摘要 `36dae9c08069ce5c66eddc1e870a0aa4aa4d1724b00589ed9a5be62ce4bc22d4` 尚未人工批准，不等于翻译执行许可。
+
 ## 2026-11-16 翻译计划审批门禁（PR #62 已合并）
 
 - 基线：PR #62 分支 `codex/translation-workflow-next-20261116` 基于 `origin/main` HEAD `3abc69eb5c13cc2c86780cd08748d5ecc7ba82d2`；PR 于 2026-11-16 squash 合并，当前 `main` HEAD 为 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`。
