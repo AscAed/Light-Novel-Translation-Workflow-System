@@ -20,9 +20,24 @@
 
 当前流程不是多 Agent 服务集群；各阶段在同一 Python 进程中顺序调用模型接口。
 
-未提供 `CHAPTER_MAP` 时，`pipeline.py::get_chapters` 与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描。项目名模式不会自动选取 `生肉/`、`熟肉/` 下的第一个子目录；发现嵌套目录时要求显式 `--config`，避免按文件系统枚举顺序选错卷或 EPUB。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。2026-11-15 初始只读检查时，用户指定的原文/译文根目录均为空；此后用户提供的第一话普通 URL 已导入原文根目录，raw 与 normalized artifact 已写入 manifest，译文根目录仍为空。7 个 EPUB 工具/配置文件位于旁边的 `projects/祝福のネトラレラ/EPUB/`；这些是当日文件库存，不代表章节映射或正文已验收。`CHAPTER_MAP` 通用映射契约已实现；该项目的真实章节配对、输出目标和 TM 键仍需逐项核验，见 D-12。核验前不要按文件名/章节号猜测对应关系或移动项目数据。
+未提供 `CHAPTER_MAP` 时，`pipeline.py::get_chapters` 与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描。项目名模式不会自动选取 `生肉/`、`熟肉/` 下的第一个子目录；发现嵌套目录时要求显式 `--config`，避免按文件系统枚举顺序选错卷或 EPUB。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。当前试点外部数据根目录包含已归档的公开来源和知识文件，译文目录为空；根目录、权限与数据类别须以实际配置为准。`projects/祝福のネトラレラ/EPUB/` 中的文件库存不代表章节映射或正文格式已验收。通用 `CHAPTER_MAP` 契约已实现；Kakuyomu 试点可先用下方 plan-only 命令核验确定性映射，仍需人工审阅来源标题、位置、来源版本、输出路径和 TM 键后再真实调用。
 
 显式 JSON 配置现支持 `CHAPTER_MAP`：每项包含 `raw_file`、`translation_file` 和唯一 `tm_key`，并可选 `source_version_id`。使用版本 ID 时还须配置相对 `RAW_DIR` 的 `SOURCE_MANIFEST_PATH`；流水线/对齐/知识抽取会校验 manifest 中 artifact 类型、路径和字节哈希，TM/知识来源记录保留版本 ID，TM 只读审计可复核它。旧三字段映射保持兼容。清单顺序就是处理顺序；路径相对各自根目录，输出父目录需预先存在。通用配置仍可由操作者逐项核定；Kakuyomu 编排 CLI 则按 catalog 显式给出的 episode ID/位置生成稳定译文路径、TM 键和来源版本映射，不按标题或目录顺序猜测作品章节。版本变化后的译文过期标记也尚未实现。配置示例与约束见[开发与验证](development.md)。
+
+## 映射预览与人工核验
+
+对已有 Kakuyomu catalog，可在不读取 Provider 配置、不联网、不写项目数据的情况下生成映射预览：
+
+```powershell
+python scripts/run_kakuyomu_workflow.py `
+  --source-root <生肉目录> `
+  --catalog source_catalog.discovered.json `
+  --translation-root <熟肉目录> `
+  --manifest source_manifest.json `
+  --plan-only
+```
+
+命令核对 catalog 与 manifest 中的作品/章节元数据，验证最新 raw 与 normalized artifact 文件哈希及父版本关系，并标记已存在的译文目标。JSON 仅包含章节 ID、位置、标题、来源相对路径/版本、目标路径、TM 键和问题代码，不包含原文/译文/知识内容。`ready_for_review` 表示来源映射可供人工核对，不表示人工已批准；存在缺失、过期、损坏、元数据错配或目标冲突时返回 `blocked` 和非零状态。`plan_sha256` 标识预览 JSON，不是签名回执；正式翻译 CLI 目前不强制提交或复核此摘要。
 
 ## 上下文来源
 

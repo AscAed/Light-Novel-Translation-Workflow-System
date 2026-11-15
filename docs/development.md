@@ -2,7 +2,7 @@
 
 ## 2026-11-16 合并后的当前验证
 
-- 当前主分支：`main`，HEAD `b1048a31dad00497c8807d8cbf5570f2c0795e38`。PR #58 于 2026-11-16（Asia/Shanghai）以 squash 合并；实现/测试提交为 `8f1f89fb62a221fffd8415489fff82cbf4248116`。本地检查确认该实现提交与合并提交的文件树一致。
+- 当前主分支：`main`，HEAD `75305937a6b8020ab2dfc515c720f4fa871c5dce`。PR #58 于 2026-11-16（Asia/Shanghai）以 squash 合并；实现/测试提交为 `8f1f89fb62a221fffd8415489fff82cbf4248116`，PR #59 随后同步项目状态文档。
 - 完整非 E2E unittest：按仓库既有模块选择运行 351 项，0 失败、4 项跳过。定向 Kakuyomu adapter/workflow 与 EPUB builder 回归运行 52 项，全部通过。
 - 完整本地 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项，266.420 秒，退出码 0。输出中的 content-filter 与段落错配异常来自预期负向 fixture；未调用真实 Provider 或 Notion。
 - 安全路径专项：普通权限运行 11 项时，3 个符号链接用例因 `WinError 1314` 跳过，FIFO 用例因 Windows 不支持跳过。随后依用户授权以管理员 PowerShell 重跑：11 项中 10 项通过、仅 FIFO 用例跳过；3 个符号链接用例均实际执行并通过。
@@ -10,6 +10,16 @@
 - PR #58 所有 inline review threads 均已解决；没有 review submission 为 `APPROVED`，CodeRabbit check 为 `skipped`。合并前检查得到 `main` 未启用 branch protection，仓库 rulesets 查询为空，未发现 required-check/审批门禁。用户明确要求合并后已合并；跳过的 CodeRabbit 检查不记为通过。
 - 最近一次本机 Provider 配置存在性检查未发现根目录 `.env`，Process/User/Machine 环境也未设置 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`。没有读取密钥值；真实 Provider 单话翻译仍受配置缺失阻塞。
 - 仍未验证：获准 Provider 的真实端点调用及单话翻译、人工原文/译文格式与质量验收、Notion、EPUBCheck/目标阅读器，以及部署。下一步依赖安全提供 Provider 配置与 allowlist，再执行受控单话翻译并人工验收。
+
+## 2026-11-16 Kakuyomu 本地映射预览验证
+
+- 实现分支：`codex/translation-plan-preview-20261116`，基于 `origin/main` `75305937a6b8020ab2dfc515c720f4fa871c5dce`。新增 `scripts/run_kakuyomu_workflow.py --plan-only`，可对已有 catalog 做只读计划检查，不需要项目 Provider 配置。
+- `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow -q`：15 项通过。覆盖只读行为、JSON CLI、不泄露原文/译文、目标文件冲突、catalog 元数据错配、来源更新后的 normalized 过期、normalized 文件缺失及 manifest 缺少 normalized artifact。
+- 当前分支完整非 E2E unittest：按 `tests/test_*.py` 逐模块运行并排除 `test_e2e.py`，20 个模块共 358 项，0 失败、4 项跳过。跳过项为 3 个普通权限下无法创建符号链接的用例及 1 个 Windows 不支持的 FIFO 用例；随后管理员权限复跑安全路径模块，11 项中 10 项通过、仅 FIFO 跳过，3 个符号链接用例均执行通过。用户提供的同名测试输出为 9 项、3 项跳过；因该计数与当前 checkout 中的 11 项不同，分开记录，不将其当作本分支基线。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 运行 7 项，245.766 秒，退出码 0。输出中的 content-filter 和段落错配异常来自预期负向 fixture；仅访问本机 mock server，不代表真实 Provider 已验证。
+- `.venv\Scripts\python.exe -m py_compile scripts\run_kakuyomu_workflow.py tests\test_kakuyomu_translation_plan.py` 通过；`.venv\Scripts\python.exe -m pip check` 未发现依赖冲突。跟踪中的 84 个 Markdown 文件本地链接目标存在性检查通过；扫描仅核对目标路径，不验证外链可访问性或锚点语义。
+- 试点本地 source manifest 只读核验：`schema_version=1 artifacts=267 files_verified=267`。以已有 `source_catalog.discovered.json` 和空译文目录运行 `--plan-only`：退出码 0，`status=ready_for_review`，88/88 个来源版本通过核验，问题数和目标冲突数均为 0；`plan_sha256=9bd9579eb95956b17d08ff3142ac51973fd14612b0a91246fb55fa58141db4a2`。报告不含章节正文，记录 0 次网络请求、Provider 调用和文件写入。
+- `ready_for_review` 仅表示本地映射与来源快照可供人工核对，不表示人工批准；摘要不是签名回执，正式翻译命令目前不强制校验它。当前没有检测到 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，所以本轮未调用真实 Provider。
 
 ## 2026-11-16 7135904 基线验证（历史快照）
 

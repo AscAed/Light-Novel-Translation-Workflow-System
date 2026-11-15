@@ -36,8 +36,16 @@ from source_ingestion import (  # noqa: E402
     SourceAccessDenied,
     SourceRateLimited,
     SourceUnavailable,
+    _latest_raw_for_metadata,
+    _load_episode_metadata,
     collect_source,
     materialize_episode_markdown,
+    source_artifact_id,
+)
+from source_manifest import (  # noqa: E402
+    latest_artifacts_by_kind,
+    load_manifest,
+    verify_manifest_artifact,
 )
 from utils import (  # noqa: E402
     open_regular_file,
@@ -132,6 +140,167 @@ def _translation_targets(work_id: str, episodes) -> list[dict]:
             }
         )
     return targets
+
+
+def preview_translation_plan(
+    *,
+    source_root: str,
+    catalog: str,
+    translation_root: str,
+    manifest: str = "source_manifest.json",
+) -> dict:
+    """Build a read-only, source-verified chapter map without network or providers."""
+    source_path, translation_path = _resolve_roots(
+        source_root, translation_root
+    )
+    work_id, episodes, _catalog_path = _load_catalog(
+        str(source_path), catalog
+    )
+    targets = _translation_targets(work_id, episodes)
+    _check_translation_targets(translation_path, targets)
+
+    manifest_path = resolve_relative_path(str(source_path), manifest)
+    source_manifest = load_manifest(manifest_path)
+    metadata_by_id = latest_artifacts_by_kind(source_manifest, "episode")
+    raw_by_id = latest_artifacts_by_kind(source_manifest, "raw_source")
+    normalized_by_id = latest_artifacts_by_kind(
+        source_manifest, "normalized_source"
+    )
+
+    planned_episodes = []
+    issues = []
+    for episode, target in zip(episodes, targets):
+        episode_id = target["episode_id"]
+        target_path = resolve_relative_path(
+            str(translation_path),
+            target["translation_file"],
+            allow_missing=True,
+        )
+        planned = {
+            "episode_id": episode_id,
+            "position": target["position"],
+            "title": episode.metadata.title,
+            "source_file": None,
+            "source_version_id": None,
+            "translation_file": target["translation_file"],
+            "translation_target_exists": target_path.exists(),
+            "tm_key": target["tm_key"],
+        }
+
+        def add_issue(code: str) -> None:
+            issues.append({"episode_id": episode_id, "code": code})
+
+        if planned["translation_target_exists"]:
+            add_issue("translation_target_exists")
+
+        metadata_id = source_artifact_id(work_id, "episode", episode_id)
+        if metadata_id not in metadata_by_id:
+            add_issue("missing_episode_metadata")
+            planned_episodes.append(planned)
+            continue
+        try:
+            metadata_artifact, source_metadata = _load_episode_metadata(
+                source_path,
+                source_manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+            )
+        except (OSError, UnicodeError, ValueError):
+            add_issue("invalid_episode_metadata")
+            planned_episodes.append(planned)
+            continue
+        if (
+            source_metadata["title"] != episode.metadata.title
+            or source_metadata["position"] != episode.metadata.position
+        ):
+            add_issue("catalog_metadata_mismatch")
+            planned_episodes.append(planned)
+            continue
+
+        try:
+            raw_artifact = _latest_raw_for_metadata(
+                source_manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+                metadata_artifact=metadata_artifact,
+            )
+        except ValueError:
+            add_issue("missing_raw_source")
+            planned_episodes.append(planned)
+            continue
+
+        raw_id = source_artifact_id(work_id, "raw_source", episode_id)
+        latest_raw = raw_by_id.get(raw_id)
+        if latest_raw is None or latest_raw["version_id"] != raw_artifact["version_id"]:
+            add_issue("stale_raw_source")
+            planned_episodes.append(planned)
+            continue
+        try:
+            verify_manifest_artifact(
+                source_path, source_manifest, raw_artifact["version_id"]
+            )
+        except (OSError, UnicodeError, ValueError):
+            add_issue("invalid_raw_source")
+            planned_episodes.append(planned)
+            continue
+
+        normalized_id = source_artifact_id(
+            work_id, "normalized_source", episode_id
+        )
+        normalized = normalized_by_id.get(normalized_id)
+        if normalized is None:
+            add_issue("missing_normalized_source")
+            planned_episodes.append(planned)
+            continue
+        planned["source_file"] = normalized["relative_path"]
+        planned["source_version_id"] = normalized["version_id"]
+        if raw_artifact["version_id"] not in normalized["parent_version_ids"]:
+            add_issue("stale_normalized_source")
+            planned_episodes.append(planned)
+            continue
+        try:
+            verify_manifest_artifact(
+                source_path, source_manifest, normalized["version_id"]
+            )
+        except (OSError, UnicodeError, ValueError):
+            add_issue("invalid_normalized_source")
+        planned_episodes.append(planned)
+
+    plan = {
+        "schema_version": 1,
+        "status": "ready_for_review" if not issues else "blocked",
+        "work_id": work_id,
+        "catalog": catalog.replace("\\", "/"),
+        "manifest": manifest.replace("\\", "/"),
+        "episode_count": len(planned_episodes),
+        "verified_source_count": sum(
+            episode["source_version_id"] is not None
+            and not any(
+                issue["episode_id"] == episode["episode_id"]
+                and issue["code"]
+                in {
+                    "stale_normalized_source",
+                    "invalid_normalized_source",
+                }
+                for issue in issues
+            )
+            for episode in planned_episodes
+        ),
+        "network_requests": 0,
+        "provider_calls": 0,
+        "filesystem_writes": 0,
+        "source_text_included": False,
+        "episodes": planned_episodes,
+        "issues": issues,
+    }
+    canonical_plan = json.dumps(
+        plan,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    plan["plan_sha256"] = hashlib.sha256(canonical_plan).hexdigest()
+    return plan
 
 
 def _check_translation_targets(translation_root: Path, targets) -> None:
@@ -449,8 +618,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--translation-root", required=True)
     parser.add_argument(
         "--config",
-        required=True,
         help="Existing project JSON configuration; provider settings stay local.",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help=(
+            "Read an existing --catalog and source manifest, then print a "
+            "provider-free chapter mapping preview."
+        ),
     )
     parser.add_argument("--manifest", default="source_manifest.json")
     parser.add_argument("--checkpoint")
@@ -473,23 +649,41 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.plan_only:
+        if args.config:
+            parser.error("--config is not used with --plan-only.")
+        if args.work_url:
+            parser.error("--plan-only requires an existing --catalog; it does not access the network.")
+        if not args.catalog:
+            parser.error("--plan-only requires --catalog.")
+    elif not args.config:
+        parser.error("--config is required unless --plan-only is set.")
     if (args.catalog is None) == (args.work_url is None):
-        parser.error("Specify exactly one of --catalog or --work-url.")
+        if not args.plan_only:
+            parser.error("Specify exactly one of --catalog or --work-url.")
 
     try:
-        report = run_workflow(
-            source_root=args.source_root,
-            catalog=args.catalog,
-            work_url=args.work_url,
-            translation_root=args.translation_root,
-            config_file=args.config,
-            discovered_catalog=args.discovered_catalog,
-            manifest=args.manifest,
-            checkpoint=args.checkpoint,
-            max_archive_bytes=args.max_archive_bytes,
-            max_episodes=args.max_episodes,
-            request_delay_seconds=args.request_delay_seconds,
-        )
+        if args.plan_only:
+            report = preview_translation_plan(
+                source_root=args.source_root,
+                catalog=args.catalog,
+                translation_root=args.translation_root,
+                manifest=args.manifest,
+            )
+        else:
+            report = run_workflow(
+                source_root=args.source_root,
+                catalog=args.catalog,
+                work_url=args.work_url,
+                translation_root=args.translation_root,
+                config_file=args.config,
+                discovered_catalog=args.discovered_catalog,
+                manifest=args.manifest,
+                checkpoint=args.checkpoint,
+                max_archive_bytes=args.max_archive_bytes,
+                max_episodes=args.max_episodes,
+                request_delay_seconds=args.request_delay_seconds,
+            )
     except (
         OSError,
         UnicodeError,
@@ -505,6 +699,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(json.dumps(report, sort_keys=True))
+    if args.plan_only:
+        return 0 if report["status"] == "ready_for_review" else 2
     return 0 if report["status"] == "complete" else 2
 
 
