@@ -1,13 +1,13 @@
 # 项目现状
 
-> 主线基线：截至 2026-11-16，`main` HEAD `16899a1f55a798a440157b5c2265211c953ea0d9`；PR #64 已合并文档状态同步，代码基线仍为 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`，包含 Kakuyomu 翻译计划审批门禁。该代码基线非 E2E unittest 最近复核为 368 项、0 失败、4 项平台能力跳过（21 个测试模块）；本地 mock E2E 最近复核为 7 项通过（242.450 秒）。管理员安全路径专项为 11 项中 10 项通过、1 项因 Windows FIFO 能力跳过，3 个符号链接用例均通过；普通权限运行则有 3 个符号链接用例因 `WinError 1314` 跳过。PR #56、#58、#62、#63、#64 均已合并。验证记录见[开发与验证](development.md)。Kakuyomu source-only 采集完成主页声明的 88/88 话；manifest 的 267/267 文件通过校验。最新计划导出为 `ready_for_review`、88/88 来源有效、0 问题；映射摘要与人工审阅要求见[试点映射人工审阅](handoffs/2026-11-16-pilot-plan-review.md)。译文文件仍无。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。
+> 代码与测试验证基线：`c988c4b749a9972a89edffe9bc2c4bc867ebb3da`，包含 Kakuyomu 翻译计划审批门禁；后续 PR #63、#64、#65 均为 Markdown 同步，不改变代码基线。该基线非 E2E unittest 最近复核为 368 项、0 失败、4 项平台能力跳过（21 个测试模块）；本地 mock E2E 最近复核为 7 项通过（242.450 秒）。2026-11-16 管理员安全路径复验为 11 项中 10 项通过、1 项因 Windows FIFO 能力跳过，3 个符号链接用例均通过；普通权限运行则有 3 个符号链接用例因 `WinError 1314` 跳过。PR #56、#58、#62、#63、#64、#65 均已合并。验证记录见[开发与验证](development.md)。Kakuyomu source-only 采集完成主页声明的 88/88 话；manifest 的 267/267 文件通过校验。最新计划导出为 `ready_for_review`、88/88 来源有效、0 问题；映射摘要与人工审阅要求见[试点映射人工审阅](handoffs/2026-11-16-pilot-plan-review.md)。译文文件仍无。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。
 
 ## 2026-11-16 试点计划导出
 
 - `已验证` 在主线代码基线 `c988c4b` 上导出本地计划文件 `translation_plan_review_2026-11-16.json`；计划摘要为 `36dae9c08069ce5c66eddc1e870a0aa4aa4d1724b00589ed9a5be62ce4bc22d4`，重新计算一致。
 - `已验证` 计划包含 88 个目录位置、88 个有效来源版本、0 个问题；episode ID、位置、原文文件、来源版本、译文目标和 TM key 均无重复，88 个译文目标当前均不存在。标题包含 1–87 连续编号话目，另有位置 48 的幕间。
 - `未验证` 自动检查不能确认章节正文格式、内容完整性或人工认可的原文到译文路径。该计划仍待人类审阅；未创建审批回执，也未运行翻译。计划文件位于仓库外的试点生肉根目录，不纳入版本控制。
-- 本次 `--plan-only --plan-output` 仅写出该 JSON 文件；没有网络请求、Provider 调用或正文写入。配置、数据外发和真实翻译限制见[开发与验证](development.md#2026-11-16-pr-64-合并与试点计划导出)。
+- 本次 `--plan-only --plan-output` 仅写出该 JSON 文件；没有网络请求、Provider 调用或正文写入。配置、数据外发和真实翻译限制见[开发与验证](development.md#2026-11-16-pr-6465-合并与试点计划导出)。
 
 ## 翻译计划审批门禁（PR #62）
 

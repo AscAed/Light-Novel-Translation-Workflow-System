@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-- 当前主线基线：`main` HEAD `16899a1`；PR #64 已合并文档状态同步，代码基线仍为 `c988c4b`，包含 Kakuyomu 翻译计划人工审批门禁。实现范围、回执限制和验证记录见[项目现状](docs/project-status.md)与[开发与验证](docs/development.md)。
+- 当前代码与测试验证基线：`c988c4b`，包含 Kakuyomu 翻译计划人工审批门禁。其后的 PR #63、#64、#65 仅同步 Markdown，不改变该代码基线。实现范围、回执限制和验证记录见[项目现状](docs/project-status.md)与[开发与验证](docs/development.md)。
 - D-11：新增逐章恢复日志，TM 写入失败或进程中断后可在重跑时恢复同一译文/TM 更新；多进程并发、断电持久性和日志冲突自动解决不在保证范围内。
 - 当前实现：Python CLI 翻译流水线、RAG 检索、章节对齐、来源版本清单、显式本地导入、UTF-8 Markdown 物化/章节导出与来源版本映射。Kakuyomu 专用工作流可从 `--work-url` 解析主页公开目录、校验唯一 episode ID 数等于 `publicEpisodeCount`、保存发现 catalog、按目录顺序访问全部普通 episode URL 并版本化归档；本次 source-only live 采集已完成主页声明的 88/88 话，生成 88 个单话 Markdown 和一份全书 export。工作流不登录、不跟随重定向、不访问 `/read`，请求间隔默认为 2 秒并限制为 1.5–3 秒；`run_kakuyomu_workflow.py` 还可预检 Provider、生成确定性章节映射并调用生产流水线。用户明确不要求官方澄清并要求普通 URL 路径；平台规则风险另有记录，不代表平台背书或公开分发授权。作品范围限于主页当前声明的公开话目，不包括草稿/私有章节或其声明外完整性；正文/ruby/旁点人工验收、真实 Provider 翻译尚未完成。目录解析、限额、验证和阶段边界见[项目现状](docs/project-status.md)与[原文采集方案](docs/source-ingestion-and-publication-plan.md)。
 - 阶段 2 可为术语、概要和 TM 原译对生成绑定候选哈希的本地审核回执；TM approved-only 快照仅在显式配置 `TM_REVIEWED_PATH` 时作为 RAG 检索源，运行时仍写入完整 `TM_PATH`。回执未签名/认证审核者身份，不证明审核真实发生或语义正确；旧 Markdown 概要仍兼容但未验证。默认 TM 检索仍未受门禁保护；完整知识状态机、人物知识治理、风险分层、更正/废弃和审核者认证未完成。
