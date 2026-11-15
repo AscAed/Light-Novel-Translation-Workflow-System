@@ -2,7 +2,7 @@
 
 ## 项目状态
 
-- 代码基线：`codex/translation-workflow-20261115` 提交 `c6f7176`（基于 `main` 的 `d7e2afd`）。该提交补齐 I2 空输入/字节限制及可选清单内容上限，增加 I3 UTF-8 字节保真 `.md` 物化、显式章节集合/完整检查点目录导出，以及 I4 来源版本关联、TM/知识候选新鲜度只读审计。阶段 2 另有术语、概要、TM 的本地审核回执原型；I5 有离线 EPUB candidate 构建原型，完整 EPUB/阅读器验收仍未完成。验证及限制见[开发与验证](docs/development.md#2026-11-15-完整回归与源文快照校验)。
+- 当前代码基线：`main` 的 squash 合并提交 `b1048a3`，来自 PR #58；经验证的实现提交为 `8f1f89f`。该变更完善来源版本追踪、章节事务恢复、知识/TM 审核、EPUB candidate 和 Kakuyomu source-only 工作流。详细测试结果及未验收边界见[开发与验证](docs/development.md#2026-11-16-合并后的当前验证)。
 - D-11：新增逐章恢复日志，TM 写入失败或进程中断后可在重跑时恢复同一译文/TM 更新；多进程并发、断电持久性和日志冲突自动解决不在保证范围内。
 - 当前实现：Python CLI 翻译流水线、RAG 检索、章节对齐、来源版本清单、显式本地导入、UTF-8 Markdown 物化/章节导出与来源版本映射。Kakuyomu 专用工作流可从 `--work-url` 解析主页公开目录、校验唯一 episode ID 数等于 `publicEpisodeCount`、保存发现 catalog、按目录顺序访问全部普通 episode URL 并版本化归档；本次 source-only live 采集已完成主页声明的 88/88 话，生成 88 个单话 Markdown 和一份全书 export。工作流不登录、不跟随重定向、不访问 `/read`，请求间隔默认为 2 秒并限制为 1.5–3 秒；`run_kakuyomu_workflow.py` 还可预检 Provider、生成确定性章节映射并调用生产流水线。用户明确不要求官方澄清并要求普通 URL 路径；平台规则风险另有记录，不代表平台背书或公开分发授权。作品范围限于主页当前声明的公开话目，不包括草稿/私有章节或其声明外完整性；正文/ruby/旁点人工验收、真实 Provider 翻译尚未完成。目录解析、限额、验证和阶段边界见[项目现状](docs/project-status.md)与[原文采集方案](docs/source-ingestion-and-publication-plan.md)。
 - 阶段 2 可为术语、概要和 TM 原译对生成绑定候选哈希的本地审核回执；TM approved-only 快照仅在显式配置 `TM_REVIEWED_PATH` 时作为 RAG 检索源，运行时仍写入完整 `TM_PATH`。回执未签名/认证审核者身份，不证明审核真实发生或语义正确；旧 Markdown 概要仍兼容但未验证。默认 TM 检索仍未受门禁保护；完整知识状态机、人物知识治理、风险分层、更正/废弃和审核者认证未完成。
@@ -24,7 +24,7 @@
 | [路线图](docs/roadmap.md) | 分阶段目标、依赖、交付物与验收条件 |
 | [模型与 API 配置方案](docs/model-provider-configuration-plan.md) | 模型候选、职责分配、配置交互、安全边界与实施计划（计划，未经实测） |
 | [原文采集与成果归档方案](docs/source-ingestion-and-publication-plan.md) | 来源许可、原文版本、翻译衔接、EPUB 与 Notion 工作包（部分原型，其余为计划） |
-| [当前续接交接](docs/handoffs/2026-11-15-translation-workflow.md) | 本轮阶段状态、工作区保留边界、验证结果及可直接执行的后续步骤 |
+| [当前续接交接](docs/handoffs/2026-11-15-translation-workflow.md) | 最近的阶段状态、验证结果、合并记录及可直接执行的后续步骤 |
 | [历史续接交接](docs/handoffs/2026-11-14-translation-workflow.md) | 历次实现与验证的历史快照；现状以项目现状和路线图为准 |
 | [决策记录](docs/decisions/README.md) | 已确认决策与待决事项索引 |
 | [本地凭据风险记录](docs/security-notes.md) | 凭据暴露边界与需人工处理事项 |

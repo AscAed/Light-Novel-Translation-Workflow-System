@@ -1,6 +1,15 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；代码/测试与最新合并前 PR 状态见文末“2026-11-16 合并前状态复核 854bd86”。项目路线图仍有后续阶段，额度信息不可见。
+> 状态基准：2026-11-16。较早的续接与审查章节均为历史快照；当前分支、验证、合并结果和下一步见下方最新状态。项目路线图仍有后续阶段，额度信息不可见。
+
+## 2026-11-16 PR #58 已合并与当前阶段
+
+- 当前主分支：`main` HEAD `b1048a31dad00497c8807d8cbf5570f2c0795e38`。PR #58 于 2026-11-16（Asia/Shanghai）以 squash 合并；经验证的实现/测试提交为 `8f1f89fb62a221fffd8415489fff82cbf4248116`。本地核对两提交的文件树一致。
+- 本轮修复两项最后未解决 review：`kakuyomu_page_source.py` 将 `http.client.IncompleteRead` 转为可恢复 `SourceUnavailable`；`epub_builder.py` 在 Pandoc 预检前将带目录的相对 executable 解析为绝对路径，同时保留裸名称的 PATH 查找。回归覆盖不完整响应暂停/续传，以及版本预检和转换使用同一 executable。
+- 验证：完整非 E2E 351 项通过、4 项跳过；Kakuyomu adapter/workflow 与 EPUB builder 定向集合 52 项通过；本地 mock E2E 7 项通过、266.420 秒；`compileall` 和 `git diff --check` 通过。依用户授权以管理员 PowerShell 重跑路径安全模块，11 项中 10 项通过，3 个符号链接用例全通过，FIFO 因 Windows 平台限制跳过。
+- PR 所有 inline review threads 均已解决；review submissions 没有 `APPROVED`，CodeRabbit check 为 `skipped`。GitHub 检查显示 `main` 没有 branch protection，rulesets 查询为空，未报告 required checks。按用户要求完成 squash 合并；CodeRabbit 的 skipped 状态不作为测试通过证据。
+- 真实 Provider/Notion 未调用；最近一次本机存在性预检没有发现 `.env`、Provider endpoint/key 或 `PROVIDER_DATA_POLICY`。真实单话翻译、人工译文与来源格式验收、EPUBCheck/阅读器和部署仍未完成。
+- 下一步：安全配置经授权的 JOJO/JYQF endpoint、模型与最小数据类别 allowlist；复核指定章节映射和 TM 键；运行一话真实翻译并人工验收忠实度、段落、U+3000、ruby、标点与前后一致性。配置未就绪时继续 synthetic/mock 验证，不调用未授权 Provider。
 
 ## 目标与会话
 
@@ -14,7 +23,7 @@
 
 ## 当前状态与决策
 
-> 当前权威状态见文末“2026-11-15 最终续接状态”。下方较早的阶段快照保留其当时证据；若与最新状态不同，以文末最终快照为准。
+> 当前权威状态见上方“2026-11-16 PR #58 已合并与当前阶段”。以下较早快照保留其当时证据；若与最新状态不同，以该段和开发验证文档为准。
 
 - 续接开始时基线：分支 `codex/translation-workflow-20261115`，HEAD `c3f313b`，跟踪 `origin/codex/translation-workflow-20261115`；当时工作区有 8 份未提交 Markdown 修改，以及 `.env.example`、`pipeline.py`、`tests/test_pipeline_contracts.py` 的 Provider 别名增量。此前 `main`/`d7e2afd` 仅作为历史基线，不应再当作当前 checkout。
 - 本轮新增的实现差异：`source_ingestion.py` 拒绝通用 adapter 的零章节终页及零章节 complete checkpoint，同时允许带后续 cursor 的空中间页；`scripts/ingest_local_sources.py` 在创建 adapter 或输出前拒绝空 `episodes` catalog。显式本地导入增加默认 JSON catalog 文件 16 MiB、单 episode 16 MiB、单批 episode 源文件合计 1 GiB 的可调上限；catalog 按上限 + 1 字节有界读取，episode 快照流式累计并在归档读取时二次限制，episode 字节上限绑定 source_fingerprint。另新增无默认值的 `--max-archive-bytes`，按 manifest 登记的所有文件型 artifact 历史版本累计内容字节；逐话先预检 metadata/raw 新版本，超限不追加当前话，checkpoint 标记 `archive_limit` 并绑定额度，调额度需新 checkpoint 路径。CLI 单章/批次超限仍在创建 manifest/checkpoint 前拒绝。累计内容上限不包括 manifest/checkpoint、文件系统开销、未登记孤儿文件或之后由其他工具新增的内容，不能称为物理磁盘配额。对应测试覆盖空边界、各类输入超限、历史版本计数、额度绑定、暂停和幂等。
@@ -172,7 +181,7 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 
 ## 2026-11-16 路径测试结果续记
 
-- 用户本次提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；当前 `a10926b` 中该模块有 11 个测试方法，因此不将此 9 项结果归属到当前 HEAD。详细边界及当前 11 项测试记录见[开发与验证](../development.md#2026-11-16-当前-checkout-验证)。
+- 用户提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；该 9 项结果不归属到本交接记录中的任何特定 SHA。后续当前 checkout 的管理员结果见本文件最新状态段，[开发与验证](../development.md#2026-11-16-合并后的当前验证)记录此结果。
 - 当前 GitHub 快照：PR #58 仍为 open，head `a10926b`、base `d7e2afd`；对该 head 的 GitHub Actions workflow-runs 查询为空。PR #56 已合并，和仍开放的 PR #58 是不同变更。PR #58 未合并；合并前须重新核对审查意见并满足必要验证。
 
 ## 2026-11-16 审查回归与最新状态
