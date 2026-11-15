@@ -1,6 +1,7 @@
 """Explicit, robots-aware Kakuyomu episode-page source adapter."""
 
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -147,6 +148,8 @@ class _KakuyomuRequestClient:
             raise ValueError("Kakuyomu request failed.") from None
         except urllib.error.URLError:
             raise SourceUnavailable("Kakuyomu request failed.") from None
+        except http.client.IncompleteRead:
+            raise SourceUnavailable("Kakuyomu response was incomplete.") from None
         except TimeoutError:
             raise SourceUnavailable("Kakuyomu response timed out.") from None
         if len(payload) > max_bytes:

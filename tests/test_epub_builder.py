@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import posixpath
 import shutil
 import subprocess
@@ -15,12 +16,113 @@ from unittest.mock import patch
 
 from epub_builder import (
     _rewrite_cross_chapter_links,
+    _resolve_pandoc_executable,
     build_epub_candidate,
     get_pandoc_version,
 )
 from scripts.build_epub_candidate import main as build_epub_cli
 from source_ingestion import source_artifact_id
 from source_manifest import verify_manifest_artifact
+
+
+class PandocExecutableResolutionTests(unittest.TestCase):
+    def test_build_resolves_relative_executable_before_changing_directory(self):
+        work_id = "synthetic-work"
+        source_content = b"Synthetic normalized source.\n"
+        translation_content = b"# Chapter One\n\nSynthetic translation.\n"
+
+        with tempfile.TemporaryDirectory(
+            prefix=".pandoc-path-test-",
+            dir=Path.cwd(),
+        ) as temporary:
+            root = Path(temporary)
+            input_root = root / "translations"
+            source_root = root / "sources"
+            executable_path = root / "tools" / "pandoc.exe"
+            input_root.mkdir()
+            source_root.mkdir()
+            executable_path.parent.mkdir()
+            executable_path.write_bytes(b"synthetic executable placeholder")
+            (input_root / "chapter.md").write_bytes(translation_content)
+            (source_root / "episode.md").write_bytes(source_content)
+
+            artifact = {
+                "artifact_id": source_artifact_id(
+                    work_id,
+                    "normalized_source",
+                    "episode-1",
+                ),
+                "version_id": "source-v1",
+                "kind": "normalized_source",
+                "content_sha256": hashlib.sha256(source_content).hexdigest(),
+                "relative_path": "episode.md",
+                "parent_version_ids": [],
+            }
+            manifest_path = source_root / "source_manifest.json"
+            manifest_path.write_text(
+                json.dumps({"schema_version": 1, "artifacts": [artifact]}),
+                encoding="utf-8",
+            )
+            catalog = {
+                "schema_version": 1,
+                "work_id": work_id,
+                "build_id": "edition-relative-pandoc",
+                "expected_pandoc_version": "3.9.0.2",
+                "title": "Synthetic Novel",
+                "author": "Synthetic Author",
+                "language": "zh-CN",
+                "identifier": "urn:synthetic:novel",
+                "chapters": [
+                    {
+                        "episode_id": "episode-1",
+                        "position": 1,
+                        "title": "Chapter One",
+                        "translation_path": "chapter.md",
+                        "source_version_id": "source-v1",
+                    }
+                ],
+            }
+            catalog_path = input_root / "epub-catalog.json"
+            catalog_path.write_text(
+                json.dumps(catalog),
+                encoding="utf-8",
+            )
+            relative_executable = os.path.relpath(executable_path, Path.cwd())
+            expected_executable = os.path.abspath(relative_executable)
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append((command, kwargs))
+                if len(calls) == 1:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout="pandoc 3.9.0.2\n",
+                        stderr="",
+                    )
+                raise OSError("synthetic conversion stop")
+
+            self.assertEqual(_resolve_pandoc_executable("pandoc"), "pandoc")
+            with (
+                patch("epub_builder.subprocess.run", side_effect=run),
+                self.assertRaisesRegex(OSError, "synthetic conversion stop"),
+            ):
+                build_epub_candidate(
+                    input_root=input_root,
+                    catalog_relative_path="epub-catalog.json",
+                    source_root=source_root,
+                    source_manifest_relative_path="source_manifest.json",
+                    output_root=root / "EPUB",
+                    max_chapter_bytes=1024,
+                    max_total_bytes=2048,
+                    max_output_bytes=4096,
+                    pandoc_executable=relative_executable,
+                )
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0][0], expected_executable)
+            self.assertEqual(calls[1][0][0], expected_executable)
+            self.assertEqual(Path(calls[1][1]["cwd"]).name, "inputs")
 
 
 class EpubCandidateTests(unittest.TestCase):

@@ -96,6 +96,13 @@ def get_pandoc_version(executable="pandoc", timeout_seconds=10):
     return match.group(1)
 
 
+def _resolve_pandoc_executable(executable):
+    executable = os.fspath(executable)
+    if os.path.dirname(executable):
+        return os.path.abspath(executable)
+    return executable
+
+
 def _read_catalog(root, relative_path):
     path = resolve_relative_path(root, relative_path)
     with open_regular_file(path, binary=True) as stream:
@@ -670,6 +677,7 @@ def build_epub_candidate(
         chapter_texts[chapter["episode_id"]] = content.decode("utf-8")
     file_scope = not _uses_cross_chapter_references(chapters, chapter_texts)
 
+    pandoc_executable = _resolve_pandoc_executable(pandoc_executable)
     pandoc_version = get_pandoc_version(pandoc_executable)
     if pandoc_version != metadata["expected_pandoc_version"]:
         raise ValueError("Installed Pandoc version does not match the catalog.")
