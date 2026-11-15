@@ -26,7 +26,7 @@
 
 ## 映射预览与人工核验
 
-对已有 Kakuyomu catalog，可在不读取 Provider 配置、不联网、不写项目数据的情况下生成映射预览：
+对已有 Kakuyomu catalog，可在不读取 Provider 配置、不联网、不写文件的情况下生成映射预览：
 
 ```powershell
 python scripts/run_kakuyomu_workflow.py `
@@ -34,10 +34,28 @@ python scripts/run_kakuyomu_workflow.py `
   --catalog source_catalog.discovered.json `
   --translation-root <熟肉目录> `
   --manifest source_manifest.json `
-  --plan-only
+  --plan-only `
+  --plan-output <计划文件.json>
+
+python scripts/approve_translation_plan.py `
+  --plan <计划文件.json> `
+  --receipt <审批回执.json> `
+  --reviewer <审核者标签>
+
+python scripts/run_kakuyomu_workflow.py `
+  --source-root <生肉目录> `
+  --catalog source_catalog.discovered.json `
+  --translation-root <熟肉目录> `
+  --manifest source_manifest.json `
+  --config <项目配置.json> `
+  --approval-receipt <审批回执.json>
 ```
 
-命令核对 catalog 与 manifest 中的作品/章节元数据，验证最新 raw 与 normalized artifact 文件哈希及父版本关系，并标记已存在的译文目标。JSON 仅包含章节 ID、位置、标题、来源相对路径/版本、目标路径、TM 键和问题代码，不包含原文/译文/知识内容。`ready_for_review` 表示来源映射可供人工核对，不表示人工已批准；存在缺失、过期、损坏、元数据错配或目标冲突时返回 `blocked` 和非零状态。`plan_sha256` 标识预览 JSON，不是签名回执；正式翻译 CLI 目前不强制提交或复核此摘要。
+计划核对 catalog 与 manifest 的作品/章节元数据，验证最新 raw 与 normalized artifact 文件哈希及父版本关系，并标记已存在的译文目标。默认 stdout JSON 只含章节 ID、位置、标题、来源相对路径/版本、目标路径、TM 键和问题代码，不包含原文/译文/知识内容。`--plan-output` 会排他新建一个 JSON 文件；目标已存在时拒绝覆盖。`ready_for_review` 只表示本地来源与映射检查通过，尚不表示人工批准；存在来源缺失、过期、损坏、元数据错配或目标冲突时计划为 `blocked`。
+
+审批 CLI 展示每条映射并要求操作者输入计划的完整 SHA-256。摘要绑定作品 ID、解析后的原文/译文根目录、catalog/manifest 路径，以及逐话 ID、位置、标题、来源文件与版本、译文目标和 TM 键。审核者标签与时间一并写入新回执。回执是本地普通 JSON 文件，未签名、未认证审核者身份；它记录人工声明，不证明审核者身份或判断质量。计划或来源身份变化会使旧摘要/回执失效。
+
+当前分支经 Kakuyomu 编排入口执行翻译时要求 `--approval-receipt`。无回执时工作流在创建 `TranslationPipeline` 和调用 Provider 前返回 `approval_required`。同一映射因已存在译文目标而重新计划时，可继续使用匹配的旧回执；该例外仅适用于计划没有其他问题且全部来源仍通过核验的情况。执行前还会检查既有译文和 TM 是否与本次来源及事务状态一致，不一致则停止。此审批门禁尚未合并到 `origin/main`；验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁当前工作分支)。
 
 ## 上下文来源
 

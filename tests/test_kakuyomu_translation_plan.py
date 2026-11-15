@@ -160,6 +160,57 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
         self.assertEqual(report["provider_calls"], 0)
         self.assertNotIn(SOURCE_TEXT, output.getvalue())
 
+    def test_cli_can_write_plan_to_a_new_file_without_overwriting(self):
+        output = io.StringIO()
+        plan_path = self.root / "review-plan.json"
+        arguments = [
+            "--source-root",
+            str(self.source_root),
+            "--catalog",
+            "catalog.json",
+            "--translation-root",
+            str(self.translation_root),
+            "--plan-only",
+            "--plan-output",
+            str(plan_path),
+        ]
+
+        with contextlib.redirect_stdout(output):
+            result = main(arguments)
+
+        self.assertEqual(result, 0)
+        written = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["filesystem_writes"], 1)
+        self.assertEqual(written["plan_sha256"], self._preview()["plan_sha256"])
+
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            result = main(arguments)
+        self.assertEqual(result, 1)
+        self.assertIn("FileExistsError", error.getvalue())
+        self.assertEqual(
+            written,
+            json.loads(plan_path.read_text(encoding="utf-8")),
+        )
+
+    def test_plan_output_rejects_empty_path(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                main(
+                    [
+                        "--source-root",
+                        str(self.source_root),
+                        "--catalog",
+                        "catalog.json",
+                        "--translation-root",
+                        str(self.translation_root),
+                        "--plan-only",
+                        "--plan-output",
+                        "",
+                    ]
+                )
+        self.assertEqual(raised.exception.code, 2)
+
     def test_existing_translation_target_blocks_plan_without_reading_it(self):
         sentinel = "private existing translation"
         target = self.translation_root / "episode-0001-123456789.md"

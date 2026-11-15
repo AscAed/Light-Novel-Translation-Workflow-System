@@ -1,5 +1,16 @@
 # 开发与验证
 
+## 2026-11-16 翻译计划审批门禁（当前工作分支）
+
+- 基线：`codex/translation-workflow-next-20261116`，起点 `origin/main` HEAD `3abc69eb5c13cc2c86780cd08748d5ecc7ba82d2`。本节记录该分支增量；在 PR 合并前不代表主线已具备此行为。
+- 新增 `translation_plan_approval.py` 和 `scripts/approve_translation_plan.py`。稳定摘要绑定工作 ID、解析后的源/译文根目录、catalog/manifest 路径及每话 ID、位置、标题、源文件/版本、目标路径和 TM 键；不绑定目标是否已存在等运行状态，以支持相同映射的安全续跑。审批命令展示映射并要求输入完整 SHA-256，成功后排他新建回执。
+- `scripts/run_kakuyomu_workflow.py` 的翻译执行现在要求 `--approval-receipt`。计划或来源身份改变时摘要不匹配并拒绝；只因目标译文已存在而阻塞时，可核验原回执后续跑，但仍检查输出、TM 与本章事务是否一致。无回执时返回 `approval_required`，不创建 `TranslationPipeline`。`--plan-only` 默认 stdout 零写入；显式 `--plan-output` 才会排他新建计划 JSON。
+- 回执是本地普通 JSON，没有签名、身份认证或防篡改证明；`approved_by` 是调用者声明。它只证明本地流程记录了一次摘要确认，不证明操作者身份、人工审阅质量或翻译质量。真实 Provider 未调用。
+- 验证：`python -m unittest tests.test_translation_plan_approval tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow -q` 运行 25 项、全部通过；当前全部非 E2E unittest 运行 368 项、0 失败、4 项因普通权限下符号链接创建及 Windows FIFO 能力跳过；管理员专项覆盖所有符号链接路径。`python tests/run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation` 运行 1 项、通过；完整 `.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、通过，耗时 253.608 秒，退出码 0。E2E 通过本地 mock HTTP 服务；负向 fixture 的内容拦截/段落错配输出是预期行为，不代表真实 Provider 测试。
+- Python `py_compile` 覆盖新增审批模块、CLI、编排器和对应测试，通过；`git diff --check` 通过。管理员 PowerShell 下当前安全路径模块 11 项运行、10 项通过、1 项因 Windows 不支持 FIFO 跳过；3 个符号链接用例实际运行并通过。用户另行提供的 9 项/3 项跳过输出计数不同，单独保留，不替代当前 checkout 结果。
+- E2E 修复轨迹：首次完整运行发现待审批结果缺少已发现 catalog 路径；第二次发现二阶段 fixture 未复用 discovery checkpoint/adapter，导致流程在建流水线前退出。修正返回字段和 fixture 后，目标 E2E 及最终完整 runner 均通过。
+- GitHub PR #56 当前状态为 `MERGED`；该 PR 不需再次合并。此分支审批门禁仍待其自身 PR 审查。真实 Provider/API、88 话映射与原文格式人工验收、Notion、EPUB 阅读器和部署仍未验证。
+
 ## 2026-11-16 PR 60 合并后基线
 
 - 当前主分支：`main`，HEAD `df4e3ed84aee8616e10dafde4f6608017bd7b3e2`。PR #60 将只读 Kakuyomu 章节映射预览 squash 合并；合并树与已验证分支 `codex/translation-plan-preview-20261116` 的 tree `a3cef677a0407d24392fafd81eb9b87c8ba05c0c` 一致。

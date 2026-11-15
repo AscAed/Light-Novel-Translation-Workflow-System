@@ -18,6 +18,7 @@ from scripts.run_kakuyomu_workflow import (
     run_workflow,
 )
 from source_ingestion import EpisodeMetadata
+from translation_plan_approval import translation_plan_sha256
 
 
 class KakuyomuWorkflowTests(unittest.TestCase):
@@ -335,6 +336,42 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     }
                 },
             }
+            plan_episodes = [
+                {
+                    "episode_id": episode_id,
+                    "position": position,
+                    "title": f"Episode {position}",
+                    "source_file": raw_files[episode_id],
+                    "source_version_id": (
+                        first_version
+                        if episode_id == "123456789"
+                        else "normalized-second-version"
+                    ),
+                    "translation_file": (
+                        f"episode-{position:04d}-{episode_id}.md"
+                    ),
+                    "translation_target_exists": position == 1,
+                    "tm_key": f"kakuyomu:987654321:{episode_id}",
+                }
+                for position, episode_id in (
+                    (1, "123456789"),
+                    (2, "123456790"),
+                )
+            ]
+            plan = {
+                "schema_version": 1,
+                "status": "ready_for_review",
+                "work_id": "987654321",
+                "source_root": str(source_root),
+                "catalog": "catalog.json",
+                "manifest": "source_manifest.json",
+                "translation_root": str(translation_root),
+                "episode_count": len(plan_episodes),
+                "verified_source_count": len(plan_episodes),
+                "episodes": plan_episodes,
+                "issues": [],
+            }
+            plan["plan_sha256"] = translation_plan_sha256(plan)
             pipeline = Mock()
             pipeline.rag.tm_data = tm_data
             pipeline.run_all = AsyncMock()
@@ -387,12 +424,25 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     "scripts.run_kakuyomu_workflow.TranslationPipeline",
                     side_effect=make_pipeline,
                 ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.preview_translation_plan",
+                    return_value=plan,
+                ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.verify_approval_receipt",
+                    return_value={
+                        "plan_sha256": plan["plan_sha256"],
+                        "approved_by": "synthetic reviewer",
+                        "approved_at_utc": "2026-11-16T00:00:00Z",
+                    },
+                ),
             ):
                 result = run_workflow(
                     source_root=str(source_root),
                     catalog="catalog.json",
                     translation_root=str(translation_root),
                     config_file=str(config_path),
+                    approval_receipt=str(root / "approval.json"),
                     config_loader=lambda **_: None,
                     adapter_factory=lambda *_args: object(),
                 )
@@ -408,6 +458,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         catalog="catalog.json",
                         translation_root=str(translation_root),
                         config_file=str(config_path),
+                        approval_receipt=str(root / "approval.json"),
                         config_loader=lambda **_: None,
                         adapter_factory=lambda *_args: object(),
                     )
