@@ -113,9 +113,13 @@ class Config:
     CODING_PLAN_API_KEY = None
     GEMINI_API_KEY = None
     
-    # Sakura and DeepSeek Base URLs
+    # Provider Base URLs. JOJO/JYQF are opt-in aliases for the user-selected
+    # channels; the default model configuration remains unchanged until the
+    # real endpoints and credentials are verified.
     SAKURA_BASE_URL = "http://127.0.0.1:6006/v1"
     DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+    JOJO_BASE_URL = "https://max2.jojocode.com/v1"
+    JYQF_BASE_URL = "https://jyqf.me/v1"
     
     STORY_SUMMARY_PATH = ""
     TM_PATH = ""
@@ -188,11 +192,15 @@ class Config:
                 if value:
                     setattr(cls, config_name, value)
             
-            # Setup SAKURA and DEEPSEEK URLs
-            if "SAKURA_BASE_URL" in os.environ:
-                cls.SAKURA_BASE_URL = os.environ["SAKURA_BASE_URL"]
-            if "DEEPSEEK_BASE_URL" in os.environ:
-                cls.DEEPSEEK_BASE_URL = os.environ["DEEPSEEK_BASE_URL"]
+            # Setup OpenAI-compatible provider URLs.
+            for config_name in (
+                "SAKURA_BASE_URL",
+                "DEEPSEEK_BASE_URL",
+                "JOJO_BASE_URL",
+                "JYQF_BASE_URL",
+            ):
+                if config_name in os.environ:
+                    setattr(cls, config_name, os.environ[config_name])
             cls.API_TIMEOUT = parse_api_timeout(
                 os.environ.get("API_TIMEOUT", cls.DEFAULT_API_TIMEOUT)
             )
@@ -331,8 +339,17 @@ class Config:
 
         cls.CODING_PLAN_API_KEY = os.environ.get("CODING_PLAN_API_KEY")
         cls.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-        cls.SAKURA_BASE_URL = os.environ.get("SAKURA_BASE_URL", cls.SAKURA_BASE_URL)
-        cls.DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", cls.DEEPSEEK_BASE_URL)
+        for config_name in (
+            "SAKURA_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "JOJO_BASE_URL",
+            "JYQF_BASE_URL",
+        ):
+            setattr(
+                cls,
+                config_name,
+                os.environ.get(config_name, getattr(cls, config_name)),
+            )
         cls.API_TIMEOUT = parse_api_timeout(
             os.environ.get(
                 "API_TIMEOUT",
@@ -589,6 +606,17 @@ class PrimaryProviderRoute:
     api_key_env: str
 
 
+SOURCE_AND_KNOWLEDGE_CATEGORIES = (
+    "source_text",
+    "book_knowledge",
+)
+FULL_TRANSLATION_CATEGORIES = (
+    "source_text",
+    "translation_text",
+    "book_knowledge",
+)
+
+
 def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
     if not isinstance(model_name, str) or not model_name.strip():
         raise ValueError("A non-empty model name is required for provider routing.")
@@ -606,6 +634,18 @@ def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
             Config.SAKURA_BASE_URL,
             "SAKURA_API_KEY",
         )
+    if lowered_name == "gpt-6-luna" or lowered_name.startswith("gpt-6-luna-"):
+        return PrimaryProviderRoute(
+            "jojo",
+            Config.JOJO_BASE_URL,
+            "JOJO_API_KEY",
+        )
+    if lowered_name == "deepseek-v4.1-flash":
+        return PrimaryProviderRoute(
+            "jyqf",
+            Config.JYQF_BASE_URL,
+            "JYQF_API_KEY",
+        )
     if lowered_name.startswith("deepseek-"):
         return PrimaryProviderRoute(
             "deepseek",
@@ -614,7 +654,8 @@ def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
         )
     raise ValueError(
         "Unsupported model name for primary provider routing; "
-        "supported names must start with sakura-, qwen3.6-plus, or deepseek-."
+        "supported names must start with sakura-, qwen3.6-plus, deepseek-, "
+        "or use the configured gpt-6-luna/deepseek-v4.1-flash aliases."
     )
 
 
@@ -639,6 +680,51 @@ def _is_loopback_url(base_url: str) -> bool:
         return ipaddress.ip_address(hostname).is_loopback
     except ValueError:
         return False
+
+
+def validate_provider_configuration() -> None:
+    """Validate every configured pipeline stage before reading source chapters."""
+    required_keys = set()
+    stage_requests = [
+        (Config.INITIAL_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
+        (Config.PROOFREAD_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
+        (Config.PROOFREAD_MODEL, FULL_TRANSLATION_CATEGORIES),
+        (Config.STYLE_MODEL, FULL_TRANSLATION_CATEGORIES),
+    ]
+    if Config.STRICT_REFLECTION_MODE:
+        stage_requests.append(
+            (Config.INITIAL_MODEL, FULL_TRANSLATION_CATEGORIES)
+        )
+    for model, data_categories in stage_requests:
+        route = get_primary_provider_route(model)
+        base_url = validate_provider_base_url(get_base_url(route.base_url))
+        endpoint_is_local = _is_loopback_url(base_url)
+        require_provider_data_authorized(
+            route.provider_id,
+            data_categories,
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=endpoint_is_local,
+        )
+        if not endpoint_is_local:
+            required_keys.add(route.api_key_env)
+        if Config.GEMINI_FALLBACK_ENABLED:
+            require_provider_data_authorized(
+                "gemini",
+                data_categories,
+                Config.PROVIDER_DATA_POLICY,
+            )
+            required_keys.add("GEMINI_API_KEY")
+    if "source_text" in Config.PROVIDER_DATA_POLICY.get(
+        "gemini", frozenset()
+    ):
+        required_keys.add("GEMINI_API_KEY")
+    missing = sorted(name for name in required_keys if not get_api_key(name))
+    if os.environ.get("MOCK_SERVER_PORT"):
+        missing = [name for name in missing if name != "GEMINI_API_KEY"]
+    if missing:
+        raise RuntimeError(
+            f"Missing required provider credentials: {', '.join(missing)}"
+        )
 
 
 def validate_provider_base_url(base_url: str) -> str:
@@ -984,7 +1070,7 @@ class TranslationPipeline:
     async def _run_context_annotation(self, raw_text: str, static_context: str) -> List[Dict[str, str]]:
         annotator_instr = "你是一个日语轻小说上下文与发言人推断专家。你的任务是阅读给定的日文段落数组，推断每句话或每段的发言人，并补充省略的主语（如果有的话）。"
         
-        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        raw_paras = split_paragraphs(raw_text)
         json_input = json.dumps([{"paragraph": p} for p in raw_paras], ensure_ascii=False, indent=2)
         
         prompt = (
@@ -1018,11 +1104,7 @@ class TranslationPipeline:
             annotator_instr,
             response_schema=annotator_schema,
             static_context=static_context,
-            data_categories=[
-                "source_text",
-                "translation_text",
-                "book_knowledge",
-            ],
+            data_categories=SOURCE_AND_KNOWLEDGE_CATEGORIES,
             **Config.PROOFREADER_PARAMS
         )
         
@@ -1041,7 +1123,7 @@ class TranslationPipeline:
         translator_instr = self._get_agent_instruction("初译 Agent")
         
         # 1. Parse raw text into JSON array of paragraphs
-        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        raw_paras = split_paragraphs(raw_text)
         
         # 2. Build the JSON input block
         input_data = []
@@ -1089,11 +1171,7 @@ class TranslationPipeline:
             translator_instr,
             response_schema=translator_schema,
             static_context=static_context,
-            data_categories=[
-                "source_text",
-                "translation_text",
-                "book_knowledge",
-            ],
+            data_categories=SOURCE_AND_KNOWLEDGE_CATEGORIES,
             **Config.TRANSLATOR_PARAMS
         )
         res = await translator.call(prompt)
@@ -1146,7 +1224,7 @@ class TranslationPipeline:
                 proofread_instr,
                 response_schema=proofread_schema,
                 static_context=static_context,
-                data_categories=["source_text", "translation_text", "book_knowledge"],
+                data_categories=FULL_TRANSLATION_CATEGORIES,
                 **Config.PROOFREADER_PARAMS,
             )
             
@@ -1230,7 +1308,7 @@ class TranslationPipeline:
                     translator_instr,
                     response_schema=translator_schema,
                     static_context=static_context,
-                    data_categories=["source_text", "translation_text", "book_knowledge"],
+                    data_categories=FULL_TRANSLATION_CATEGORIES,
                     **Config.TRANSLATOR_PARAMS,
                 )
                 try:
@@ -1263,7 +1341,7 @@ class TranslationPipeline:
             polish_instr,
             response_schema=polish_schema,
             static_context=static_context,
-            data_categories=["source_text", "translation_text", "book_knowledge"],
+            data_categories=FULL_TRANSLATION_CATEGORIES,
             **Config.POLISHER_PARAMS,
         )
         require_aligned_paragraphs(raw_paras, corrected_list, "Proofreading")
@@ -1462,50 +1540,7 @@ class TranslationPipeline:
             )
 
     async def run_all(self):
-        required_keys = set()
-        stage_requests = (
-            (
-                Config.INITIAL_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-            (
-                Config.PROOFREAD_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-            (
-                Config.STYLE_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-        )
-        for model, data_categories in stage_requests:
-            route = get_primary_provider_route(model)
-            base_url = validate_provider_base_url(get_base_url(route.base_url))
-            endpoint_is_local = _is_loopback_url(base_url)
-            require_provider_data_authorized(
-                route.provider_id,
-                data_categories,
-                Config.PROVIDER_DATA_POLICY,
-                endpoint_is_local=endpoint_is_local,
-            )
-            if not endpoint_is_local:
-                required_keys.add(route.api_key_env)
-            if Config.GEMINI_FALLBACK_ENABLED:
-                require_provider_data_authorized(
-                    "gemini",
-                    data_categories,
-                    Config.PROVIDER_DATA_POLICY,
-                )
-                required_keys.add("GEMINI_API_KEY")
-        if "source_text" in Config.PROVIDER_DATA_POLICY.get(
-            "gemini", frozenset()
-        ):
-            required_keys.add("GEMINI_API_KEY")
-        missing = sorted(name for name in required_keys if not get_api_key(name))
-        if os.environ.get("MOCK_SERVER_PORT"):
-            missing = [name for name in missing if name != "GEMINI_API_KEY"]
-        if missing:
-            raise RuntimeError(f"Missing required provider credentials: {', '.join(missing)}")
-            
+        validate_provider_configuration()
         chapters = get_chapter_specs(
             Config.RAW_DIR,
             Config.OUTPUT_DIR,

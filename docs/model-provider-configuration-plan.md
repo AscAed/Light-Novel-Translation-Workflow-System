@@ -13,15 +13,17 @@
 
 ## 试点渠道与数据边界
 
-2026-11-14 用户指定 JOJO Code（`https://max2.jojocode.com/v1`）为主渠道、JYQF AI（`https://jyqf.me/v1`）为备用渠道，并说明两者均为中转站；试点为《祝福のネトラレラ》第 1 话。用户同意各职责仅接收其所需的最小数据类别；具体职责、类别及渠道的授权矩阵仍须逐项核定，备用渠道也须单独核定。作品、用途和权利边界见[原文采集方案](source-ingestion-and-publication-plan.md#试点作品与本地文件)。
+用户指定 JOJO Code（`https://max2.jojocode.com/v1`）的 `gpt-6-Luna` 为主、JYQF AI（`https://jyqf.me/v1`）的渠道模型 `deepseek-v4.1-flash` 为备用，两者均为中转站；试点为《祝福のネトラレラ》第 1 话，该书已由用户明确确认获得授权。代码提供显式的 `gpt-6-luna*` → `JOJO_BASE_URL`/`JOJO_API_KEY` 和精确别名 `deepseek-v4.1-flash` → `JYQF_BASE_URL`/`JYQF_API_KEY`；通用 `deepseek-flash` 仍路由到原有 DeepSeek Provider。默认模型不变，路由不代表端点已接通。用户授权主备模型接收各自职责所需的最小数据类别；当前代码已按实际调用阶段声明并预检：标注/初译为 `source_text` + `book_knowledge`，校对/润色为三类全集，启用严格反思时初译模型也需三类全集。备用渠道只有在实际被选择或显式回退时才会收到请求数据；通用自动主备回退仍未实现，超出最小职责类别的用途需另行确认。模型调用 ID、端点、协议兼容性及真实可用性未验证。作品授权已确认，不是待办或阻塞；平台规则、Provider/Notion 数据接收边界分别处理。
 
 | 调用范围 | 当前代码声明的类别或待核事项 | 试点约束 |
 | --- | --- | --- |
-| 翻译生成阶段 | `pipeline.py` 预检同时要求 `source_text`、`translation_text`、`book_knowledge`；各阶段实际请求内容与最小需求仍需逐项核查。 | 不能假定仅授权原文即可运行现有完整流程；主渠道及回退目标均需满足适用类别授权。 |
+| 上下文标注、初译 | `source_text`、`book_knowledge` | `PROVIDER_DATA_POLICY` 只需对具体调用模型授予这两类；共享该模型给校对/润色时还需覆盖这些阶段的类别并集。 |
+| 校对、润色 | `source_text`、`translation_text`、`book_knowledge` | 输入含当前原文和译文，不得按初译的较小集合预检。 |
+| 严格反思重译 | `source_text`、`translation_text`、`book_knowledge` | 仅 `STRICT_REFLECTION_MODE` 开启时发生；启动预检同步扩展初译 Provider 所需类别。 |
 | 嵌入、章节对齐与知识候选抽取 | 相关路径声明 `source_text`；现有 RAG 使用 Gemini embedding，不能假设已由两个中转站提供。 | 明确实际接收方、协议及数据范围后再授权；嵌入模型兼容性尚未验证。 |
-| 评测样本 | `evaluation_samples` 是授权类别；真实评测的数据组成和调用链尚待设计。 | 明确样本、接收方和用途，不因试点作品选定而假定矩阵已完成。 |
+| 评测样本 | `evaluation_samples` 是独立授权类别；真实评测的数据组成和调用链尚待设计，当前 JOJO/JYQF 最小职责授权不包含该类别。 | 评测前明确样本、接收方和用途；不能从试点作品授权或翻译职责授权推定评测数据可外发。 |
 
-端点、账户、Key、模型 ID、渠道条款、协议兼容性及通用渠道路由均`未验证`；当前按模型名路由的实现不等于已接入上述渠道。真实调用前须核实权利和渠道处理方式，并在需要时由用户通过安全方式提供 Key，不写入聊天、文档或日志。本次未调用 API。
+端点、账户、当前凭据、模型 ID、渠道条款、协议兼容性及通用渠道路由均`未验证`；当前按模型名路由的实现不等于已接入上述渠道。指定书籍授权已由用户明确确认，不是本方案的阻塞；真实调用前仍须核实实际接收方/处理方式，并在需要时通过安全方式配置当前 Key，不写入聊天、文档或日志。本次未调用 API。
 
 ## 模型目录
 
@@ -134,13 +136,14 @@
 - 已修复 `get_base_url` 曾在通用 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口 URL 时覆盖上述已选择端点的问题。仓库声明的默认 DashScope URL 没有显式端口；回归测试使用带显式端口的配置复现旧覆盖行为。当前仅测试环境显式设置 `MOCK_SERVER_PORT` 时覆盖为本地 mock URL。
 - 当前显式 Gemini 回退仅允许 SDK 连接/超时异常及 HTTP 408/429/5xx；鉴权、请求/schema 错误和内容拦截不触发回退。该本地错误边界由单测和 mock E2E 验证，不构成 Provider 配置、逐阶段绑定、逐数据类别授权或真实服务兼容性验收。
 - `API_TIMEOUT` 默认 10 秒且必须是有限正数；当前传入 OpenAI-compatible 聊天和 Gemini 生成、RAG embedding、章节对齐 embedding 调用。Gemini SDK `HttpOptions.timeout` 使用毫秒，由秒值换算；默认值对慢速模型可能过短，须按获准端点实测后由操作者配置。
-- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。类别未全部获准时请求在客户端边界被拒绝；此代码能力不代表任何真实 Provider 或数据类别已被用户授权。
+- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别，预检与实际 Agent 调用保持一致；类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别，但当前 allowlist 默认仍为空，真实端点和实际请求尚未验收。
+- 知识抽取脚本使用 `Config.PROOFREAD_MODEL` 发起请求，并复用 `get_primary_provider_route` 选择对应 Provider ID、base URL 与专属 Key；未知模型名在读取来源前失败，避免模型 ID 与实际接收 Provider 不一致。该共用路由不自动授权知识抽取用途，仍须该 Provider 的 `source_text` 在本地 allowlist 中获准；全书预算/分批与 tokenizer 适配未实现。
 - `CODING_PLAN_BASE_URL`/`CODING_PLAN_API_KEY` 仍在配置类中声明/读取，但没有接入当前主请求路由。用户决定暂不作为独立 Provider 支持，保留未接入配置；不能据此声称已实现 Coding Plan 或可替换 Provider。
 - 以上是静态代码与 mock 测试基线；本次未调用真实端点。M1 仍须定义 Provider/模型/凭据/阶段绑定契约，并为当前真实配置建立迁移和兼容规则。
 
 | 工作包 | 目标与主要任务 | 依赖 | 验收标准 | 主要风险/缓解 |
 | --- | --- | --- | --- | --- |
-| M0. 需求、权限与基线 | 盘点现有 Config/Provider 调用；确认用户配置入口（先 CLI/JSON 或 UI）、外发数据授权、端点和账户；把模型报价、配额、时区、来源、未知字段建档。 | 需人类确认使用场景、服务账户、可发送的数据范围和实际渠道条款。 | 有字段/职责清单；所有价格注明 CNY/1M tokens 与“用户渠道报价”；配额标为参考；无端点时明确记录未部署/未验证。 | 价格、配额或渠道路由变化；保留来源、日期、可更新字段，禁止固化未经验证的前提。 |
+| M0. 需求、权限与基线 | 盘点现有 Config/Provider 调用；记录已确认的 JOJO/JYQF 最小职责数据类别，确认用户配置入口（先 CLI/JSON 或 UI）、端点和账户；把模型报价、配额、时区、来源、未知字段建档。 | JOJO/JYQF 已授权类别无须重复询问；仍须验证服务账户、实际渠道条款和端点。其他 Provider、Gemini、评测样本及 Notion 范围须分别处理。 | 有字段/职责清单；所有价格注明 CNY/1M tokens 与“用户渠道报价”；配额标为参考；无端点时明确记录未部署/未验证。 | 价格、配额或渠道路由变化；保留来源、日期、可更新字段，禁止固化未经验证的前提。 |
 | M1. 配置契约与 Provider 适配边界 | 定义 Provider、模型能力、阶段绑定、凭据引用、错误分类、配置版本和迁移规则；识别 OpenAI-compatible、Gemini generate、Gemini Embedding、Gemini Decisions 等独立协议。 | M0 的场景/数据权限；不依赖真实模型质量。 | schema/接口文档可映射现有 Sakura/DeepSeek/Gemini 配置；无效类型组合在静态校验或 mock 测试中拒绝。 | 过早抽象所有供应商；首版仅支持当前实际协议，新增协议按需纳入。 |
 | M2. Provider 管理与凭据安全 | CLI/配置文件支持自定义 URL、Key 凭据引用、模型列表和本地配置诊断；先接入当前已有协议。 | M1；Windows 凭据存储访问方案。 | Key 不出现在配置导出/日志；支持新增、更新、验证和移除凭据引用；公网 HTTP 被拒绝或显式警告；兼容现有配置或提供迁移。 | 系统密钥库在不同 Windows 用户/权限下行为差异；以当前用户标准权限测试，提供不泄密的修复提示。 |
 | M3. 阶段分配、能力校验与回退 | 为每阶段配置首选/备用模型；校验任务能力与协议；实现错误分类、有限重试、显式跨 Provider 回退及切换记录。 | M2；阶段输入输出契约稳定。 | 测试覆盖首选成功、首选超时/429/5xx、备用失败、鉴权/schema/内容拦截不回退、未知模型类型、无循环重试；回退不会静默发生。 | 备用调用导致重复计费或跨服务商泄露数据；执行前授权，记录原因、限次并可关闭。 |

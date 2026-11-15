@@ -11,14 +11,59 @@ import re
 import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from source_manifest import load_manifest, verify_manifest_artifact
 from utils import (
+    open_regular_file,
     parse_api_timeout,
     read_relative_text,
     require_provider_data_authorized,
+    resolve_relative_path,
     split_paragraphs,
     validate_tm_source_provenance,
     write_text_atomically,
 )
+
+
+def _read_bound_source(raw_dir, spec, source_manifest_path):
+    manifest_path = resolve_relative_path(raw_dir, source_manifest_path)
+    manifest = load_manifest(manifest_path)
+    artifact = verify_manifest_artifact(
+        raw_dir, manifest, spec.source_version_id
+    )
+    if (
+        artifact["kind"] != "normalized_source"
+        or artifact["relative_path"] != spec.raw_file
+    ):
+        raise ValueError("Source version does not match the mapped chapter.")
+    source_path = resolve_relative_path(raw_dir, spec.raw_file)
+    with open_regular_file(source_path, binary=True) as stream:
+        content = stream.read()
+    if hashlib.sha256(content).hexdigest() != artifact["content_sha256"]:
+        raise ValueError("Mapped chapter changed after source-version validation.")
+    return content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _verify_bound_sources_current(raw_dir, source_manifest_path, chapter_specs):
+    bound_specs = [
+        spec for spec in chapter_specs if spec.source_version_id is not None
+    ]
+    if not bound_specs:
+        return
+    if not source_manifest_path:
+        raise ValueError("Bound chapter sources require a source manifest.")
+    manifest = load_manifest(
+        resolve_relative_path(raw_dir, source_manifest_path)
+    )
+    for spec in bound_specs:
+        artifact = verify_manifest_artifact(
+            raw_dir, manifest, spec.source_version_id
+        )
+        if (
+            artifact["kind"] != "normalized_source"
+            or artifact["relative_path"] != spec.raw_file
+        ):
+            raise ValueError("Mapped chapter source-version binding changed.")
+
 
 # If running in a test context, dynamically mock the google-genai library
 # so the script calls the local mock server instead of real API endpoints.
@@ -384,7 +429,22 @@ def main():
             print(f"Skipping {spec.translation_file} (translation not found)")
             continue
 
-        raw_content = read_relative_text(raw_dir, spec.raw_file)
+        if spec.source_version_id is None:
+            raw_content = read_relative_text(raw_dir, spec.raw_file)
+        else:
+            try:
+                raw_content = _read_bound_source(
+                    raw_dir,
+                    spec,
+                    Config.SOURCE_MANIFEST_PATH,
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                print(
+                    f"Error verifying source for {spec.raw_file} "
+                    f"({type(exc).__name__}).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         try:
             aligned_pairs = align_chapter(raw_content, translated_content)
@@ -479,6 +539,19 @@ def main():
     if not aligned_count:
         print(
             "Error: No chapters were aligned; all translations are missing.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        _verify_bound_sources_current(
+            raw_dir,
+            Config.SOURCE_MANIFEST_PATH,
+            chapter_specs,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(
+            f"Error verifying source bindings ({type(exc).__name__}).",
             file=sys.stderr,
         )
         sys.exit(1)

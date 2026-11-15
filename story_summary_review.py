@@ -275,10 +275,13 @@ def create_summary_review_template(
     }
     output_text = json.dumps(template, ensure_ascii=False, indent=2)
     write_new_child_text(knowledge_root, output_filename, output_text)
+    output_path = resolve_child_path(knowledge_root, output_filename)
+    with open_regular_file(output_path, binary=True) as stream:
+        output_digest = hashlib.sha256(stream.read()).hexdigest()
     return {
         "output": output_filename,
         "source_count": len(source_provenance["source_files"]),
-        "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+        "output_sha256": output_digest,
     }
 
 
@@ -330,6 +333,12 @@ def publish_reviewed_summary(
     output_filename: str,
 ) -> dict:
     """Publish one approved summary bound to current source versions."""
+    if (
+        not isinstance(output_filename, str)
+        or not output_filename.lower().endswith(".json")
+    ):
+        raise ValueError("Reviewed summary output filename must end with .json.")
+
     summary_bytes, summary, provenance_bytes, _, source_provenance = _candidate_inputs(
         knowledge_root
     )
@@ -377,10 +386,13 @@ def publish_reviewed_summary(
     }
     output_text = json.dumps(bundle, ensure_ascii=False, indent=2)
     write_new_child_text(knowledge_root, output_filename, output_text)
+    output_path = resolve_child_path(knowledge_root, output_filename)
+    with open_regular_file(output_path, binary=True) as stream:
+        output_digest = hashlib.sha256(stream.read()).hexdigest()
     return {
         "output": output_filename,
         "source_count": len(source_provenance["source_files"]),
-        "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+        "output_sha256": output_digest,
     }
 
 

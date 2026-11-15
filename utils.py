@@ -271,7 +271,11 @@ def write_text_atomically(path: str, content: str) -> None:
 
 
 def split_paragraphs(text: str) -> List[str]:
-    return [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
+    paragraphs = [
+        paragraph.strip(" \t\r\n\f\v")
+        for paragraph in text.split("\n\n")
+    ]
+    return [paragraph for paragraph in paragraphs if paragraph]
 
 
 def validate_tm_source_provenance(provenance: dict, pair_count: int) -> None:

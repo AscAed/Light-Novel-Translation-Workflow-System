@@ -21,6 +21,7 @@ from utils import open_regular_file, resolve_relative_path, write_text_atomicall
 CHECKPOINT_SCHEMA_VERSION = 5
 DEFAULT_MAX_EPISODE_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_CATALOG_BYTES = 1024 * 1024 * 1024
+_MAX_EPISODE_METADATA_BYTES = 1024 * 1024
 _LEGACY_CHECKPOINT_FIELDS = frozenset(
     {
         "schema_version",
@@ -71,6 +72,12 @@ class CatalogPage:
 
 
 @dataclass(frozen=True)
+class FetchedEpisode:
+    metadata: EpisodeMetadata
+    content: bytes
+
+
+@dataclass(frozen=True)
 class LocalEpisodeFile:
     metadata: EpisodeMetadata
     relative_path: str
@@ -82,7 +89,7 @@ class SourceAdapter(Protocol):
 
     def list_episodes(self, cursor: str | None) -> CatalogPage: ...
 
-    def fetch_episode(self, episode_id: str) -> bytes: ...
+    def fetch_episode(self, episode_id: str) -> bytes | FetchedEpisode: ...
 
 
 class LocalFileAdapter:
@@ -453,6 +460,34 @@ def _report(checkpoint: dict) -> dict:
     }
 
 
+def _completed_raw_content_bytes(
+    root_path: Path,
+    manifest_path: Path,
+    work_id: str,
+    checkpoint: dict,
+) -> int:
+    if not checkpoint["completed_episode_ids"]:
+        return 0
+    if not manifest_path.exists():
+        raise ValueError("Completed source checkpoint has no manifest.")
+    manifest = load_manifest(manifest_path)
+    total = 0
+    for episode_id in checkpoint["completed_episode_ids"]:
+        version_id = checkpoint["completed_raw_versions"][episode_id]
+        artifact = verify_manifest_artifact(root_path, manifest, version_id)
+        if (
+            artifact["kind"] != "raw_source"
+            or artifact["artifact_id"]
+            != _source_artifact_id(work_id, "raw_source", episode_id)
+        ):
+            raise ValueError(
+                "Completed source checkpoint points to an unrelated raw artifact."
+            )
+        path = resolve_relative_path(str(root_path), artifact["relative_path"])
+        total += path.stat().st_size
+    return total
+
+
 def _pause(checkpoint: dict, reason: str, root: Path, checkpoint_path: str) -> dict:
     checkpoint["status"] = "paused"
     checkpoint["pause_reason"] = reason
@@ -637,13 +672,18 @@ def _checkpoint_fingerprint(
     return hashlib.sha256(fingerprint_data).hexdigest()
 
 
-def _source_artifact_id(work_id: str, kind: str, episode_id: str) -> str:
+def source_artifact_id(work_id: str, kind: str, episode_id: str) -> str:
+    if not all(_valid_identifier(value) for value in (work_id, kind, episode_id)):
+        raise ValueError("Source artifact identity fields must be valid identifiers.")
     identity = json.dumps(
         [work_id, kind, episode_id],
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
     return f"source-ingestion:v1:{hashlib.sha256(identity).hexdigest()}"
+
+
+_source_artifact_id = source_artifact_id
 
 
 def _latest_artifact(manifest: dict, artifact_id: str) -> dict | None:
@@ -722,6 +762,8 @@ def _persist_episode(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    if len(metadata) > _MAX_EPISODE_METADATA_BYTES:
+        raise ValueError("Serialized episode metadata exceeds the size limit.")
     metadata_hash = hashlib.sha256(metadata).hexdigest()
     metadata_artifact_id = _source_artifact_id(
         work_id, "episode", episode.episode_id
@@ -874,7 +916,9 @@ def _load_episode_metadata(
     if metadata_artifact is None or metadata_artifact["kind"] != "episode":
         raise ValueError("Episode metadata is not present in the source manifest.")
     metadata_bytes = _read_manifested_artifact_bytes(
-        root_path, metadata_artifact, max_bytes=1024 * 1024
+        root_path,
+        metadata_artifact,
+        max_bytes=_MAX_EPISODE_METADATA_BYTES,
     )
     try:
         metadata = json.loads(
@@ -1008,12 +1052,6 @@ def materialize_episode_markdown(
     ):
         raise ValueError("Markdown output path is already owned by another artifact.")
     _ensure_parent_directories(root_path, relative_path)
-    output_path = resolve_relative_path(
-        str(root_path), relative_path, allow_missing=True
-    )
-    if output_path.exists():
-        raise ValueError("Markdown output path exists but is not registered in the manifest.")
-
     artifact = {
         "artifact_id": normalized_artifact_id,
         "version_id": version_id,
@@ -1248,6 +1286,19 @@ def materialize_complete_checkpoint_catalog_markdown(
     episode_ids = checkpoint["discovered_episode_ids"]
     if checkpoint["completed_episode_ids"] != episode_ids:
         raise ValueError("Complete source checkpoint episode order is inconsistent.")
+    manifest = load_manifest(manifest_path)
+    source_positions = []
+    for episode_id in episode_ids:
+        _, metadata = _load_episode_metadata(
+            root_path,
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+        )
+        source_positions.append((metadata["position"], episode_id))
+    episode_ids = [
+        episode_id for _, episode_id in sorted(source_positions)
+    ]
 
     artifact = materialize_episode_collection_markdown(
         root_path,
@@ -1273,7 +1324,7 @@ def collect_source(
     checkpoint_relative_path: str = "source_checkpoint.json",
     max_archive_bytes: int | None = None,
 ) -> dict:
-    """Collect an adapter's catalog and raw bytes without making network requests."""
+    """Persist adapter catalog entries and fetched raw bytes with resumable state."""
     if not _valid_identifier(work_id):
         raise ValueError("Source collection requires a valid work_id.")
     source_fingerprint = getattr(adapter, "source_fingerprint", None)
@@ -1320,6 +1371,13 @@ def collect_source(
                 "Legacy source checkpoint has no completed raw version bindings; "
                 "use a new checkpoint path after verifying existing output."
             )
+        if (
+            checkpoint_version == 4
+            and checkpoint["manifest_relative_path"] != manifest_identity
+        ):
+            raise ValueError(
+                "Legacy source checkpoint does not match the destination manifest."
+            )
         if checkpoint_version < 3:
             raise ValueError(
                 "Legacy source checkpoint has no source_fingerprint; use a new "
@@ -1356,6 +1414,18 @@ def collect_source(
         and checkpoint["pause_reason"] in {"archive_limit", "pagination_cycle"}
     ):
         return _report(checkpoint)
+    set_completed_catalog_bytes = getattr(
+        adapter, "set_completed_catalog_bytes", None
+    )
+    if callable(set_completed_catalog_bytes):
+        set_completed_catalog_bytes(
+            _completed_raw_content_bytes(
+                root_path,
+                manifest_path,
+                work_id,
+                checkpoint,
+            )
+        )
     archive_bytes = None
     if max_archive_bytes is not None:
         existing_manifest = (
@@ -1397,7 +1467,11 @@ def collect_source(
             record = checkpoint["pending_episodes"][0]
             episode = EpisodeMetadata(**record)
             try:
-                content = adapter.fetch_episode(episode.episode_id)
+                fetched = adapter.fetch_episode(episode.episode_id)
+            except ArchiveLimitExceeded:
+                return _pause(
+                    checkpoint, "archive_limit", root_path, checkpoint_relative_path
+                )
             except SourceAccessDenied:
                 return _pause(
                     checkpoint, "access_denied", root_path, checkpoint_relative_path
@@ -1410,6 +1484,20 @@ def collect_source(
                 return _pause(
                     checkpoint, "unavailable", root_path, checkpoint_relative_path
                 )
+            if isinstance(fetched, FetchedEpisode):
+                _validate_episode_metadata(fetched.metadata)
+                if (
+                    fetched.metadata.episode_id != episode.episode_id
+                    or fetched.metadata.position != episode.position
+                    or fetched.metadata.source_ref != episode.source_ref
+                ):
+                    raise ValueError(
+                        "Fetched episode metadata does not match its catalog entry."
+                    )
+                episode = fetched.metadata
+                content = fetched.content
+            else:
+                content = fetched
             if not isinstance(content, bytes):
                 raise ValueError("Source adapter must return episode content as bytes.")
 

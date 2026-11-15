@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +30,8 @@ def main(argv=None):
     )
     parser.add_argument("--input-root", required=True)
     parser.add_argument("--catalog", required=True)
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--source-manifest", default="source_manifest.json")
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--pandoc", default="pandoc")
     parser.add_argument("--max-chapter-bytes", type=_positive_int, required=True)
@@ -41,6 +44,8 @@ def main(argv=None):
         result = build_epub_candidate(
             input_root=args.input_root,
             catalog_relative_path=args.catalog,
+            source_root=args.source_root,
+            source_manifest_relative_path=args.source_manifest,
             output_root=args.output_root,
             max_chapter_bytes=args.max_chapter_bytes,
             max_total_bytes=args.max_total_bytes,
@@ -48,7 +53,15 @@ def main(argv=None):
             pandoc_executable=args.pandoc,
             timeout_seconds=args.timeout_seconds,
         )
-    except (FileExistsError, OSError, UnicodeError, ValueError, RuntimeError, TimeoutError) as exc:
+    except (
+        FileExistsError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        RuntimeError,
+        TimeoutError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         print(f"ERROR: {type(exc).__name__}", file=sys.stderr)
         return 1
 

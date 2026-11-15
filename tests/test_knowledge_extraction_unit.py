@@ -237,6 +237,86 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         )
         client.chat.completions.create.assert_awaited_once()
 
+    def test_extraction_uses_the_configured_model_provider_route(self):
+        routes = (
+            (
+                "gpt-6-luna",
+                "JOJO_BASE_URL",
+                "jojo",
+                "JOJO_API_KEY",
+            ),
+            (
+                "deepseek-v4.1-flash",
+                "JYQF_BASE_URL",
+                "jyqf",
+                "JYQF_API_KEY",
+            ),
+        )
+        response = json.dumps(
+            {"glossary": [], "summary": "Synthetic summary."}
+        )
+
+        for index, (model, base_url_name, provider_id, api_key_name) in enumerate(
+            routes
+        ):
+            with self.subTest(provider=provider_id):
+                client = make_client(response)
+                base_url = f"https://{provider_id}.example/v1"
+                output_dir = self.root / f"Knowledge-{index}"
+                with patch.object(Config, "PROOFREAD_MODEL", model):
+                    with patch.object(Config, base_url_name, base_url):
+                        with patch.object(
+                            Config,
+                            "PROVIDER_DATA_POLICY",
+                            {provider_id: frozenset({"source_text"})},
+                        ):
+                            with patch(
+                                "scripts.auto_extract_knowledge.get_api_key",
+                                return_value=f"synthetic-{provider_id}-key",
+                            ) as key_loader:
+                                with patch(
+                                    "scripts.auto_extract_knowledge.get_openai_client",
+                                    return_value=client,
+                                ) as client_factory:
+                                    asyncio.run(
+                                        auto_extract_knowledge.extract_knowledge(
+                                            str(self.raw_dir), str(output_dir)
+                                        )
+                                    )
+
+                key_loader.assert_called_once_with(api_key_name)
+                client_factory.assert_called_once_with(
+                    base_url,
+                    f"synthetic-{provider_id}-key",
+                    provider_id=provider_id,
+                    data_categories={"source_text"},
+                )
+                self.assertEqual(
+                    client.chat.completions.create.call_args.kwargs["model"],
+                    model,
+                )
+
+    def test_unsupported_extraction_model_fails_before_source_read(self):
+        with patch.object(Config, "PROOFREAD_MODEL", "unsupported-model"):
+            with patch(
+                "scripts.auto_extract_knowledge._read_source_chapter"
+            ) as source_reader:
+                with patch(
+                    "scripts.auto_extract_knowledge.get_openai_client"
+                ) as client_factory:
+                    with self.assertRaisesRegex(
+                        ValueError, "Unsupported model name"
+                    ):
+                        asyncio.run(
+                            auto_extract_knowledge.extract_knowledge(
+                                str(self.raw_dir), str(self.output_dir)
+                            )
+                        )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
     def test_extraction_reads_only_the_explicit_nested_source_mapping(self):
         raw_file = "Volume 2/第3話.md"
         source_text = "合成章节原文。"
@@ -458,6 +538,29 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
 
         self.assertFalse(self.output_dir.exists())
         client_factory.assert_not_called()
+
+    def test_provider_preflight_runs_before_chapter_discovery(self):
+        with patch.object(
+            Config, "DEEPSEEK_BASE_URL", "https://provider.example/v1"
+        ):
+            with patch.object(Config, "PROVIDER_DATA_POLICY", {}):
+                with patch(
+                    "scripts.auto_extract_knowledge.get_api_key",
+                    return_value="test-key",
+                ):
+                    with patch(
+                        "scripts.auto_extract_knowledge.get_chapters"
+                    ) as chapter_scan:
+                        with self.assertRaisesRegex(
+                            PermissionError, "not authorized"
+                        ):
+                            asyncio.run(
+                                auto_extract_knowledge.extract_knowledge(
+                                    str(self.raw_dir), str(self.output_dir)
+                                )
+                            )
+
+        chapter_scan.assert_not_called()
 
     def test_cli_error_does_not_print_exception_message(self):
         stderr = io.StringIO()

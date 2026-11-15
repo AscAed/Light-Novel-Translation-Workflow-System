@@ -28,7 +28,7 @@
 
 以下结论来自当前实现与已有验证记录，不代表已发生过具体知识污染事故：
 
-- 外部模型数据发送由 `PROVIDER_DATA_POLICY` 明确控制，默认空策略并拒绝远端请求。请求类别为 `source_text`、`translation_text`、`book_knowledge`、`evaluation_samples`；只要该调用包含的任一类别未获对应 Provider 授权，调用就在客户端边界失败。loopback OpenAI-compatible endpoint 与 RAG 直接使用的本地 HTTP mock 不属于外发授权判定；Gemini SDK 调用始终检查授权，E2E runner 为合成 fixture 显式配置测试 grant。默认拒绝的实现不等于用户已批准任何真实 Provider。
+- 外部模型数据发送由 `PROVIDER_DATA_POLICY` 明确控制，默认空策略并拒绝远端请求。请求类别为 `source_text`、`translation_text`、`book_knowledge`、`evaluation_samples`；只要该调用包含的任一类别未获对应 Provider 授权，调用就在客户端边界失败。用户已授权 JOJO/JYQF 接收其职责所需的最小类别；默认空策略表示尚未在运行配置中显式启用，不是待用户补充授权。该决定不包括 Gemini embedding、Notion 或其他接收方。loopback OpenAI-compatible endpoint 与 RAG 直接使用的本地 HTTP mock 不属于外发授权判定；Gemini SDK 调用始终检查授权，E2E runner 为合成 fixture 显式配置测试 grant。
 - 流水线完成模型阶段并通过当前格式检查后会自动更新 TM；当前门禁拒绝空/非文本段落、段落数错配及逐段 `「」『』` 数量或顺序变化。未通过时不写译文或 TM。通过格式门禁仍不等同于人工批准，也不能证明译文语义正确；阶段 2 仍需确定何时允许进入正式检索集合。
 - 章节对齐使用启发式方法。对齐结果需要保留来源并可审查；仅仅成功生成向量或写入 JSON，不构成高质量双语样本的验收。
 - `auto_extract_knowledge.py` 生成的是实验性草稿：写入前校验响应结构、必填字段和同一原词的冲突译名，并拒绝覆盖既有草稿。`KNOWLEDGE_PROVENANCE_draft.json` 记录实际送入提示词的章节范围/哈希、样本哈希和可精确匹配的术语段落序号；未命中项保留为空命中。它不验证术语语义，也不为概要逐句归因；其他知识与历史 TM 条目仍缺来源、置信度或审核状态。不得因结构校验或来源命中就将模型建议提升为已批准知识。
@@ -46,7 +46,7 @@
 - `glossary_evidence` 仅按原词精确子串匹配，段落序号从 `1` 开始；未找到时 `occurrences` 为空。它是定位线索，不判断该译名或模型说明是否正确。
 - `summary_source_chapters` 仅说明概要生成时纳入的章节范围，不给概要中的单条事实提供逐句证据。
 - 三份草稿逐文件写入；来源清单最后写入并将 `artifact_status` 设为 `complete`。缺少清单、状态不为 `complete` 或 JSON 无法解析时，整组草稿视为不完整，先人工检查残留文件。
-- 2026-11-15 输入/外发前置检查：`scripts/auto_extract_knowledge.py` 在读取章节正文前检查 OpenAI-compatible base URL、Provider 的 `source_text` 授权及远端 API key；客户端创建时再次检查。授权失败或缺少远端 key 时不读取章节、不创建客户端或草稿。其后最多读取前 3 个所选章节，每个文件最多读取 16 MiB，超过上限即在创建 Provider 客户端前拒绝；CLI 只报告通用超限提示，不回显路径或异常正文。单次源文件读取总量因此最多为 48 MiB。随后仍把含章节标记的样本文本截到 20,000 个 Unicode 字符。字节上限控制本地读取量，字符截断不是 token 估算；全书上下文预算、分批抽取和可配置上限仍未实现。验证见[开发与验证](development.md#2026-11-15-知识抽取章节读取上限)。
+- 2026-11-15 输入/外发前置检查：`scripts/auto_extract_knowledge.py` 按 `Config.PROOFREAD_MODEL` 复用 `get_primary_provider_route`，在读取章节正文前解析匹配的 OpenAI-compatible base URL、Provider ID 和专属 API key，再检查该 Provider 的 `source_text` 授权；创建客户端时再次检查。未知模型名、未授权类别或缺少远端 key 时不读取章节、不创建客户端或草稿。最多读取前 3 个所选章节，每个文件最多 16 MiB，超过上限即在创建 Provider 客户端前拒绝；CLI 只报告通用超限提示，不回显路径或异常正文。单次源文件读取总量因此最多为 48 MiB。随后仍把含章节标记的样本文本截到 20,000 个 Unicode 字符。字节上限控制本地读取量，字符截断不是 token 估算；全书上下文预算、分批抽取和可配置上限仍未实现。当前路由增量的验证见[开发与验证](development.md#2026-11-15-知识抽取-provider-路由对齐)。
 
 ## 知识候选来源新鲜度核验
 

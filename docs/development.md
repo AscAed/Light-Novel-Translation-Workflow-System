@@ -1,5 +1,84 @@
 # 开发与验证
 
+## 2026-11-16 当前 checkout 验证
+
+- 基线：分支 `codex/translation-workflow-20261115`，测试前 HEAD `c3f313b`；工作树含待审阅的实现、回归测试和文档修改。
+- 完整非 E2E 单测命令：
+
+  ```powershell
+  $targets = rg --files tests | Where-Object { $_ -match '^tests[\\/]+test_.*\.py$' -and $_ -notmatch 'test_e2e\.py$' } | ForEach-Object { ($_ -replace '[\\/]', '.') -replace '\.py$', '' }
+  & .\.venv\Scripts\python.exe -m unittest @targets -q
+  ```
+
+  333 项运行，0 失败，4 项跳过。3 项符号链接用例因 Windows `WinError 1314` 未授予创建权限而跳过；FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。
+- 当前版本单独运行 `tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 项跳过原因同为 `WinError 1314`，1 项为 FIFO 平台能力缺失。用户此前报告的 9 项/3 项结果与此 checkout 的测试集合不同，不替代本次结果。
+- 已获用户授权尝试提权，但当前执行器阻止启动管理员进程；没有绕过策略或把符号链接用例记为通过。需在管理员 PowerShell 中重跑该模块，确认三个符号链接用例是否可执行。
+- `git diff --check HEAD`、Python `compileall` 通过。`.venv\Scripts\python.exe tests\run_tests.py` 重跑 7 项完整 mock E2E，229.307 秒，退出码 0；runner 汇总前显示的 content-filter 和段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
+
+## 2026-11-15 当前工作区定向验证
+
+- 基线：分支 `codex/translation-workflow-20261115`、当前 HEAD `c3f313b`；工作区包含续接开始前的未提交修改和本任务增量，完整保留清单见 handoff。Provider 环境为本机 `.venv` Python 3.14.7。
+- 当前 source-only 真实采集状态：Kakuyomu 作品主页目录发现 88 个公开 episode ID，与 `publicEpisodeCount=88` 相等；采集完成 88/88，生成 88 个 normalized 单话 Markdown 和一份 793,357 字节的有序全书 export。未调用 Provider。source manifest `schema_version=1` 的 267 个文件型 artifact 经 `scripts/validate_source_manifest.py` 全部 SHA-256 核验通过。
+- parser v4 支持 `widget-episodeBody`/`js-episode-body`，保留段落边界、ruby 与 emphasisDots 表示、U+3000。真实首话结构检查观察到段落/ruby/U+3000，emphasisDots 由 synthetic fixture 覆盖。保存的是抽取后的 UTF-8 可见文本，不保留原始 HTML。请求间隔默认 2 秒，adapter 与 CLI 均限制为 1.5–3 秒。
+- 指定试点书籍已按用户明确确认记录为已授权；用户也已授权 JOJO/JYQF 各自职责所需的最小数据类别。阶段预检和别名路由通过合成测试，但 `PROVIDER_DATA_POLICY` 仍默认为空，实际 allowlist 尚未本地配置；其他 Provider、Gemini 和 Notion 不在该授权范围。疑似旧凭据按用户指示视为已轮换。平台访问规则观察与用户“不需要官方澄清”的决定分开记录；不称平台背书或法律结论。
+- 本轮未调用真实 Provider 或 Notion，也未验证翻译质量、EPUB 阅读器或部署。译文目录仍为空，正文段落/ruby/标点人工验收尚未完成。用户指定书籍授权和 JOJO/JYQF 最小职责类别已确认；运行时 Provider allowlist 仍为空。测试跳过项不能记为通过。
+- 本次相关模块定向单测 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_kakuyomu_workflow tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli tests.test_source_markdown_materialization tests.test_epub_builder -q`：114 项通过；后续 U+3000 流水线修复后的合并相关回归为 195 项通过，完整 mock E2E 为 7 项通过，详见[全目录采集与最终回归](#2026-11-15-kakuyomu-公开目录全量采集与-i3-导出)。
+- 完整 mock E2E runner 会在最终 `OK` 汇总前打印若干 pipeline 失败栈；这些来自 runner 的预期负向 fixture（content filter、段落错配等），不能单独视为 suite 失败。
+
+### 2026-11-15 Kakuyomu 公开目录全量采集与 I3 导出
+
+- 用户确认试点作品已获得明确授权；用户是普通读者，要求从作品主页发现全部公开目录，再逐话通过普通 episode URL 获取正文，并明确表示不需要官方澄清。按此用户决定实施；平台规则观察保留为风险背景，不表述为平台背书或法律结论，也不设为本试点等待官方答复的前置条件。采集遵守 `robots.txt`，不登录、不跟随重定向、不访问 `/read`，不调用未文档化 API。请求间隔默认 2 秒，adapter 与 CLI 将其限制为 1.5–3 秒。
+- 真实 source-only 运行发现主页声明的 88 个公开 episode，与 `publicEpisodeCount=88` 一致；逐话采集完成 88/88。最终 source manifest `schema_version=1` 的 267 个文件型 artifact 全部通过 SHA-256 验证；生成 88 个 normalized 单话 Markdown 与一份 793,357 字节的有序全书 export。保存抽取后的 UTF-8 可见文本，不保存原始 HTML；未调用 Provider 或 Notion。该目录范围不包含草稿/私有话，不证明站点声明范围外的完整性，也不是同一时刻的原子快照。
+- Parser v4 处理 `widget-episodeBody`/`js-episode-body`，保留段落边界、将 ruby 转为 `｜基字《读音》`、将 emphasisDots 转为 `｜文本《・・・》`，并保留 U+3000；真实首话可见段落/ruby/U+3000，旁点由 synthetic fixture 覆盖。随后 mock E2E 暴露 `utils.split_paragraphs` 及 pipeline 额外 `.strip()` 会剥除 U+3000；已改为只裁剪 ASCII 空白，并在 annotation/translation 段落拆分时复用此函数。新增 `TestParagraphContracts.test_split_paragraphs_preserves_fullwidth_and_nonbreaking_indent`。
+- 修复后 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestParagraphContracts tests.test_source_pipeline_linkage -q`：36 项通过；Kakuyomu 两项 URL 到 mock 翻译 E2E 定向运行：2 项通过；相关模块合并回归（Kakuyomu adapter/workflow、manifest/ingestion/materialization、EPUB builder、pipeline contracts、source linkage）195 项通过；`.venv\Scripts\python.exe tests\run_tests.py`：7 个本地 mock E2E 测试方法通过，210.940 秒，退出码 0。首次 U+3000 修复前的 E2E 暴露了上述缺陷，修复后定向与完整 E2E 均通过。
+- Python `py_compile`（`utils.py`、`pipeline.py` 和新增/修改的对应测试）及两个 Kakuyomu CLI `--help` 通过。真实来源根目录 `source_manifest.json` 只读检查：`schema_version=1 artifacts=267 files_verified=267`。人工正文/ruby/标点验收、真实 Provider 翻译、Notion、EPUBCheck/阅读器与部署仍未验证；译文目录仍为空。
+
+### 历史检查点：Kakuyomu 主页目录发现与逐话续传
+
+以下内容是 parser v4 和真实全目录采集前的阶段记录；与当前状态不一致之处以本节首部和[全目录采集记录](#2026-11-15-kakuyomu-公开目录全量采集与-i3-导出)为准。
+
+- 用户明确要求普通读者场景从作品主页发现完整公开目录，再逐话通过普通 episode URL 获取正文；不依赖作者 ZIP。`discover_kakuyomu_work_catalog()` 读取主页 Next.js Apollo `Work.tableOfContentsV2`，按目录组顺序展开 episode ID/title，校验唯一条目数与 `publicEpisodeCount` 相等后生成普通 episode URL。解析缺字段、重复 ID、计数不符、robots 拒绝或站点结构变化时 fail-closed，不请求章节正文。
+- `scripts/ingest_kakuyomu_pages.py --work-url` 可单独发现、排他保存 `source_catalog.discovered.json`、将目录交给 checkpoint 后逐话请求并即时归档；此来源采集模式不需要 Provider 配置。`scripts/run_kakuyomu_workflow.py --work-url` 先预检 Provider，再将发现/采集、来源版本物化、确定性路径/TM 键/`CHAPTER_MAP` 与生产翻译流水线串接。robots 和目录元数据/限额快照保持 fingerprint；每话 raw 正文独立保存哈希并记录到 checkpoint。暂时失败后从首个未完成话继续，已完成正文不重抓；累计正文限额从 manifest 中校验后的已完成 raw 版本恢复。该流程是跨时间滚动采集，不是同一时刻的原子全书快照；目录未变的完整 checkpoint 不自动更新正文。两个入口均不登录、不跟随重定向、不访问 `/read`，默认请求间隔 2 秒；主页公开目录不包括草稿/私有话，也不证明站点声明范围外的作品完整性。
+- `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_kakuyomu_workflow -q`：23 项通过，包含临时 503 后只续取未完成话和恢复累计文本限额。相关回归命令（包括来源、审核、Provider 契约、RAG 与安全模块）309 项运行、305 项通过、4 项 Windows 能力限制跳过、0 项失败。跳过为 3 项符号链接 fixture（`WinError 1314`）和 1 项 FIFO fixture（Windows 不支持 `os.mkfifo`）；故障注入错误日志是预期测试输出。
+- `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项通过，由 runner 启动本地 mock server。该 synthetic E2E 从主页目录 fixture 贯通到所有目录页面、归档、版本化物化、确定性章节映射和 mock 翻译/TM；不访问 Kakuyomu 或真实 Provider。完整 `.venv\Scripts\python.exe tests\run_tests.py` 的最新结果另见本节后续记录。
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 个本地 mock E2E 测试方法通过，261.806 秒，退出码 0。输出中的 content-filter、段落数量不匹配等失败堆栈来自预期负向 fixture；runner 最终 unittest 汇总为 `OK`。未调用真实 Kakuyomu、Provider 或 Notion。此前 235.228 秒结果是主页发现实现但逐话续传改造前的历史检查点。
+- 2026-11-15 经配置代理进行一次真实主页结构探测：发现 88 个唯一 episode 条目，与页面 `publicEpisodeCount=88` 相符；只检查目录结构，没有批量请求章节正文。第一话的真实导入是单话独立证据，不能视为全书下载或格式人工验收。
+- `scripts/ingest_kakuyomu_pages.py --help` 与 `scripts/run_kakuyomu_workflow.py --help` 可执行并显示 `--work-url`。全目录真实正文抓取、真实 Provider 翻译、段落/ruby/标点人工验收、公开分发范围及平台批量访问规则仍未由这些验证证明。
+
+### 2026-11-15 Kakuyomu 显式 URL 单话导入
+
+- 用户明确指定普通读者场景直接通过其提供的普通 episode URL 获取原文，并确认试点作品已获授权；作者专用 ZIP 不作为本试点输入或阻塞。此前针对页面做过一次结构探测；本次 adapter 使用显式 JSON catalog 再次请求 `robots.txt` 和该单一页面，不遍历作品目录、不请求 `/read`、不登录、不跟随重定向，默认请求间隔 2 秒。
+- 导入前复核用户指定原文根目录为空，且 `source_catalog.json`、`source_manifest.json`、`source_checkpoint.json` 均不存在；以 `CreateNew` 新建只含一话 URL/ID/顺序的 catalog，再将归档写入原文根目录。该目录位于仓库外，保留原样，不将书籍内容纳入版本控制或日志。
+- `.venv\Scripts\python.exe scripts\ingest_kakuyomu_pages.py --source-root <原文根目录> --catalog source_catalog.json --output-root <原文根目录> --request-delay-seconds 2`：退出码 0，报告 `status=complete`、`discovered_count=1`、`completed_count=1`、`pending_count=0`。命令输出不含正文。用户原文根目录中的 manifest 记录 episode metadata 与 raw text 两个文件型 artifact；raw artifact 为 9,841 字节。
+- `.venv\Scripts\python.exe scripts\materialize_source_markdown.py --root <原文根目录> --work-id 16817330668011048405 --episode-id 16817330668011089189 --manifest source_manifest.json --max-bytes 16777216`：创建 normalized artifact `v-49f52b5057a5317e202b57b6f01ffadd3d86ae2f5603474ce6dbb93796274d9d`，其父版本为 raw `v-aa5bcc437805cce5805e2b5e61cce32478e1a8efd09702f9f03beaa7e76550be`。两份文件均为 9,841 字节且 SHA-256 均为 `46a3b70f4f514be3f86396d477cae7bcc89f45f4ea23d2773f1e5657ea1f393f`；字节序列比较相同。本步骤不清洗或展示正文。
+- `.venv\Scripts\python.exe scripts\validate_source_manifest.py --root <原文根目录> --manifest source_manifest.json`：`schema_version=1`、3 个 artifact、3 个文件校验通过。`tests.test_kakuyomu_page_source` 的 HTTP/HTML 均为 synthetic fixture，不访问网络。
+- 专项单测 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli -q`：74 项通过；`.venv\Scripts\python.exe -m unittest tests.test_source_markdown_materialization -q`：16 项通过。新 adapter、CLI 和测试 `py_compile`、CLI `--help`、`git diff --check` 通过。
+- 人工正文/段落/ruby 标点验收、后续章节 URL 清单、`CHAPTER_MAP`/TM 键以及真实 Provider 翻译仍未完成。用户授权指定作品不等于平台对批量抓取或公开分发的许可；本次只访问用户指明的普通 episode URL，且遵守 robots 和请求间隔。
+
+## 2026-11-15 当前 checkout 回归验证
+
+- Kakuyomu URL adapter 增量后的相关回归：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_story_summary_review tests.test_tm_review tests.test_epub_builder tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit tests.test_rag_engine_unit tests.test_scratch_filter -q`：298 项运行，294 项通过、4 项因 Windows 符号链接/FIFO 能力限制跳过、0 项失败。跳过为 3 项符号链接创建权限限制（`WinError 1314`）和 1 项 Windows 不支持 FIFO；故障注入错误日志是预期 fixture。
+- URL adapter 首次实现后的历史 `.venv\Scripts\python.exe tests\run_tests.py`：5 个本地 mock E2E 测试方法通过，251.047 秒，退出码 0；该历史批次尚未包含下方新增的 URL 到翻译链路测试。
+- `.venv\Scripts\python.exe -m unittest tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_story_summary_review tests.test_tm_review tests.test_epub_builder tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit tests.test_rag_engine_unit tests.test_scratch_filter -q`：加入来源到版本化 mock 翻译端到端用例后，286 项运行、282 项通过、4 项按 Windows 能力跳过、0 项失败。跳过为 3 项符号链接创建权限限制（`WinError 1314`）和 1 项 Windows 不支持 FIFO；故障注入中的错误日志属于预期测试场景。
+- Kakuyomu 作者 ZIP/TXT 边界增量后，`.venv\Scripts\python.exe -m unittest tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli -q`：62 项通过；新增 UTF-8 `.txt` 用例仅使用合成内容。未因该测试变更生产代码，因此未重跑完整 mock E2E。
+- `.venv\Scripts\python.exe tests\run_tests.py`：5 个本地 mock E2E 测试方法通过，231.163 秒，退出码 0。新增用例贯通显式本地 catalog 导入、normalized 来源版本物化、`CHAPTER_MAP.source_version_id`、真实 `TranslationPipeline.run_all()` 的本地 mock 四阶段请求、译文写入和 TM 来源版本记录。该路径使用合成日文、mock embedding 与本机 HTTP mock；未调用真实 Provider、Notion、Kakuyomu 或读取书籍正文。
+- `.venv\Scripts\python.exe -m py_compile tests\test_e2e.py`、`git diff --check`：通过。路由改动前的 `compileall`、`pip check` 及 Markdown 链接结果见各自检查点；本轮全仓 Markdown 链接检查结果记录于当前 handoff，链接检查不等价于完整 CommonMark/GitHub 渲染器验收。
+- 该回归只证明当前代码在合成数据和本地 mock 上的契约行为；不证明 JOJO/JYQF 端点、模型 ID、当前凭据、平台自动采集、真实译文质量、EPUB 阅读器兼容性或部署可用。
+
+## 2026-11-15 Kakuyomu URL 到 mock 翻译端到端验证
+
+- 新增 `tests.test_e2e.E2ETestSuite.test_kakuyomu_page_archive_flows_through_versioned_mock_translation`。使用 `tests.test_kakuyomu_page_source` 的 synthetic `robots.txt`/HTML 和 FakeOpener，不发出 Kakuyomu 网络请求；调用生产 `KakuyomuPageAdapter` 与 `collect_source` 将显式普通 episode URL 的可见文本写入 manifest，再物化 normalized Markdown。
+- 测试显式构造含 normalized `source_version_id` 的 `CHAPTER_MAP`，调用生产 `TranslationPipeline.run_all()`，由仓库本地 mock server 响应四个阶段请求；校验请求仅含 robots 与 catalog 页面、归档文本、译文写入及 TM `source_provenance` 版本绑定。多段原文按段落进入 TM，测试逐段拼接核对完整源文。
+- 定向命令 `.\.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_page_archive_flows_through_versioned_mock_translation`：1 项通过。完整 `.venv\Scripts\python.exe tests\run_tests.py`：6 个 mock E2E 测试方法通过，285.752 秒，退出码 0。
+- 同一工作树相关回归命令见上方：298 项运行、294 项通过、4 项因 Windows 符号链接/FIFO 能力限制跳过、0 项失败。该验证仅证明 synthetic 页面和本地 mock 链路；真实首话 URL 导入是独立的人工执行证据，真实 Provider 翻译、章节映射、格式人工验收和平台批量访问许可均未由本测试证明。
+
+## 2026-11-15 来源到版本化翻译端到端验证
+
+- 新增 `tests.test_e2e.E2ETestSuite.test_local_source_archive_flows_through_versioned_mock_translation`：合成 UTF-8 TXT 经显式 catalog 导入到 source manifest，按 raw 版本物化 normalized Markdown，再用显式 `CHAPTER_MAP` 和 `source_version_id` 执行实际 `TranslationPipeline.run_all()`；OpenAI-compatible 四阶段请求连接 `tests/mock_server.py`，embedding 使用确定性 mock。
+- 验收检查包括：导入报告不回显源文且输入字节不变；翻译输出写入指定目标并通过末段格式检查；TM 记录原译对且 `source_provenance.source_version_id` 与 manifest normalized 版本一致。
+- 定向命令：`.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_local_source_archive_flows_through_versioned_mock_translation`，1 项通过。完成后运行当前 checkout 全量相关单测 286 项（282 通过、4 项 Windows 能力跳过）和 `.venv\Scripts\python.exe tests\run_tests.py` 的 5 个 mock E2E 测试方法（231.163 秒），均无失败。
+- 该测试证明操作者显式提供/映射的本地来源可以穿过现有版本系统进入翻译流水线；它不实现 ZIP 解压、自动生成 `CHAPTER_MAP`、平台目录完整性、真实 Kakuyomu 访问、真实 Provider、真实翻译质量或部署验收。
+
 ## 环境事实
 
 - 实现语言：Python。
@@ -493,7 +572,7 @@ python -m pip install -r requirements.txt
 - `.venv\Scripts\python.exe -m py_compile pipeline.py rag_engine.py scripts/align_chapters.py utils.py tests/test_pipeline_contracts.py tests/test_align_chapters_unit.py tests/test_rag_engine_unit.py tests/test_e2e.py tests/mock_genai.py tests/mock_server.py`：通过。
 - `.venv\Scripts\python.exe --version`：Python 3.14.7；`.venv\Scripts\python.exe -m pip check`：`No broken requirements found`。
 - `Test-NetConnection 127.0.0.1 -Port 6006`：不可达；只检查了代码默认 Sakura 地址，本次没有探测其他地址或调用外部 Provider。
-- Provider 路由复核：`get_primary_provider_route` 集中返回现有 Sakura/Qwen 或 DeepSeek 的 URL 与专属 Key 环境变量，请求和启动 Key 检查复用该映射。旧逻辑会在 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口的 URL 时覆盖已选择 URL；现在只有设置 `MOCK_SERVER_PORT` 时才覆盖为本地 mock URL。此项不实现 `CODING_PLAN_*` Provider 支持，真实端点仍未验证。
+- Provider 路由复核：`get_primary_provider_route` 集中返回 Sakura/Qwen、DeepSeek 或显式 JOJO/JYQF 别名的 URL 与专属 Key 环境变量，请求和启动 Key 检查复用该映射。`gpt-6-luna*` 路由到 `JOJO_BASE_URL`/`JOJO_API_KEY`，精确别名 `deepseek-v4.1-flash` 路由到 `JYQF_BASE_URL`/`JYQF_API_KEY`，通用 `deepseek-flash` 仍路由到原 DeepSeek Provider；这只是配置路由，不证明端点、模型 ID 或协议兼容。`run_all` 对标注/初译预检 `source_text` + `book_knowledge`，校对/润色预检三类全集，`STRICT_REFLECTION_MODE` 开启时还要求初译 Provider 获得三类授权；显式 Gemini 回退按对应阶段复核。旧逻辑会在 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口的 URL 时覆盖已选择 URL；现在只有设置 `MOCK_SERVER_PORT` 时才覆盖为本地 mock URL。此项不实现 `CODING_PLAN_*` Provider 支持。
 - 超时配置复核：`API_TIMEOUT` 默认 10 秒且必须为有限正数，现用于 OpenAI-compatible 聊天、Gemini 生成、RAG 和章节对齐 embedding；Gemini SDK 使用毫秒，HTTP mock 使用秒。慢速真实 Provider 需要操作者按本地服务特征调高，当前未做真实延迟/超时验收。
 - 输出/TM 持久化故障复核：译文先创建，TM 原子写入失败会使章节调用报错但保留译文；重跑会跳过现存译文。现在仅当非空输出缺少 TM 记录时警告，并提示先确认原译对齐后人工运行章节对齐工具；空章节合法地不写 TM，不会触发告警。跨文件事务和自动恢复尚未实现，策略见 D-11。
 - 2026-11-14 检查相邻书籍工作区 `..\祝福のネトラレラ_祝福的寝取系女主`：一级没有子目录或 Markdown 文件，有 2 个文件未打开；其他位置未检查，不能据此判断原文或译文不存在。
@@ -537,6 +616,21 @@ python -m pip install -r requirements.txt
 - `.venv\Scripts\python.exe -m py_compile pipeline.py scripts\auto_extract_knowledge.py tests\test_knowledge_extraction_unit.py tests\test_pipeline_contracts.py` 与 `git diff --check`：通过。没有调用真实 Provider、Notion、站点或读取真实书籍正文。
 - 16 MiB 是单文件读取硬上限；最多三章使单次源文件读取量上界为 48 MiB。超限路径的 CLI 专用提示只描述限制，不回显文件名或异常文本。20,000 字符不是 token 预算；全书预读预算、分批候选抽取和上下文质量评估仍待实现。
 
+### 2026-11-15 知识抽取 Provider 路由对齐
+
+- 修正 `scripts/auto_extract_knowledge.py` 的模型/Provider 不一致：脚本此前以 `Config.PROOFREAD_MODEL` 填充请求模型，却固定使用 DeepSeek URL、Key 和 `deepseek` 数据授权身份。现在通过 `get_primary_provider_route(Config.PROOFREAD_MODEL)` 解析 Provider ID、URL 和该 Provider 专属 Key；模型类别授权预检和实际客户端创建共用此结果。
+- 不支持的模型名在读取章节正文前失败。模型别名只决定路由，不启用 Provider，也不改变 `PROVIDER_DATA_POLICY` 默认拒绝；知识抽取仍单独要求实际路由 Provider 的 `source_text` 已获本地 allowlist 放行。
+- `.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_unit -q`：17 项通过；`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestProviderRouting -q`：28 项通过。
+- `.venv\Scripts\python.exe -m py_compile scripts\auto_extract_knowledge.py tests\test_knowledge_extraction_unit.py`：通过。上述验证只使用合成响应，无真实 Provider、Notion、站点或书籍正文调用。
+- 路由增量后的整组回归 285 项运行、281 项通过、4 项 Windows 能力跳过；仓库 mock E2E 4 项通过（281.415 秒）；对应命令和边界见本文顶部当前工作区定向验证。全书 token/context 预算和分批抽取不在此增量内。
+
+### 历史检查：Kakuyomu 官方作者 ZIP/TXT 备选路径
+
+- 查阅 Kakuyomu 官方[备份帮助](https://kakuyomu.jp/help/entry/download_works)与[功能公告](https://kakuyomu.jp/info/entry/2018/11/14/162115)：作者可通过浏览器工作区将自作小说下载为 ZIP，示例包含 `about.txt` 与逐话 UTF-8 文本；仅限自作小说，不支持 App，且平台没有将下载数据重新导入的功能。
+- 现有 `LocalFileAdapter`/`scripts/ingest_local_sources.py` 根据显式 catalog 路径读取普通文件，不限制 `.txt` 后缀。新增 `test_cli_archives_explicit_utf8_txt_source_byte_for_byte`，以合成日文文本验证 `.txt` 原文件不被修改、归档 raw artifact 与输入字节完全一致，CLI 不回显正文。
+- 该合成测试不读取真实作品、不处理 ZIP，也不验证官方 ZIP 的实际成员/章节标题。作者 ZIP 不是当前普通读者输入路径，用户无需提供；当前 URL adapter 与真实单话导入证据见上方 I2 记录。作品授权已由用户明确确认，平台自动化访问规则仍独立适用。
+- 验证命令：`.venv\Scripts\python.exe -m unittest tests.test_local_source_ingestion_cli -v`。
+
 ### 2026-11-15 阶段 2 概要审核与运行时来源核验
 
 - 新增 `story_summary_review.py` 和 `scripts/apply_story_summary_review.py`。模板模式读取 `STORY_SUMMARY_draft.md` 与 `KNOWLEDGE_PROVENANCE_draft.json`，校验结构后排他新建包含 `pending` 决定的模板，并绑定两份候选的原始字节 SHA-256；模板创建不读章节正文、不读 manifest、不调用 Provider。
@@ -561,11 +655,11 @@ python -m pip install -r requirements.txt
 
 ### 2026-11-15 I5 EPUB 离线候选构建
 
-- 新增 `epub_builder.py` 与 `scripts/build_epub_candidate.py`。工具消费严格 schema v1 的显式有序章节 catalog；每话路径须在输入根目录内、位置严格递增、Markdown 首个非空行须与 catalog 标题相同的 H1，且提供 `source_version_id` 声明。其来源版本只记录到 sidecar，不与 manifest 核对。
+- 新增 `epub_builder.py` 与 `scripts/build_epub_candidate.py`。工具消费严格 schema v1 的显式有序章节 catalog；每话路径须在输入根目录内、位置严格递增，Markdown 首个非空行须与 catalog 标题相同的 H1。每话 `source_version_id` 必须对应相同 work/episode 的最新 `normalized_source` artifact，且文件哈希须匹配 source manifest；sidecar 记录 manifest 相对路径及 SHA-256。
 - Pandoc 精确版本必须匹配 catalog 的 `expected_pandoc_version`。本机 `Get-Command pandoc` 解析到 `C:\Program Files\Pandoc\pandoc.exe`，`pandoc --version` 返回 `3.9.0.2`；安装来源没有核实，Pandoc 不是仓库依赖。当前 PATH 没有解析到 `epubcheck`。
 - CLI 要求显式设置单章、总输入、输出 byte 上限，最大值为 1 GiB，超时最大 24 小时；catalog 限制 1 MiB。工具拒绝图片标记，暂不支持插图、字体和 CSS；源 Markdown 保持原字节不变。新建输出目录包含 `candidate.epub` 与 `build.json`，已存在的同名 build 不覆盖。
 - 每个构建始终记录 `artifact_status: candidate`、`quality_gate_status: not_evaluated`、`coverage_scope: explicit_episode_selection`。内置检查覆盖 ZIP CRC、首位未压缩 `mimetype`、container、OPF manifest/spine 和引用 XHTML 的 XML 可解析性；不是完整 EPUBCheck，亦不证明章节选集覆盖全书、译文质量或阅读器兼容。
-- `.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v`：8 项通过。测试实际调用本机 Pandoc，用合成章节核对文本顺序、哈希/来源声明和 Markdown 不变，并覆盖 CLI 成功输出不回显正文、版本不匹配、标题/清单错配、重复 JSON 字段、图片拒绝、输出超限及禁止覆盖。
+- `.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v`：11 项通过。测试实际调用本机 Pandoc，用合成章节核对文本顺序、来源版本/manifest 哈希和 Markdown 不变，并覆盖 CLI 成功输出不回显正文、版本过期/身份错配/文件篡改、标题/清单错配、重复 JSON 字段、图片拒绝、输出超限及禁止覆盖。
 - `.venv\Scripts\python.exe -m py_compile epub_builder.py scripts\build_epub_candidate.py tests\test_epub_builder.py`：通过；`.venv\Scripts\python.exe scripts\build_epub_candidate.py --help`：通过。测试未触发作品文件、外部 Provider、EPUBCheck 或阅读器。
 
 ## 验证要求

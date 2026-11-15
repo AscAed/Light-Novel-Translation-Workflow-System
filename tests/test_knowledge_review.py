@@ -173,6 +173,10 @@ class KnowledgeReviewTests(unittest.TestCase):
             hashlib.sha256(self.provenance_bytes).hexdigest(),
         )
         self.assertEqual(
+            result["output_sha256"],
+            hashlib.sha256(template_path.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
             [item["src"] for item in template["decisions"]],
             ["alpha", "not-found"],
         )
@@ -246,6 +250,12 @@ class KnowledgeReviewTests(unittest.TestCase):
     def test_publishes_only_approved_source_backed_terms_for_rag(self):
         result = self._publish()
         self.assertEqual(result["approved_term_count"], 1)
+        self.assertEqual(
+            result["output_sha256"],
+            hashlib.sha256(
+                (self.knowledge_root / result["output"]).read_bytes()
+            ).hexdigest(),
+        )
 
         bundle = json.loads(
             (self.knowledge_root / result["output"]).read_text(encoding="utf-8")
@@ -328,6 +338,43 @@ class KnowledgeReviewTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "source versions are not current"):
+            engine.get_cleaned_glossary("alpha")
+
+    def test_rag_revalidates_reviewed_glossary_sources_on_every_query(self):
+        self._publish()
+        engine = RAGEngine(
+            str(self.root / "translation_memory.json"),
+            str(self.knowledge_root / "Glossary_reviewed.json"),
+            str(self.root / "guidelines.txt"),
+            source_root=str(self.archive_root),
+            source_manifest_path="source_manifest.json",
+        )
+
+        first_result = engine.get_cleaned_glossary("alpha")
+        self.assertEqual(first_result[0]["dst"], "阿尔法")
+        self.source_file.write_text(
+            "updated alpha appears.\n\nbeta appears.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        self._collect_and_materialize("updated-checkpoint.json")
+
+        with self.assertRaisesRegex(ValueError, "source versions are not current"):
+            engine.get_cleaned_glossary("alpha")
+
+    def test_rag_rejects_truncated_reviewed_bundle_without_legacy_fallback(self):
+        reviewed_path = self.knowledge_root / "Glossary_reviewed.json"
+        reviewed_path.write_text(
+            '{"_knowledge_review_schema":1,"terms":{"alpha":"unverified"},',
+            encoding="utf-8",
+        )
+        engine = RAGEngine(
+            str(self.root / "translation_memory.json"),
+            str(reviewed_path),
+            str(self.root / "guidelines.txt"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "bundle is malformed"):
             engine.get_cleaned_glossary("alpha")
 
     def test_rejects_forged_paragraph_location_even_when_receipt_matches(self):

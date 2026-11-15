@@ -10,6 +10,7 @@ from pathlib import Path
 from scripts.validate_tm_provenance import audit_translation_memory
 from utils import (
     open_regular_file,
+    resolve_child_path,
     resolve_relative_path,
     validate_tm_source_provenance,
     write_new_child_text,
@@ -65,30 +66,55 @@ def _canonical_sha256(value: dict) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _pair_id(chapter: str, pair: dict) -> str:
+def _pair_id(chapter: str, pair_index: int, pair: dict) -> str:
     raw = pair.get("raw")
     translated = pair.get("translated")
     if (
-        not isinstance(raw, str)
+        isinstance(pair_index, bool)
+        or not isinstance(pair_index, int)
+        or pair_index < 1
+        or not isinstance(raw, str)
         or not raw.strip()
         or not isinstance(translated, str)
         or not translated.strip()
     ):
         raise ValueError("TM review candidate has invalid pair text.")
     return _canonical_sha256(
-        {"chapter": chapter, "raw": raw, "translated": translated}
+        {
+            "chapter": chapter,
+            "pair_index": pair_index,
+            "raw": raw,
+            "translated": translated,
+        }
     )
 
 
-def _validate_pairs(chapter: str, pairs: list) -> list[str]:
+def _validate_pairs(
+    chapter: str,
+    pairs: list,
+    pair_indices: list[int] | None = None,
+) -> list[str]:
     if not isinstance(pairs, list) or not pairs:
         raise ValueError(f"TM review chapter has no pairs: {chapter}")
+    if pair_indices is None:
+        pair_indices = list(range(1, len(pairs) + 1))
+    if (
+        len(pair_indices) != len(pairs)
+        or any(
+            isinstance(pair_index, bool)
+            or not isinstance(pair_index, int)
+            or pair_index < 1
+            for pair_index in pair_indices
+        )
+        or len(pair_indices) != len(set(pair_indices))
+    ):
+        raise ValueError("TM review provenance pair index count is invalid.")
     pair_ids = []
     embedding_size = None
-    for pair in pairs:
+    for pair_index, pair in zip(pair_indices, pairs):
         if not isinstance(pair, dict):
             raise ValueError("TM review candidate pair must be an object.")
-        pair_ids.append(_pair_id(chapter, pair))
+        pair_ids.append(_pair_id(chapter, pair_index, pair))
         embedding = pair.get("embedding")
         if (
             not isinstance(embedding, list)
@@ -108,6 +134,19 @@ def _validate_pairs(chapter: str, pairs: list) -> list[str]:
     if len(pair_ids) != len(set(pair_ids)):
         raise ValueError(f"TM review chapter contains duplicate pairs: {chapter}")
     return pair_ids
+
+
+def _pair_ids_from_provenance(chapter: str, pairs: list, provenance: dict) -> list[str]:
+    mappings = provenance.get("pair_mappings")
+    if not isinstance(mappings, list) or len(mappings) != len(pairs):
+        raise ValueError("TM review source provenance has invalid pair mappings.")
+    pair_indices = [
+        mapping.get("source_pair_index", mapping.get("pair_index"))
+        if isinstance(mapping, dict)
+        else None
+        for mapping in mappings
+    ]
+    return _validate_pairs(chapter, pairs, pair_indices)
 
 
 def _selected_chapters(tm: dict, chapter_names: list[str] | None) -> dict:
@@ -132,7 +171,6 @@ def _selected_chapters(tm: dict, chapter_names: list[str] | None) -> dict:
     }
     embedding_size = None
     for name, pairs in selected["chapters"].items():
-        _validate_pairs(name, pairs)
         for pair in pairs:
             pair_embedding_size = len(pair["embedding"])
             if embedding_size is None:
@@ -148,6 +186,7 @@ def _selected_chapters(tm: dict, chapter_names: list[str] | None) -> dict:
             raise ValueError(
                 f"TM review requires a manifest source version for {name}."
             )
+        _pair_ids_from_provenance(name, pairs, chapter_provenance)
     return selected
 
 
@@ -180,7 +219,9 @@ def _require_verified_sources(
 def _write_output(output_root: str, output_filename: str, value: dict) -> str:
     text = json.dumps(value, ensure_ascii=False, indent=2)
     write_new_child_text(output_root, output_filename, text)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    output_path = resolve_child_path(output_root, output_filename)
+    with open_regular_file(output_path, binary=True) as stream:
+        return hashlib.sha256(stream.read()).hexdigest()
 
 
 def create_tm_review_template(
@@ -207,7 +248,11 @@ def create_tm_review_template(
 
     decisions = []
     for chapter, pairs in selected["chapters"].items():
-        for pair_id in _validate_pairs(chapter, pairs):
+        for pair_id in _pair_ids_from_provenance(
+            chapter,
+            pairs,
+            selected["source_provenance"][chapter],
+        ):
             decisions.append(
                 {
                     "chapter": chapter,
@@ -295,7 +340,11 @@ def _validate_receipt(
     expected = {
         (chapter, pair_id)
         for chapter, pairs in selected["chapters"].items()
-        for pair_id in _validate_pairs(chapter, pairs)
+        for pair_id in _pair_ids_from_provenance(
+            chapter,
+            pairs,
+            selected["source_provenance"][chapter],
+        )
     }
     decisions = receipt.get("decisions")
     if not isinstance(decisions, list) or len(decisions) != len(expected):
@@ -366,13 +415,24 @@ def _build_reviewed_bundle(
         for original_index, (pair, mapping) in enumerate(
             zip(pairs, original_mappings), start=1
         ):
-            if (chapter, _pair_id(chapter, pair)) not in approved:
+            source_pair_index = mapping.get(
+                "source_pair_index",
+                mapping.get("pair_index", original_index),
+            )
+            if (
+                chapter,
+                _pair_id(chapter, source_pair_index, pair),
+            ) not in approved:
                 continue
             if mapping.get("trace_status") != "matched":
                 raise ValueError("Only fully matched TM pairs may be approved.")
             chapter_pairs.append(pair)
             chapter_mappings.append(
-                {**mapping, "pair_index": len(chapter_mappings) + 1}
+                {
+                    **mapping,
+                    "source_pair_index": source_pair_index,
+                    "pair_index": len(chapter_mappings) + 1,
+                }
             )
         if chapter_pairs:
             approved_chapters[chapter] = chapter_pairs
@@ -532,17 +592,7 @@ def load_reviewed_tm_snapshot(
         if item["decision"] == "approved":
             approved_decisions.add(key)
 
-    actual_approved = {
-        (chapter, pair_id)
-        for chapter, pairs in chapters.items()
-        for pair_id in _validate_pairs(chapter, pairs)
-    }
-    if (
-        actual_approved != approved_decisions
-        or review.get("approved_pair_count") != len(actual_approved)
-    ):
-        raise ValueError("Reviewed TM pairs do not match approved decisions.")
-
+    actual_approved = set()
     for chapter, pairs in chapters.items():
         chapter_provenance = provenance[chapter]
         try:
@@ -554,6 +604,20 @@ def load_reviewed_tm_snapshot(
             for mapping in chapter_provenance["pair_mappings"]
         ):
             raise ValueError("Reviewed TM contains a pair without matched provenance.")
+        actual_approved.update(
+            (chapter, pair_id)
+            for pair_id in _pair_ids_from_provenance(
+                chapter,
+                pairs,
+                chapter_provenance,
+            )
+        )
+
+    if (
+        actual_approved != approved_decisions
+        or review.get("approved_pair_count") != len(actual_approved)
+    ):
+        raise ValueError("Reviewed TM pairs do not match approved decisions.")
 
     integrity_payload = json.loads(json.dumps(bundle, ensure_ascii=False))
     integrity_payload["review"].pop("bundle_sha256")

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -10,12 +11,38 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit, urlunsplit
 
+from source_ingestion import source_artifact_id
+from source_manifest import (
+    latest_artifacts_by_kind,
+    load_manifest,
+    verify_manifest_artifact,
+)
 from utils import open_regular_file, resolve_relative_path
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
 _PANDOC_VERSION = re.compile(r"^pandoc\s+([^\s]+)", re.IGNORECASE)
-_IMAGE_MARKUP = re.compile(r"!\[[^\]]*\]\([^)]*\)|<img\b", re.IGNORECASE)
+_IMAGE_MARKUP = re.compile(r"!\[|<img\b", re.IGNORECASE)
+_NETWORK_RESOURCE_MARKUP = re.compile(
+    r"<\s*(?:audio|video|source|track|iframe|object|embed|link|style)\b"
+    r"|<\s*[A-Za-z][^>]*\b(?:src|srcset|poster|data)\s*="
+    r"|<\s*[A-Za-z][^>]*\bstyle\s*=",
+    re.IGNORECASE | re.DOTALL,
+)
+_INLINE_LINK_DESTINATION = re.compile(
+    r"(?<!!)\]\(\s*(?:<([^>\n]*)>|([^\s)]+))",
+    re.DOTALL,
+)
+_REFERENCE_LINK_DESTINATION = re.compile(
+    r"(?m)^\s{0,3}\[(?!\^)[^\]]+\]:\s*(?:<([^>]+)>|(\S+))"
+)
+_HTML_HREF = re.compile(
+    r"\bhref\s*=\s*(['\"])(.*?)\1",
+    re.IGNORECASE | re.DOTALL,
+)
+_FOOTNOTE_DEFINITION = re.compile(r"(?m)^\s{0,3}\[\^([^\]]+)\]:")
+_FOOTNOTE_REFERENCE = re.compile(r"\[\^([^\]]+)\](?!:)")
 _MAX_CATALOG_BYTES = 1024 * 1024
 _MAX_BYTE_LIMIT = 1024 * 1024 * 1024
 
@@ -181,7 +208,230 @@ def _read_chapter(root, chapter, max_chapter_bytes):
         raise ValueError("Each chapter must start with its catalog-matched H1 title.")
     if _IMAGE_MARKUP.search(text):
         raise ValueError("Image markup is not supported by this candidate builder.")
+    if _NETWORK_RESOURCE_MARKUP.search(text):
+        raise ValueError(
+            "Embedded media and resource references are not supported by this candidate builder."
+        )
     return content
+
+
+def _link_destinations(text):
+    for pattern in (
+        _INLINE_LINK_DESTINATION,
+        _REFERENCE_LINK_DESTINATION,
+    ):
+        for match in pattern.finditer(text):
+            destination = next(
+                (value for value in match.groups() if value is not None), ""
+            )
+            if destination:
+                yield destination
+    for match in _HTML_HREF.finditer(text):
+        if match.group(2):
+            yield match.group(2)
+
+
+def _uses_cross_chapter_references(chapters, chapter_texts):
+    all_definitions = {}
+    chapter_definitions = {}
+    chapter_references = {}
+    for chapter in chapters:
+        episode_id = chapter["episode_id"]
+        text = chapter_texts[episode_id]
+        definitions = set(_FOOTNOTE_DEFINITION.findall(text))
+        references = set(_FOOTNOTE_REFERENCE.findall(text))
+        chapter_definitions[episode_id] = definitions
+        chapter_references[episode_id] = references
+        for definition in definitions:
+            all_definitions.setdefault(definition, set()).add(episode_id)
+
+    for chapter in chapters:
+        episode_id = chapter["episode_id"]
+        for reference in chapter_references[episode_id]:
+            if (
+                reference not in chapter_definitions[episode_id]
+                and all_definitions.get(reference, set()) - {episode_id}
+            ):
+                return True
+
+        source_path = posixpath.normpath(chapter["translation_path"])
+        source_key = os.path.normcase(source_path)
+        for destination in _link_destinations(chapter_texts[episode_id]):
+            try:
+                parsed = urlsplit(destination.strip())
+            except ValueError:
+                return True
+            if parsed.scheme or parsed.netloc or not parsed.path:
+                continue
+            target_path = posixpath.normpath(
+                posixpath.join(
+                    posixpath.dirname(source_path),
+                    unquote(parsed.path),
+                )
+            )
+            if os.path.normcase(target_path) != source_key:
+                return True
+    return False
+
+
+def _chapter_xhtml_paths(archive, chapters):
+    expected_titles = [chapter["title"] for chapter in chapters]
+    title_set = set(expected_titles)
+    matching_documents = []
+    for name in archive.namelist():
+        if not name.lower().endswith(".xhtml"):
+            continue
+        try:
+            document = ET.fromstring(archive.read(name))
+        except ET.ParseError:
+            continue
+        heading = next(
+            (
+                element
+                for element in document.iter()
+                if _local_name(element) == "h1"
+            ),
+            None,
+        )
+        title = (
+            "".join(heading.itertext()).strip()
+            if heading is not None
+            else ""
+        )
+        if title in title_set:
+            matching_documents.append((name, title))
+
+    if [title for _, title in matching_documents] != expected_titles:
+        raise ValueError(
+            "Pandoc output does not map the selected chapter titles in order."
+        )
+    return {
+        os.path.normcase(posixpath.normpath(chapter["translation_path"])): name
+        for chapter, (name, _) in zip(chapters, matching_documents)
+    }
+
+
+def _rewrite_cross_chapter_links(epub_path, chapters):
+    temporary_path = None
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{epub_path.name}.",
+        suffix=".rewrite",
+        dir=str(epub_path.parent),
+    )
+    os.close(descriptor)
+    try:
+        with zipfile.ZipFile(epub_path, "r") as source:
+            archive_path_by_translation = _chapter_xhtml_paths(source, chapters)
+            translation_by_archive = {
+                archive_path: translation_path
+                for translation_path, archive_path in archive_path_by_translation.items()
+            }
+            with zipfile.ZipFile(temporary_path, "w") as rewritten:
+                for info in source.infolist():
+                    content = source.read(info.filename)
+                    translation_path = translation_by_archive.get(info.filename)
+                    if translation_path is not None and info.filename.lower().endswith(
+                        ".xhtml"
+                    ):
+                        document = ET.fromstring(content)
+                        for element in document.iter():
+                            href = element.get("href")
+                            if not href:
+                                continue
+                            try:
+                                parsed = urlsplit(href)
+                            except ValueError:
+                                continue
+                            if parsed.scheme or parsed.netloc or not parsed.path:
+                                continue
+                            target_translation = posixpath.normpath(
+                                posixpath.join(
+                                    posixpath.dirname(translation_path),
+                                    unquote(parsed.path),
+                                )
+                            )
+                            target_archive = archive_path_by_translation.get(
+                                os.path.normcase(target_translation)
+                            )
+                            if target_archive is None:
+                                continue
+                            rewritten_path = posixpath.relpath(
+                                target_archive,
+                                start=posixpath.dirname(info.filename),
+                            )
+                            element.set(
+                                "href",
+                                urlunsplit(
+                                    (
+                                        "",
+                                        "",
+                                        rewritten_path,
+                                        parsed.query,
+                                        parsed.fragment,
+                                    )
+                                ),
+                            )
+                        content = ET.tostring(
+                            document,
+                            encoding="utf-8",
+                            xml_declaration=True,
+                        )
+                    rewritten.writestr(info, content)
+        os.replace(temporary_path, epub_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+
+
+def _validate_source_versions(
+    source_root,
+    manifest_relative_path,
+    work_id,
+    chapters,
+):
+    root = Path(source_root).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Source root must be a directory.")
+    manifest_path = resolve_relative_path(str(root), manifest_relative_path)
+    manifest = load_manifest(manifest_path)
+    latest_normalized = latest_artifacts_by_kind(
+        manifest, "normalized_source"
+    )
+
+    for chapter in chapters:
+        expected_artifact_id = source_artifact_id(
+            work_id,
+            "normalized_source",
+            chapter["episode_id"],
+        )
+        artifact = verify_manifest_artifact(
+            root,
+            manifest,
+            chapter["source_version_id"],
+        )
+        if (
+            artifact["kind"] != "normalized_source"
+            or artifact["artifact_id"] != expected_artifact_id
+        ):
+            raise ValueError(
+                "A source version does not match its catalog work and episode."
+            )
+        latest = latest_normalized.get(expected_artifact_id)
+        if latest is None or latest["version_id"] != artifact["version_id"]:
+            raise ValueError(
+                "A source version is stale relative to the source manifest."
+            )
+
+    with open_regular_file(manifest_path, binary=True) as stream:
+        manifest_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+    return (
+        manifest_path.relative_to(root).as_posix(),
+        manifest_sha256,
+    )
 
 
 def _local_name(element):
@@ -296,6 +546,8 @@ def build_epub_candidate(
     *,
     input_root,
     catalog_relative_path,
+    source_root,
+    source_manifest_relative_path,
     output_root,
     max_chapter_bytes,
     max_total_bytes,
@@ -328,7 +580,18 @@ def build_epub_candidate(
     root = Path(input_root).resolve(strict=True)
     catalog = _read_catalog(root, catalog_relative_path)
     metadata, chapters = _validate_catalog(catalog)
+    (
+        source_manifest_identity,
+        source_manifest_sha256,
+    ) = _validate_source_versions(
+        source_root,
+        source_manifest_relative_path,
+        catalog["work_id"],
+        chapters,
+    )
     chapter_data = []
+    chapter_snapshots = []
+    chapter_texts = {}
     total_bytes = 0
     for chapter in chapters:
         content = _read_chapter(root, chapter, max_chapter_bytes)
@@ -342,6 +605,9 @@ def build_epub_candidate(
                 "content_bytes": len(content),
             }
         )
+        chapter_snapshots.append(content)
+        chapter_texts[chapter["episode_id"]] = content.decode("utf-8")
+    file_scope = not _uses_cross_chapter_references(chapters, chapter_texts)
 
     pandoc_version = get_pandoc_version(pandoc_executable)
     if pandoc_version != metadata["expected_pandoc_version"]:
@@ -369,10 +635,23 @@ def build_epub_candidate(
     )
     try:
         epub_path = staging_dir / "candidate.epub"
+        input_dir = staging_dir / "inputs"
+        input_dir.mkdir()
+        pandoc_inputs = []
+        for chapter, content in zip(chapters, chapter_snapshots):
+            input_path = input_dir / chapter["translation_path"]
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(input_path, "xb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            pandoc_inputs.append(str(input_path))
+
         command = [
             pandoc_executable,
             "--from=markdown",
             "--to=epub3",
+            *(["--file-scope"] if file_scope else []),
             "--split-level=1",
             "--toc",
             f"--metadata=title:{metadata['title']}",
@@ -380,7 +659,8 @@ def build_epub_candidate(
             f"--metadata=lang:{metadata['language']}",
             f"--metadata=identifier:{metadata['identifier']}",
             f"--output={epub_path}",
-            *(chapter["translation_path"] for chapter in chapters),
+            "--",
+            *pandoc_inputs,
         ]
         result = subprocess.run(
             command,
@@ -395,12 +675,14 @@ def build_epub_candidate(
         if result.returncode != 0 or not epub_path.is_file():
             raise RuntimeError("Pandoc failed to build the EPUB candidate.")
 
+        _rewrite_cross_chapter_links(epub_path, chapters)
         epub_bytes = epub_path.stat().st_size
         if epub_bytes > max_output_bytes:
             raise ValueError("Generated EPUB exceeds its output byte limit.")
         validation = validate_epub_structure(epub_path)
         with open_regular_file(epub_path, binary=True) as stream:
             epub_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+        shutil.rmtree(input_dir)
         manifest = {
             "schema_version": 1,
             "artifact_status": "candidate",
@@ -408,6 +690,10 @@ def build_epub_candidate(
             "coverage_scope": "explicit_episode_selection",
             "work_id": catalog["work_id"],
             "build_id": catalog["build_id"],
+            "source_manifest": {
+                "relative_path": source_manifest_identity,
+                "content_sha256": source_manifest_sha256,
+            },
             "metadata": {
                 key: metadata[key]
                 for key in ("title", "author", "language", "identifier")
@@ -416,6 +702,7 @@ def build_epub_candidate(
                 "executable_name": Path(pandoc_executable).name,
                 "version": pandoc_version,
                 "split_level": 1,
+                "file_scope": file_scope,
                 "table_of_contents": True,
             },
             "chapters": chapter_data,

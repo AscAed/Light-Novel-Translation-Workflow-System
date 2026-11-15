@@ -12,6 +12,7 @@ from pipeline import (
     get_chapter_specs,
     get_chapters,
     get_openai_client,
+    get_primary_provider_route,
     resolve_openai_client_settings,
 )
 from utils import (
@@ -153,6 +154,18 @@ def _build_provenance_manifest(chapter_inputs, sample_text, glossary_entries, mo
 
 async def extract_knowledge(raw_dir: str, output_dir: str):
     print("Starting experimental knowledge extraction...")
+    provider_route = get_primary_provider_route(Config.PROOFREAD_MODEL)
+    provider_base_url = provider_route.base_url
+    provider_api_key = get_api_key(provider_route.api_key_env)
+    provider_id = provider_route.provider_id
+    data_categories = {"source_text"}
+    resolve_openai_client_settings(
+        provider_base_url,
+        provider_api_key,
+        provider_id=provider_id,
+        data_categories=data_categories,
+    )
+
     if Config.CHAPTER_MAP is None:
         chapters = get_chapters(raw_dir)
     else:
@@ -175,17 +188,6 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         draft_path = Path(output_dir) / draft_name
         if draft_path.exists() or draft_path.is_symlink():
             raise FileExistsError(f"Draft already exists and will not be overwritten: {draft_path}")
-
-    provider_base_url = Config.DEEPSEEK_BASE_URL
-    provider_api_key = get_api_key("DEEPSEEK_API_KEY")
-    provider_id = "deepseek"
-    data_categories = {"source_text"}
-    resolve_openai_client_settings(
-        provider_base_url,
-        provider_api_key,
-        provider_id=provider_id,
-        data_categories=data_categories,
-    )
 
     # Read first 3 chapters for context
     sample_text = ""

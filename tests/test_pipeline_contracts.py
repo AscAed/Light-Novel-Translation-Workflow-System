@@ -32,6 +32,7 @@ from utils import (
     require_aligned_annotations,
     require_aligned_paragraphs,
     require_provider_data_authorized,
+    split_paragraphs,
 )
 
 
@@ -247,6 +248,13 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             sakura_named_route = get_primary_provider_route("sakura")
         with patch.object(Config, "DEEPSEEK_BASE_URL", "https://deepseek.test/v1"):
             deepseek_route = get_primary_provider_route("deepseek-v4-flash")
+        with (
+            patch.object(Config, "JOJO_BASE_URL", "https://jojo.test/v1"),
+            patch.object(Config, "JYQF_BASE_URL", "https://jyqf.test/v1"),
+        ):
+            jojo_route = get_primary_provider_route("gpt-6-Luna")
+            jyqf_route = get_primary_provider_route("deepseek-v4.1-flash")
+        deepseek_flash_route = get_primary_provider_route("deepseek-flash")
 
         self.assertEqual(
             (sakura_route.provider_id, sakura_route.base_url, sakura_route.api_key_env),
@@ -261,9 +269,24 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             ),
             ("deepseek", "https://deepseek.test/v1", "DEEPSEEK_API_KEY"),
         )
+        self.assertEqual(
+            (jojo_route.provider_id, jojo_route.base_url, jojo_route.api_key_env),
+            ("jojo", "https://jojo.test/v1", "JOJO_API_KEY"),
+        )
+        self.assertEqual(
+            (jyqf_route.provider_id, jyqf_route.base_url, jyqf_route.api_key_env),
+            ("jyqf", "https://jyqf.test/v1", "JYQF_API_KEY"),
+        )
+        self.assertEqual(
+            (
+                deepseek_flash_route.provider_id,
+                deepseek_flash_route.api_key_env,
+            ),
+            ("deepseek", "DEEPSEEK_API_KEY"),
+        )
 
     async def test_unknown_model_name_is_rejected_before_client_creation(self):
-        agent = UnifiedAgent("gpt-6-luna", "instruction")
+        agent = UnifiedAgent("unsupported-model", "instruction")
 
         with patch("pipeline.get_openai_client") as client_factory:
             with self.assertRaisesRegex(
@@ -276,7 +299,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
     async def test_run_all_rejects_unknown_model_before_chapter_scan(self):
         translation_pipeline = TranslationPipeline.__new__(TranslationPipeline)
 
-        with patch.object(Config, "INITIAL_MODEL", "gpt-6-luna"):
+        with patch.object(Config, "INITIAL_MODEL", "unsupported-model"):
             with patch("pipeline.get_chapter_specs") as chapter_scan:
                 with self.assertRaisesRegex(
                     ValueError, "Unsupported model name for primary provider routing"
@@ -340,6 +363,61 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                                 await pipeline.run_all()
 
         get_chapters_mock.assert_not_called()
+
+    async def test_run_all_uses_minimum_stage_categories_for_preflight(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        source_and_knowledge = frozenset({"source_text", "book_knowledge"})
+        full_translation = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        policy = {
+            "jojo": source_and_knowledge,
+            "jyqf": full_translation,
+            "deepseek": full_translation,
+        }
+        with (
+            patch.object(Config, "INITIAL_MODEL", "gpt-6-luna"),
+            patch.object(Config, "PROOFREAD_MODEL", "deepseek-v4.1-flash"),
+            patch.object(Config, "STYLE_MODEL", "deepseek-v4-flash"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", policy),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", False),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+            patch("pipeline.get_chapter_specs", return_value=[]) as chapter_scan,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "No Markdown chapters found"):
+                await pipeline.run_all()
+
+        chapter_scan.assert_called_once()
+
+    async def test_reflection_preflight_requires_translation_category(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        policy = {
+            "jojo": frozenset({"source_text", "book_knowledge"}),
+            "jyqf": frozenset(
+                {"source_text", "translation_text", "book_knowledge"}
+            ),
+            "deepseek": frozenset(
+                {"source_text", "translation_text", "book_knowledge"}
+            ),
+        }
+        with (
+            patch.object(Config, "INITIAL_MODEL", "gpt-6-luna"),
+            patch.object(Config, "PROOFREAD_MODEL", "deepseek-v4.1-flash"),
+            patch.object(Config, "STYLE_MODEL", "deepseek-v4-flash"),
+            patch.object(Config, "STRICT_REFLECTION_MODE", True),
+            patch.object(Config, "PROVIDER_DATA_POLICY", policy),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", False),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+            patch("pipeline.get_chapter_specs") as chapter_scan,
+        ):
+            with self.assertRaisesRegex(
+                PermissionError, "translation_text"
+            ):
+                await pipeline.run_all()
+
+        chapter_scan.assert_not_called()
 
     @patch.dict(os.environ, {"MOCK_SERVER_PORT": "12345"}, clear=True)
     async def test_run_all_requires_gemini_grant_even_with_mock_port(self):
@@ -888,6 +966,12 @@ class TestProviderDataPolicy(unittest.TestCase):
 
 
 class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
+    def test_split_paragraphs_preserves_fullwidth_and_nonbreaking_indent(self):
+        self.assertEqual(
+            split_paragraphs("　全角空格保留\n\n\u00a0不换行空格保留"),
+            ["　全角空格保留", "\u00a0不换行空格保留"],
+        )
+
     async def test_mapped_chapter_writes_nested_output_and_uses_tm_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1233,14 +1317,14 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(OSError, "disk full"):
                         await pipeline.run_chapter("第1話.md")
                     output_path = output_dir / "第1話.md"
-                    output_path.write_text("user edit", encoding="utf-8")
+                    output_path.write_text("translated", encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, "differs from its recorded"):
                         await pipeline.run_chapter("第1話.md")
 
             pipeline.rag.update_translation_memory.assert_called_once()
-            self.assertEqual(output_path.read_text(encoding="utf-8"), "user edit")
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "translated")
 
-    async def test_partial_output_write_recovers_from_pending_transaction(self):
+    async def test_output_publish_interruption_recovers_from_pending_transaction(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             raw_dir = Path(temp_dir) / "生肉"
             output_dir = Path(temp_dir) / "熟肉"
@@ -1263,15 +1347,21 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 return_value=["translated paragraph"]
             )
 
-            def interrupted_write(root, filename, content):
-                (Path(root) / filename).write_bytes(content.encode("utf-8")[:8])
-                raise OSError("simulated process interruption")
+            original_link = os.link
+            link_calls = 0
+
+            def interrupted_publish(source, destination):
+                nonlocal link_calls
+                link_calls += 1
+                if link_calls == 2:
+                    raise OSError("simulated process interruption")
+                return original_link(source, destination)
 
             with patch.object(Config, "RAW_DIR", str(raw_dir)):
                 with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
                     with patch(
-                        "chapter_transaction.write_new_child_text",
-                        side_effect=interrupted_write,
+                        "chapter_transaction.os.link",
+                        side_effect=interrupted_publish,
                     ):
                         with self.assertRaisesRegex(
                             OSError, "simulated process interruption"
@@ -1279,10 +1369,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                             await pipeline.run_chapter("第1話.md")
 
                     output_path = output_dir / "第1話.md"
-                    self.assertEqual(
-                        output_path.read_bytes(),
-                        b"translat",
-                    )
+                    self.assertFalse(output_path.exists())
                     await pipeline.run_chapter("第1話.md")
 
             self.assertEqual(
@@ -1291,6 +1378,97 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             )
             pipeline.rag.update_translation_memory.assert_called_once()
             pipeline._build_run_context.assert_awaited_once()
+            self.assertEqual(
+                list(output_dir.glob(".codex-chapter-transaction-*.json")), []
+            )
+
+    async def test_pending_chapter_transaction_is_found_after_tm_key_change(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_dir = Path(temp_dir) / "生肉"
+            output_dir = Path(temp_dir) / "熟肉"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            (raw_dir / "第1話.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(side_effect=OSError("disk full")),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            original_spec = ChapterSpec(
+                "第1話.md", "第1話.md", "old-tm-key"
+            )
+            changed_spec = ChapterSpec(
+                "第1話.md", "第1話.md", "new-tm-key"
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        await pipeline.run_chapter(original_spec)
+                    with self.assertRaisesRegex(
+                        ValueError, "does not match the current chapter map"
+                    ):
+                        await pipeline.run_chapter(changed_spec)
+
+            pipeline.rag.update_translation_memory.assert_called_once()
+            self.assertEqual(
+                (output_dir / "第1話.md").read_text(encoding="utf-8"),
+                "translated paragraph",
+            )
+            self.assertEqual(
+                len(list(output_dir.glob(".codex-chapter-transaction-*.json"))),
+                1,
+            )
+
+    async def test_empty_output_recovers_from_pending_transaction(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_dir = Path(temp_dir) / "生肉"
+            output_dir = Path(temp_dir) / "熟肉"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            (raw_dir / "第1話.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(
+                    side_effect=[OSError("disk full"), None]
+                ),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        await pipeline.run_chapter("第1話.md")
+                    output_path = output_dir / "第1話.md"
+                    output_path.write_bytes(b"")
+                    await pipeline.run_chapter("第1話.md")
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "translated paragraph",
+            )
+            pipeline.rag.update_translation_memory.assert_called()
+            self.assertEqual(pipeline.rag.update_translation_memory.call_count, 2)
             self.assertEqual(
                 list(output_dir.glob(".codex-chapter-transaction-*.json")), []
             )
@@ -1319,10 +1497,14 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
         agent = Mock()
         agent.call = AsyncMock(return_value={"annotated_paragraphs": [annotation]})
 
-        with patch("pipeline.UnifiedAgent", return_value=agent):
+        with patch("pipeline.UnifiedAgent", return_value=agent) as agent_factory:
             result = await pipeline._run_context_annotation("source paragraph", "")
 
         self.assertEqual(result, [annotation])
+        self.assertEqual(
+            agent_factory.call_args.kwargs["data_categories"],
+            ("source_text", "book_knowledge"),
+        )
         annotation_prompt = agent.call.await_args.args[0]
         self.assertIn('"annotated_paragraphs"', annotation_prompt)
         self.assertIn('"context_hint"', annotation_prompt)
@@ -1369,6 +1551,23 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
         with patch("pipeline.UnifiedAgent", return_value=fake_agent):
             with self.assertRaisesRegex(ValueError, "must contain a 'translated_paragraphs' array"):
                 await pipeline._run_translation_phase("one", "", [])
+
+    async def test_translation_phase_requests_only_source_and_book_knowledge(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        fake_agent = Mock()
+        fake_agent.call = AsyncMock(
+            return_value={"translated_paragraphs": ["translated"]}
+        )
+
+        with patch("pipeline.UnifiedAgent", return_value=fake_agent) as agent_factory:
+            result = await pipeline._run_translation_phase("source", "", [])
+
+        self.assertEqual(result, ["translated"])
+        self.assertEqual(
+            agent_factory.call_args.kwargs["data_categories"],
+            ("source_text", "book_knowledge"),
+        )
 
     async def test_translation_phase_rejects_mismatched_paragraph_count(self):
         pipeline = TranslationPipeline.__new__(TranslationPipeline)

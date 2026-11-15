@@ -134,6 +134,39 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
             "https://example.invalid/works/test/episodes/10",
         )
 
+    def test_cli_archives_explicit_utf8_txt_source_byte_for_byte(self):
+        source = self.source_root / "episode_0001.txt"
+        source_bytes = "第1話\nsynthetic source text".encode("utf-8")
+        source.write_bytes(source_bytes)
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "第1話",
+                    "position": 1,
+                    "relative_path": "episode_0001.txt",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(stdout)["status"], "complete")
+        self.assertEqual(stderr, "")
+        self.assertNotIn("synthetic source text", stdout)
+        self.assertEqual(source.read_bytes(), source_bytes)
+        manifest = load_manifest(self.output_root / "source_manifest.json")
+        raw_artifact = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "raw_source"
+        )
+        self.assertEqual(
+            (self.output_root / raw_artifact["relative_path"]).read_bytes(),
+            source_bytes,
+        )
+
     def test_cli_rejects_catalog_paths_that_escape_the_source_root(self):
         outside = self.root / "outside.md"
         outside.write_bytes(b"synthetic private text")

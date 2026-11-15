@@ -1,19 +1,27 @@
 # 项目现状
 
-> 状态基准：2026-11-15，代码基线为 `codex/translation-workflow-20261115` 上的 `c6f7176`，父提交为 `d7e2afd`；本次实现与验证已记录在该提交及当前 Markdown 同步中。最新单测和 mock E2E 结果见[开发与验证](development.md#2026-11-15-完整回归与源文快照校验)。未调用真实 Provider/Notion、未读取作品正文；Kakuyomu 只访问规则页面及 robots；验证边界见[开发与验证](development.md)。
-> 引用会话范围：已读取两个引用会话当前可访问的分页；本轮 `read_thread` 均返回 `hasMore=false`。会话仅作目标/决策线索，当前能力以工作树、测试及文档记录为准。
+> 状态基准：2026-11-15，代码基线为分支 `codex/translation-workflow-20261115` 的 `c3f313b`；当前工作树包含本任务之前的未提交修改及本任务增量，保留边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。Kakuyomu source-only 采集已完成主页声明的 88/88 话；88 个单话 Markdown 与有序全书 export 均从 manifest 版本物化。当前 manifest 267 个 artifact 文件校验通过；本次未调用真实 Provider/Notion。实际正文/标点/ruby 仍待人工格式验收，88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。
+> 引用会话范围：本次续接已分页读取两个引用会话至 `hasMore=false`；会话仅作目标/决策线索，当前能力以工作树、测试及文档记录为准。
+
+> 2026-11-15 本次复核：分支 `codex/translation-workflow-20261115`、HEAD `c3f313b`；工作区包含此前的未提交修改和本任务增量，具体以 `git status --short --branch` 为准。两个引用会话已分页读取至 `hasMore=false`，并以当前源码交叉核对。URL adapter 增量后的相关回归和 mock E2E 见[开发与验证](development.md#2026-11-15-当前-checkout-回归验证)；来源到版本化 mock 翻译端到端路径见同日端到端记录。
+
+> 来源接入表述说明：Kakuyomu 主页 adapter 从 `__NEXT_DATA__.__APOLLO_STATE__.Work.tableOfContentsV2` 发现公开 episode ID/title，要求唯一条目数等于 `publicEpisodeCount`，随后生成 URL。`scripts/run_kakuyomu_workflow.py --work-url` 可保存发现 catalog、获取目录中全部公开 episode 页面、生成带来源版本的确定性 `CHAPTER_MAP` 并运行生产流水线；synthetic mock E2E 已验证该链路。它不发现/获取草稿或私有话，不证明站点声明外的完整性，也不代表真实 Provider 翻译或全书真实站点 E2E。
+
+> 用户最新决定：试点书籍已获得明确授权；用户是普通读者，要求采集系统从作品主页发现完整公开目录，再通过普通 episode URL 逐话获取原文，不依赖作者 ZIP，并明确表示不需要官方澄清。`KakuyomuPageAdapter` 已实现目录发现与显式 URL catalog 采集并运行时遵守 robots；不登录、不跟随重定向、不请求 `/read`。2026-11-15 live 采集已发现并获取主页声明的 88/88 话，checkpoint 为 complete；parser v4 将 ruby 和旁点转换为明确文本标记并保留 U+3000。88 个单话 Markdown、全书 export 与全部来源 artifact 均通过 manifest 哈希检查。该用户决定不代表平台背书/法律结论；完整性仅限本次主页公开目录，不含草稿/私有话，也不包含公开分发授权。人工格式验收、真实 Provider 调用、Notion 操作仍未完成。用户已授权 JOJO/JYQF 接收各自职责所需的最小数据类别；运行时 allowlist、端点/数据流与渠道兼容性仍未验证。
+
+> 2026-11-15 平台规则观察与用户决定：robots 允许普通 work/episode URL，禁止相应 `/read`；普通 HTML anchor 只有 7/88 条目，完整目录解析读取 `__NEXT_DATA__.__APOLLO_STATE__.Work.tableOfContentsV2`。此前查阅的服务条款中有关于分析站点/应用结构的限制；该规则作为风险背景保留，不作法律结论。用户明确表示无需官方澄清并要求按普通 URL 路径继续，因此官方答复不设为本试点前置条件；实际采集已完成 88/88。此记录不称为平台背书或公开分发授权；仍遵守 robots，不访问 `/read`，不登录或绕过访问控制。
 
 ## 已实现
 
 - `pipeline.py`：Python CLI；按章节读取 Markdown，构建上下文，依次执行上下文标注、初译、校对、润色，并写入译文和翻译记忆。
 - `已实现` 响应契约：标注对象与源段落保真校验；初译必需字段/段落数组检查；校对 schema 不合格时保留上一版；反思重译和润色响应异常时回退；三种生产提示词的输出字段与调用端 schema 对齐。
-- `部分实现` Provider 路由：`get_primary_provider_route` 集中管理现有 Sakura/Qwen 与 DeepSeek 的 URL/Key 映射，供请求和启动 Key 检查共用；未知、空白或首尾带空格的模型名会在流水线读取章节及创建客户端前拒绝，避免静默落到 DeepSeek。OpenAI-compatible base URL 拒绝无效协议/主机/端口、URL 内凭据/查询/片段及非 loopback HTTP；loopback HTTP 保留用于本地服务，客户端关闭自动重定向以避免重定向转发认证信息，端点需提供规范 URL。修复了 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口时意外覆盖已选端点的问题，只有 E2E 的 `MOCK_SERVER_PORT` 会显式覆盖为本地 mock。`PROVIDER_DATA_POLICY` 已按 Provider/数据类别默认拒绝远端书籍数据，通用 Provider 抽象、`CODING_PLAN_*` 支持和真实端点验收仍未实现。
+- `部分实现` Provider 路由与数据类别预检：`get_primary_provider_route` 集中管理 Sakura/Qwen、DeepSeek，以及显式 JOJO (`gpt-6-luna*`) / JYQF (`deepseek-v4.1-flash`) 别名；通用 `deepseek-flash` 仍走 DeepSeek。未知模型名会在流水线读取章节及创建客户端前拒绝。标注/初译仅声明 `source_text`、`book_knowledge`，校对/润色声明三类全集；启用严格反思时初译模型也须获准三类。启动预检和显式 Gemini 回退预检使用相同阶段矩阵。用户已授权 JOJO/JYQF 各自职责所需最小类别；allowlist 默认拒绝，需本地显式配置。端点、模型 ID、当前凭据和协议兼容性仍未验证；通用 Provider 抽象、自动 JOJO→JYQF 回退、`CODING_PLAN_*` 支持和真实端点验收仍未实现。
 - `rag_engine.py`：翻译记忆向量检索、术语匹配、分章指导检索及记忆写入。
 - `scripts/align_chapters.py`：双语章节段落对齐、对齐结果向量化并写入翻译记忆。
 - `scripts/validate_tm_provenance.py`：只读核对 TM 来源索引的文件哈希、段落引用和词对内容；配置 manifest 时还可检测同一来源 artifact 的更新版本。不修改 TM，也不判断译文质量或审核状态。
 - `scripts/validate_knowledge_provenance.py`：只读核对知识候选 provenance 的来源文本哈希、版本关联及 manifest 中的最新来源；不修改或批准知识草稿。
 - `scripts/apply_story_summary_review.py` 与 `story_summary_review.py`：生成哈希绑定的概要审核模板、发布明确批准的 JSON bundle，并在翻译流水线加载时复核 bundle 与 provenance 来源版本新鲜度。旧 Markdown 概要仍可加载但未经此审核门禁；回执未签名/审核者身份未认证。
-- `scripts/auto_extract_knowledge.py`：读取章节正文前检查 OpenAI-compatible URL、DeepSeek `source_text` 外发授权及远端 API key，创建客户端时再次检查；最多读取前三章，每个所选文件最多 16 MiB，超限在创建客户端前拒绝，提示词样本另截到 20,000 个 Unicode 字符。响应会先做结构、必填字段和冲突译名校验，草稿采用排他新建。来源清单记录实际输入范围/哈希及可精确匹配术语的章节段落序号，并最后写入 `artifact_status: complete` 标记；写入失败可能遗留部分文件，缺少有效标记时不得视为完整候选。流水线与 RAG 现在按约定文件名拒绝直接加载 `Glossary_draft.json` / `STORY_SUMMARY_draft.md`；这不防重命名，也不构成审核状态或发布流程。全书 token 预算与分批抽取尚未实现。
+- `scripts/auto_extract_knowledge.py`：读取章节正文前依据 `Config.PROOFREAD_MODEL` 通过 `get_primary_provider_route` 解析 Provider、URL 和专属 Key，再检查该 Provider 的 `source_text` 外发授权；创建客户端时再次检查。未知模型名在读取章节前拒绝。最多读取前三章，每个所选文件最多 16 MiB，超限在创建客户端前拒绝，提示词样本另截到 20,000 个 Unicode 字符。响应会先做结构、必填字段和冲突译名校验，草稿采用排他新建。来源清单记录实际输入范围/哈希及可精确匹配术语的章节段落序号，并最后写入 `artifact_status: complete` 标记；写入失败可能遗留部分文件，缺少有效标记时不得视为完整候选。流水线与 RAG 现在按约定文件名拒绝直接加载 `Glossary_draft.json` / `STORY_SUMMARY_draft.md`；这不防重命名，也不构成审核状态或发布流程。全书 token 预算与分批抽取尚未实现。
 - `scripts/apply_knowledge_review.py`：可为当前 glossary/provenance 候选排他新建绑定原始字节 SHA-256 的未完成审核回执模板（所有决定均为 `pending`，不可发布），也可消费完整回执，校验候选哈希、provenance 来源新鲜度和术语段落命中，仅将明确批准项写入新的 reviewed glossary bundle；模板模式不读章节或 manifest，也不调用审核 Provider，任何模式均不覆盖既有文件。回执 reviewer 字段未签名、未认证，是调用者声明；RAG 加载 bundle 时会再校验 manifest 来源新鲜度，且必须显式配置 `GLOSSARY_PATH`。
 - `prompts/`：初译、逻辑校对和文风润色提示词。
 - `tests/`：标准库 `unittest` 测试、独立 mock HTTP 服务、RAG/对齐/路径安全测试。
@@ -31,24 +39,24 @@
 - `部分实现` 路径边界：章节映射路径拒绝绝对路径、路径穿越和符号链接，译文/草稿采用排他新建，TM 采用原子替换；显式配置根目录仍由操作者负责，平台级并发链接竞态未完全封闭。
 - `部分实现` 配置：支持环境变量、项目目录及 JSON 配置路径；`API_TIMEOUT` 默认 10 秒并拒绝非有限或非正数，覆盖 OpenAI-compatible 聊天、Gemini 生成、RAG 和章节对齐 embedding；远端数据按 `PROVIDER_DATA_POLICY` 最小类别授权，默认拒绝。有基础 `requirements.txt`，但依赖未锁定，也没有完整部署配置。
 - `部分实现` 来源版本清单：`source_manifest.py` 提供本地 JSON schema v1、版本追加、SHA-256/相对路径语法和父版本图校验；图校验使用迭代算法，不受 Python 调用栈深度限制。`verify_manifest_files` 可验证清单列出的文件；`verify_manifest_artifact` 只校验指定版本。`scripts/validate_source_manifest.py` 提供只读 CLI。`source_ingestion.py::materialize_episode_markdown` 与 `scripts/materialize_source_markdown.py` 可将显式指定的 raw artifact 校验为 UTF-8 后，按原字节派生 `.md` 并记录其父版本；这是无格式转换的 I3 基线，不等于完整规范化、差异映射或站点适配。
-- `部分实现` 来源接入核心：`source_ingestion.py` 定义注入式 `SourceAdapter` 和显式路径 `LocalFileAdapter`，`scripts/ingest_local_sources.py` 按 JSON catalog 只读归档指定本地文件，并在写入前拒绝输出路径与 catalog/章节输入文件别名。显式本地导入默认限制 JSON catalog 文件 16 MiB、单个 episode 16 MiB、单次 episode 源文件总量 1 GiB，分别由 `--max-catalog-file-bytes`、`--max-episode-bytes`、`--max-catalog-bytes` 调整；catalog 以有界读取解析，episode 快照以流式哈希检查总量，读取时复核单文件上限。episode 内容上限绑定来源指纹；checkpoint v5 同时绑定适配器 `source_fingerprint`、目标 manifest 相对路径和逐话已完成 raw 版本。本地指纹包含 catalog 顺序、元数据、相对路径、源文件 SHA-256 和 episode 内容上限。另可显式设置无默认值的 `--max-archive-bytes`，在单次导入过程中按清单登记的所有文件型 artifact 历史版本累计内容字节，并逐话预检 metadata/raw 新版本；额度加入 checkpoint 指纹，改变额度须用新 checkpoint 路径。该逻辑内容上限不等同物理磁盘配额，不计未登记孤儿/临时文件、manifest/checkpoint 或其他工具之后的写入。读取时复核文件未变化；快照或目标不匹配均拒绝恢复；v1/v2 因缺少来源指纹一律拒绝自动迁移；v3/v4 仅在没有已完成 episode 且来源指纹匹配时可迁移，已完成旧 checkpoint 因缺少 raw 版本绑定而拒绝迁移。artifact ID 由作品、类型和章节标识的规范化元组派生。source_ref 写入 episode metadata。无 HTTP 客户端、具体站点解析器、缺失/删除差分或 live 采集；未接入流水线。单章/单批限制不代表未来 HTTP adapter 已有流式响应上限。
+- `部分实现` 来源接入：`source_ingestion.py` 提供 `SourceAdapter`、显式路径 `LocalFileAdapter`、checkpoint v5 与版本化归档；`scripts/ingest_local_sources.py` 只读 catalog 指定文件。显式本地导入默认限制 JSON catalog 16 MiB、单 episode 16 MiB、单批 1 GiB，可分别调整；可选 `--max-archive-bytes` 限制清单登记 artifact 历史版本累计内容字节，但不构成物理磁盘配额。`kakuyomu_page_source.py::discover_kakuyomu_work_catalog` 从普通作品主页解析 Next.js Apollo 目录；唯一 Episode ID 数必须等于 `publicEpisodeCount` 才产出公开 URL 清单。`KakuyomuPageAdapter`/`scripts/ingest_kakuyomu_pages.py` 对显式 catalog URL 及发现 URL 运行时检查 robots，不使用 cookie/login、不跟随重定向、不请求 `/read`。`scripts/run_kakuyomu_workflow.py --work-url` 在 Provider 授权/凭据预检、发现目录与译文冲突检查后，保存 discovered catalog，逐话请求正文并即时归档/物化版本，生成 episode ID/位置确定的 `CHAPTER_MAP`/TM 键并运行现有翻译流水线。checkpoint 保存每话完成时的 raw version；暂停后只重抓未完成话，并从 manifest 核验已完成原文用于继续累计 128 MiB 上限。来源指纹绑定 parser、robots、目录与限额，不绑定正文哈希；各话正文哈希单独保存在 raw artifact，因此续传是跨时间滚动快照，不是同一时刻的原子全书快照，完整 checkpoint 也不会自动刷新正文，刷新需新 checkpoint 路径。默认单页面 HTML 4 MiB、单 episode 提取文本 16 MiB、单次文本累计 128 MiB、最多 1000 话，请求间隔限定为 1.5–3 秒、默认 2 秒。页面结构变化、目录数不符或章节正文标题不符均失败关闭；parser v4 保留 ruby/旁点关系标记和 U+3000。用户不要求官方澄清并要求按普通 URL 路径继续；live source-only 采集已完成主页声明的 88/88 话，不调用 Provider。当前不涵盖草稿/私有话、站点计数以外的完整性证明、真实 Provider 翻译及正文人工格式/标点/ruby 验收。
 - `已实现` 来源采集空输入保护：2026-11-15 修复 `source_ingestion.py` 对零章节终端结果仍可报告完成的问题；空终页在未发现章节前会失败，complete checkpoint 必须至少包含一个已发现章节。空中间页仍可继续分页。本地 `scripts/ingest_local_sources.py` 还会在创建 adapter 或输出前拒绝空 `episodes` catalog；核心和 CLI 回归测试覆盖这些边界。
-- `部分实现` I3 Markdown 物化与章节导出：按显式 ID 校验 manifest 关联的 raw 版本哈希、UTF-8 和上限后，可字节保真生成不可变单话 `.md`；集合模式可显式选择递增位置的 episode ID，也可按完整 checkpoint v5 当前记录的 discovered/completed ID 和 raw 版本绑定选择章节，并核对 raw 版本仍与 manifest 当前版本相符。两种模式以 `\n\n` 分隔，要求输出字节上限，产生带所有输入 normalized 版本父节点的不可变 `export`。checkpoint 是未签名、可编辑的 JSON；模式只验证当前所列集合，不证明记录未经改写或外部来源目录枚举穷尽。仍不做站点格式清洗、差异映射或真实章节验收。
+- `部分实现` I3 Markdown 物化与章节导出：按显式 ID 校验 manifest 关联的 raw 版本哈希、UTF-8 和上限后，可字节保真生成不可变单话 `.md`；试点现有 88 个目录话目均已有 normalized artifact，且按完整 checkpoint v5 导出一份 88 话有序 Markdown。集合模式可显式选择递增位置的 episode ID，也可按完整 checkpoint 当前记录的 discovered/completed ID 和 raw 版本绑定选择章节，并核对 raw 版本仍与 manifest 当前版本相符。导出以 `\n\n` 分隔，要求输出字节上限，并把所有 normalized 版本作为父节点。checkpoint 未签名且可编辑；模式只验证当前所列集合，不证明记录未经改写或平台目录枚举穷尽。仍不做语义清洗、段落差异映射或真实章节人工验收。
 - `部分实现` I4 来源版本衔接：人工映射可把 `source_version_id` 绑定到 manifest 中 `.md` artifact。流水线与对齐写入 TM 来源版本，知识候选清单记录版本；TM 与知识候选均有只读审计，可比对同一 artifact 的最新 `normalized_source`，报告旧版本 `stale` 或损坏的最新版本 `invalid`。TM 审计分开验证 manifest 原始字节哈希和文本读取哈希。审计不写回 TM/知识、不自动生成映射，也不持久化/传播译文或知识的过期状态；没有真实章节验收。
-- `部分实现` I5 EPUB 候选构建：本机 Pandoc `3.9.0.2` 可处理显式排序的合成 Markdown catalog，输出 candidate EPUB 和输入/输出哈希 sidecar；候选构建精确匹配 catalog 中的 Pandoc 版本，且不覆盖既有输出。限于文本 Markdown，拒绝图片；来源版本字段仅记录、不对照 manifest。内置 ZIP/OPF/XHTML 检查不是完整 EPUBCheck，未完成质量/全书完整性门禁、EPUBCheck 或目标阅读器验收。真实试点目录当前无章节文件。
+- `部分实现` I5 EPUB 候选构建：离线 builder 可消费显式排序的 Markdown catalog，要求 Pandoc 版本精确匹配且不覆盖既有输出；构建前对每个 `source_version_id` 校验来源 manifest 的文件哈希、work/episode identity 与最新版本，并在 sidecar 记录 manifest 路径/hash。只处理文本 Markdown、拒绝图片；candidate 和有限 ZIP/OPF/XHTML 检查不是完整 EPUBCheck，也不证明质量、完整选集或阅读器兼容。试点已生成 88 个原文 Markdown，但译文目录仍为空，因此没有真实译文 EPUB 输入。
 
 ## 计划
 
-- `部分实现` 术语候选已有本地回执校验与 approved-only bundle 发布；概要/人物设定/TM、审核者身份与审核质量、风险分层、升级/更正/废弃及 TM 检索门禁仍待实现。
+- `部分实现` 术语和概要已有本地回执校验与 approved-only bundle，TM 有可显式配置的审核快照；人物设定的完整治理、审核者身份与审核质量、风险分层、升级/更正/废弃及默认强制 TM 检索门禁仍待实现。
 - `计划` 明确各阶段输入/输出契约、最终质量门禁和可复现验收。
 - `计划` 评估扩展到多语言和多文本类型；当前实现聚焦日译中轻小说，不可据长期方向宣称已支持通用翻译。
 
 ## 未知与待验证
 
 - `未知` Sakura 服务实际部署位置、模型权重/版本和运行参数。代码默认 URL 为 `http://127.0.0.1:6006/v1`；2026-11-14 本次 `Test-NetConnection` 复核该端口不可达，其他地址未探测。
-- `未知` DeepSeek/Gemini 凭据是否已轮换、账户权限、配额、API 兼容性和真实端到端翻译质量。本次未调用外部 API。
+- `未验证` 用户要求将疑似旧凭据按已轮换处理；当前凭据、供应商侧审计、账户权限、配额、API 兼容性和真实端到端翻译质量。本项目未访问供应商控制台或调用外部 API。
 - `未知` 除当前工作区外是否存在云端部署、自动化任务或用户界面；仓库未找到相关部署清单或 CI 工作流。
-- `未知` 当前可用书籍章节位置及其与试点的对应关系：2026-11-14 曾在被 `.gitignore` 排除的 `projects/祝福のネトラレラ` 观察到 48 个原文 Markdown、19 个译文 Markdown、19 个 TM 章节键及未索引来源；这是带日期的历史库存快照，不代表当前数据仍在。2026-11-15 只读复核用户指定的 `...\祝福のネトラレラ(祝福的寝取系女主)\生肉` 与 `熟肉` 根目录均存在但没有文件；仓库忽略项目下的 `生肉/`、`熟肉/` 也均为空。7 个 EPUB 工具/配置文件位于旁边的 `projects/祝福のネトラレラ/EPUB/`，不是书籍译文目录。相邻工作区有知识库、Agent 文档和 EPUB 工具文件，但未发现章节文件。未读取任何书籍正文；当前没有足够文件生成或核验第一话映射，历史 48/19/19 统计不能作为本次可用输入证据。指定作品已由用户于 2026-11-14、2026-11-15 明确确认为获得授权；Kakuyomu 自动化访问方式及 Provider/Notion 的逐目标范围见专题方案。
+- `未知` 当前可用章节映射：2026-11-14 曾在被 `.gitignore` 排除的 `projects/祝福のネトラレラ` 观察到 48 个原文 Markdown、19 个译文 Markdown、19 个 TM 章节键及未索引来源；这是历史库存快照。2026-11-15 初始只读复核时，用户指定的原文/译文根目录及仓库忽略项目下的 `生肉/`、`熟肉/` 均为空。之后第一话已从用户提供的普通 URL 导入：原文根目录现在含 metadata、raw、normalized artifact 及 catalog/checkpoint/manifest；刚复核的 manifest 有 3 个文件型 artifact 且全部通过哈希验证。译文根目录和仓库忽略项目下的章节目录仍为空；7 个 EPUB 工具/配置文件位于旁边的 `projects/祝福のネトラレラ/EPUB/`，不是书籍译文。没有足够信息确定真实 `CHAPTER_MAP` 的输出路径与 TM 键；本记录未读取正文。历史 48/19/19 统计不能作为当前可用输入。指定作品已由用户于 2026-11-14、2026-11-15 明确确认为获得授权；平台访问与 Provider/Notion 接收范围仍分别处理。
 - `未知` `TEST_READY.md` 中历史“71”计数与当前测试的对应关系；最近一次测试报告按实际 unittest 方法和命令记录，不沿用该计数。
 - `未知` 不同操作系统对无符号链接打开标志和目录并发修改的实际保证；最近一次回归测试状态见[开发与验证](development.md)。
 
@@ -72,13 +80,13 @@
 
 2026-11-15 I2 清单内容累计上限增量：定向 `source_manifest`、`source_ingestion`、本地 CLI 三模块 60 项通过；加入来源链接、知识/TM 来源、翻译契约和路径安全模块后，12 个模块共 212 项运行、208 项通过、4 项跳过、0 项失败。涉及 Python 文件 `py_compile`、CLI `--help`、`git diff --check` 和 13 份活动 Markdown 的 75 个本地文件链接检查通过。未重跑完整 mock E2E。额度超限时当前 episode 不追加 metadata/raw artifact，checkpoint 暂停；改变额度需新 checkpoint 路径。物理磁盘配额及未来 HTTP adapter 的流式响应限制仍待设计。
 
-2026-11-15 I0/I3 续接增量：指定作品按用户明确确认记为已授权，不作为阻塞；Kakuyomu 官方规约第 5、12–14 条和 `robots.txt` 经本地代理复查，robots 仍列出 episode `/read` 禁止路径；未访问作品或章节页面。I3 增加显式章节集合 Markdown 导出。随后增加完整检查点目录模式：checkpoint v5 记录每话完成时的 raw 版本，导出核对当前 JSON 记录的发现集/完成集、manifest 绑定和 raw 版本新鲜度。checkpoint 未签名且可编辑；该校验不能证明记录未经改写或来源平台目录穷尽，也不执行格式清洗。指定原文/译文目录现状仍为空。
+2026-11-15 I0/I3 续接历史检查点：当时复核 Kakuyomu 官方规约第 5、12–14 条和 `robots.txt`，并未访问作品/章节页面；随后用户明确要求普通读者路径直接读取指定 episode URL，第一话已在下方更新记录的 I2 增量中导入。I3 增加显式章节集合 Markdown 导出及完整检查点目录模式：checkpoint v5 记录每话完成时的 raw 版本，导出核对当前 JSON 记录的发现集/完成集、manifest 绑定和 raw 版本新鲜度。checkpoint 未签名且可编辑；该校验不能证明记录未经改写或来源平台目录穷尽，也不执行格式清洗。初始时原文/译文目录为空；当前第一话 raw 来源已归档，译文目录仍为空。
 
 2026-11-15 I3 集合导出验证更新：11 项 `tests.test_source_markdown_materialization` 通过；加入其他 11 个相关测试模块后，12 模块共运行 219 项、215 项通过、4 项因 Windows 符号链接/FIFO 支持跳过、0 项失败。`py_compile`、合并 CLI `--help`、README/`docs/` 13 个活动 Markdown 的 75 个本地文件链接、9 个本地标题锚点和 `git diff --check` 通过。未重跑 mock E2E；集合导出尚未接入翻译流水线。
 
 2026-11-15 I3 checkpoint v5 增量：12 个相关单测模块运行 224 项、220 项通过、4 项因 3 个 Windows 符号链接创建权限限制和 1 个 FIFO 不支持而跳过、0 项失败；Python 编译、`scripts/merge_source_markdown.py --help`、`git diff --check` 通过。完整 mock E2E 未重跑。验证含完整 catalog 导出、缺失完成项/旧 raw 版本/已完成 v4 checkpoint 拒绝；没有真实作品内容或平台/Provider/Notion 调用。导出只校验当前 checkpoint 所记录 catalog 条目及其 raw 版本，不证明 checkpoint 未被改写或上游枚举穷尽。
 
-2026-11-15 I2-I4 本地 catalog 合成联测增量：新增测试从两个虚构本地章节开始，贯通 catalog 导入、normalized 物化、完整 checkpoint 导出和生产章节映射的来源版本读取。12 个相关模块运行 225 项、221 项通过、4 项因 3 个 Windows 符号链接权限限制和 1 个 FIFO 不支持而跳过、0 项失败；单测定向复跑、测试文件 `py_compile`、两个 CLI `--help` 及 `git diff --check` 通过。完整 mock E2E 未重跑；不代表平台采集完整、真实章节格式合格或真实翻译已运行。
+2026-11-15 I2-I4 本地 catalog 合成联测增量：原测试从两个虚构本地章节贯通 catalog 导入、normalized 物化、完整 checkpoint 导出和生产章节映射来源版本读取。后续新增 `tests.test_e2e.E2ETestSuite.test_local_source_archive_flows_through_versioned_mock_translation`，另以一个合成 UTF-8 TXT 贯通显式 catalog 导入、normalized 物化、带来源版本的 `CHAPTER_MAP`、本地 mock 四阶段翻译和 TM provenance。当前相关 17 模块运行 286 项、282 项通过、4 项因 Windows 能力跳过、0 项失败；完整 mock E2E 5 个测试方法通过，231.163 秒。两组均未调用真实平台/Provider/Notion或读取书籍正文，不代表平台目录完整、真实章节格式合格或真实翻译质量。
 
 2026-11-15 阶段 2 知识草稿输入保护增量：新增启动期文件名门禁，直接阻止 `Glossary_draft.json` 进入 RAG，或 `Glossary_draft.json`/`STORY_SUMMARY_draft.md` 作为翻译正式输入；精确针对生成器固定文件名，不检测重命名文件，不能替代候选/批准 schema。12 个相关模块运行 227 项、223 项通过、4 项因 Windows 符号链接/FIFO 能力限制跳过、0 项失败；4 项本地 mock E2E 于本增量后通过。未调用真实 Provider/Notion，未读取作品正文。
 

@@ -55,7 +55,6 @@ class RAGEngine:
         self.source_manifest_path = source_manifest_path
         self.reviewed_tm_path = reviewed_tm_path
         self.translation_root = translation_root
-        self._reviewed_glossary_cache = None
         reject_knowledge_draft_path(self.glossary_path, "glossary input")
         self.api_timeout = parse_api_timeout(
             api_timeout if api_timeout is not None else os.environ.get("API_TIMEOUT", 10.0)
@@ -203,6 +202,13 @@ class RAGEngine:
         try:
             parsed = json.loads(self.glossary_raw)
         except json.JSONDecodeError:
+            if re.search(
+                r'"_knowledge_review_schema"\s*:',
+                self.glossary_raw,
+            ):
+                raise ValueError(
+                    "Reviewed glossary bundle is malformed."
+                ) from None
             parsed = None
         if isinstance(parsed, dict):
             if "_knowledge_review_schema" in parsed:
@@ -228,8 +234,6 @@ class RAGEngine:
         return merged
 
     def _parse_reviewed_glossary_bundle(self, bundle: dict) -> dict:
-        if self._reviewed_glossary_cache is not None:
-            return self._reviewed_glossary_cache
         if (
             bundle.get("_knowledge_review_schema") != 1
             or isinstance(bundle.get("_knowledge_review_schema"), bool)
@@ -342,7 +346,6 @@ class RAGEngine:
         )
         if not findings or any(item["status"] != "verified" for item in findings):
             raise ValueError("Reviewed glossary source versions are not current.")
-        self._reviewed_glossary_cache = terms
         return terms
 
     def get_cleaned_glossary(self, raw_text: str) -> List[Dict[str, str]]:

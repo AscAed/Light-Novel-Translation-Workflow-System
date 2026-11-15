@@ -147,6 +147,78 @@ class TranslationMemoryReviewTests(unittest.TestCase):
         )
         return template
 
+    def _replace_with_repeated_pairs(self):
+        self.raw_text = "alpha raw\n\nbeta raw\n\nalpha raw\n"
+        self.translation_text = "alpha target\n\nbeta target\n\nalpha target\n"
+        (self.source_input / "chapter.txt").write_bytes(self.raw_text.encode())
+        adapter = LocalFileAdapter(
+            self.source_input,
+            [
+                LocalEpisodeFile(
+                    EpisodeMetadata("episode-1", "Synthetic chapter", 1),
+                    "chapter.txt",
+                )
+            ],
+        )
+        collect_source(
+            adapter,
+            root=str(self.artifact_root),
+            work_id="synthetic-work",
+            checkpoint_relative_path="checkpoint-repeated.json",
+        )
+        artifact = materialize_episode_markdown(
+            str(self.artifact_root),
+            work_id="synthetic-work",
+            episode_id="episode-1",
+        )
+        self.translation_path.write_bytes(self.translation_text.encode())
+        raw_digest = hashlib.sha256(self.raw_text.encode()).hexdigest()
+        translation_digest = hashlib.sha256(
+            self.translation_text.encode()
+        ).hexdigest()
+        pairs = [
+            {
+                "raw": raw,
+                "translated": translated,
+                "embedding": [float(index == 1), float(index == 2)],
+            }
+            for index, (raw, translated) in enumerate(
+                (
+                    ("alpha raw", "alpha target"),
+                    ("beta raw", "beta target"),
+                    ("alpha raw", "alpha target"),
+                ),
+                start=1,
+            )
+        ]
+        self.tm = {
+            "chapters": {"第1話.md": pairs},
+            "source_provenance": {
+                "第1話.md": {
+                    "schema_version": 1,
+                    "producer": "synthetic-test",
+                    "raw_file": artifact["relative_path"],
+                    "raw_sha256": raw_digest,
+                    "translation_file": "第1話.md",
+                    "translation_sha256": translation_digest,
+                    "source_version_id": artifact["version_id"],
+                    "pair_mappings": [
+                        {
+                            "pair_index": index,
+                            "raw_paragraph_indices": [index],
+                            "translation_paragraph_indices": [index],
+                            "trace_status": "matched",
+                        }
+                        for index in range(1, 4)
+                    ],
+                }
+            },
+        }
+        self.tm_path.write_text(
+            json.dumps(self.tm, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def _publish(self):
         return publish_reviewed_tm(
             str(self.tm_path),
@@ -168,9 +240,17 @@ class TranslationMemoryReviewTests(unittest.TestCase):
         self.assertTrue(
             all(item["decision"] == "pending" for item in receipt["decisions"])
         )
+        self.assertEqual(
+            result["output_sha256"],
+            hashlib.sha256(self.review_path.read_bytes()).hexdigest(),
+        )
 
         self._complete_receipt()
         published = self._publish()
+        self.assertEqual(
+            published["output_sha256"],
+            hashlib.sha256(self.bundle_path.read_bytes()).hexdigest(),
+        )
         snapshot = load_reviewed_tm_snapshot(
             str(self.bundle_path),
             str(self.source_root),
@@ -248,6 +328,54 @@ class TranslationMemoryReviewTests(unittest.TestCase):
         self.assertEqual(
             len(rag.tm_retrieval_data["chapters"]["第1話.md"]),
             1,
+        )
+
+    def test_repeated_pairs_receive_distinct_review_ids_and_are_preserved(self):
+        self._replace_with_repeated_pairs()
+
+        result = self._template()
+        receipt = json.loads(self.review_path.read_text(encoding="utf-8"))
+        pair_ids = [item["pair_sha256"] for item in receipt["decisions"]]
+        self.assertEqual(result["decision_count"], 3)
+        self.assertEqual(len(pair_ids), 3)
+        self.assertEqual(len(set(pair_ids)), 3)
+
+        self._complete_receipt(("approved", "rejected", "approved"))
+        published = self._publish()
+        self.assertEqual(
+            published["output_sha256"],
+            hashlib.sha256(self.bundle_path.read_bytes()).hexdigest(),
+        )
+        snapshot = load_reviewed_tm_snapshot(
+            str(self.bundle_path),
+            str(self.source_root),
+            str(self.translation_root),
+            "source_manifest.json",
+        )
+        self.assertEqual(
+            [
+                pair["raw"]
+                for pair in snapshot["chapters"]["第1話.md"]
+            ],
+            ["alpha raw", "alpha raw"],
+        )
+        self.assertEqual(
+            [
+                mapping["pair_index"]
+                for mapping in snapshot["source_provenance"]["第1話.md"][
+                    "pair_mappings"
+                ]
+            ],
+            [1, 2],
+        )
+        self.assertEqual(
+            [
+                mapping["source_pair_index"]
+                for mapping in snapshot["source_provenance"]["第1話.md"][
+                    "pair_mappings"
+                ]
+            ],
+            [1, 3],
         )
 
 

@@ -948,6 +948,57 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(adapter.catalog_calls, [])
         self.assertEqual(adapter.episode_calls, [])
 
+    def test_v4_incomplete_checkpoint_preserves_manifest_binding(self):
+        adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((), None)},
+            {},
+        )
+        checkpoint = new_checkpoint(
+            "work-1",
+            adapter.source_fingerprint,
+            "legacy-manifest.json",
+        )
+        checkpoint["schema_version"] = 4
+        checkpoint.pop("completed_raw_versions")
+        (self.root / "source_checkpoint.json").write_text(
+            json.dumps(checkpoint),
+            encoding="utf-8",
+        )
+        checkpoint_before = (self.root / "source_checkpoint.json").read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "destination manifest"):
+            collect_source(adapter, root=self.root, work_id="work-1")
+
+        self.assertEqual(
+            (self.root / "source_checkpoint.json").read_bytes(),
+            checkpoint_before,
+        )
+        self.assertEqual(adapter.catalog_calls, [])
+        self.assertEqual(adapter.episode_calls, [])
+
+    def test_oversized_metadata_fails_before_writing_source_artifacts(self):
+        source_root = self.root / "input"
+        source_root.mkdir()
+        (source_root / "episode.md").write_bytes(b"source")
+        adapter = LocalFileAdapter(
+            source_root,
+            (
+                LocalEpisodeFile(
+                    EpisodeMetadata("ep-1", "x" * (1024 * 1024), 1),
+                    "episode.md",
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "metadata exceeds"):
+            collect_source(adapter, root=self.root, work_id="work-1")
+
+        self.assertFalse((self.root / "source_manifest.json").exists())
+        self.assertEqual(
+            sorted(path.name for path in self.root.iterdir()),
+            ["input", "source_checkpoint.json"],
+        )
+
     def test_checkpoint_rejects_non_string_status_and_pause_reason(self):
         checkpoint = new_checkpoint("work-1", "snapshot-1")
         checkpoint["status"] = []

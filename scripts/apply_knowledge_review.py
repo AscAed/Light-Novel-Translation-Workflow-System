@@ -370,10 +370,13 @@ def create_knowledge_review_template(
     }
     output_text = json.dumps(template, ensure_ascii=False, indent=2)
     write_new_child_text(knowledge_root, output_filename, output_text)
+    output_path = resolve_child_path(knowledge_root, output_filename)
+    with open_regular_file(output_path, binary=True) as stream:
+        output_digest = hashlib.sha256(stream.read()).hexdigest()
     return {
         "output": output_filename,
         "decision_count": len(glossary),
-        "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+        "output_sha256": output_digest,
     }
 
 
@@ -458,11 +461,14 @@ def apply_knowledge_review(
     }
     output_text = json.dumps(bundle, ensure_ascii=False, indent=2)
     write_new_child_text(knowledge_root, output_filename, output_text)
+    output_path = resolve_child_path(knowledge_root, output_filename)
+    with open_regular_file(output_path, binary=True) as stream:
+        output_digest = hashlib.sha256(stream.read()).hexdigest()
     return {
         "output": output_filename,
         "approved_term_count": len(published_terms),
         "decision_count": len(decisions),
-        "output_sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
+        "output_sha256": output_digest,
     }
 
 

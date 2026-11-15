@@ -438,6 +438,85 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             )
             self.assertIn("Successfully aligned chapter", stdout.getvalue())
 
+    def test_cli_does_not_save_when_bound_source_changes_during_alignment(self):
+        from pipeline import Config
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            output_dir = root / "translated"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            raw_path = raw_dir / "chapter.md"
+            raw_path.write_text("synthetic source", encoding="utf-8")
+            translation_path = output_dir / "chapter.md"
+            translation_path.write_text(
+                "synthetic translation", encoding="utf-8"
+            )
+            source_version_id = "source-version-1"
+            manifest = {
+                "schema_version": 1,
+                "artifacts": [
+                    {
+                        "artifact_id": "synthetic-normalized",
+                        "version_id": source_version_id,
+                        "kind": "normalized_source",
+                        "content_sha256": hashlib.sha256(
+                            raw_path.read_bytes()
+                        ).hexdigest(),
+                        "relative_path": "chapter.md",
+                        "parent_version_ids": [],
+                    }
+                ],
+            }
+            (raw_dir / "source_manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+            chapter_map = [
+                {
+                    "raw_file": "chapter.md",
+                    "translation_file": "chapter.md",
+                    "tm_key": "chapter.md",
+                    "source_version_id": source_version_id,
+                }
+            ]
+
+            def change_source_after_snapshot(_):
+                raw_path.write_text("changed after snapshot", encoding="utf-8")
+                return [[0.5]]
+
+            stderr = io.StringIO()
+            with (
+                patch("sys.argv", ["align_chapters.py"]),
+                patch("pipeline.Config.load_config"),
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch.object(
+                    Config,
+                    "SOURCE_MANIFEST_PATH",
+                    "source_manifest.json",
+                ),
+                patch.object(Config, "TM_PATH", str(root / "tm.json")),
+                patch(
+                    "scripts.align_chapters.load_existing_tm",
+                    return_value={"chapters": {}},
+                ),
+                patch(
+                    "scripts.align_chapters.generate_embeddings_batched",
+                    side_effect=change_source_after_snapshot,
+                ),
+                patch("scripts.align_chapters.save_tm") as save_tm,
+                redirect_stderr(stderr),
+            ):
+                with self.assertRaises(SystemExit) as raised:
+                    align_main()
+
+            self.assertEqual(raised.exception.code, 1)
+            self.assertIn("Error verifying source bindings", stderr.getvalue())
+            save_tm.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

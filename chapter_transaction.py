@@ -14,8 +14,6 @@ from utils import (
     resolve_child_path,
     resolve_relative_path,
     split_paragraphs,
-    write_new_child_text,
-    write_new_relative_text,
     write_text_atomically,
 )
 
@@ -36,33 +34,65 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
-def _journal_name(translation_file: str, tm_key: str) -> str:
+def _journal_name(translation_file: str) -> str:
+    output_identity = _output_identity(translation_file)
     identity = json.dumps(
-        [translation_file, tm_key],
+        output_identity,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
     return f".codex-chapter-transaction-{_sha256(identity)}.json"
 
 
-def _journal_location(output_root: str, translation_file: str, tm_key: str):
+def _output_identity(translation_file: str) -> str:
+    return os.path.normcase(translation_file.replace("\\", "/"))
+
+
+def _journal_location(output_root: str, translation_file: str):
     output_path = resolve_relative_path(
         output_root, translation_file, allow_missing=True
     )
-    filename = _journal_name(translation_file, tm_key)
+    filename = _journal_name(translation_file)
     journal_path = resolve_child_path(
         str(output_path.parent), filename, allow_missing=True
     )
     return output_path, str(output_path.parent), filename, journal_path
 
 
+def _find_pending_journal(
+    output_root: str, translation_file: str
+) -> tuple[str, dict] | None:
+    _, journal_root, _, _ = _journal_location(output_root, translation_file)
+    root_path = Path(journal_root)
+    if not root_path.is_dir():
+        return None
+
+    matches = []
+    for path in root_path.iterdir():
+        if not (
+            path.name.startswith(".codex-chapter-transaction-")
+            and path.name.endswith(".json")
+        ):
+            continue
+        record = _read_journal(journal_root, path.name)
+        journal_translation_file = record.get("translation_file")
+        if (
+            isinstance(journal_translation_file, str)
+            and _output_identity(journal_translation_file)
+            == _output_identity(translation_file)
+        ):
+            matches.append((path.name, record))
+    if len(matches) > 1:
+        raise ValueError(
+            "Multiple pending chapter transactions target this translation file."
+        )
+    return matches[0] if matches else None
+
+
 def has_pending_chapter_transaction(
     output_root: str, translation_file: str, tm_key: str
 ) -> bool:
-    _, _, _, journal_path = _journal_location(
-        output_root, translation_file, tm_key
-    )
-    return journal_path.exists()
+    return _find_pending_journal(output_root, translation_file) is not None
 
 
 def _read_journal(root: str, filename: str) -> dict:
@@ -186,26 +216,46 @@ def _validate_journal(record: dict, raw_text: str, spec) -> str:
     return translation_text
 
 
-def _ensure_output(output_path: Path, output_root: str, spec, text: str) -> None:
+def _write_new_output(output_path: Path, text: str) -> None:
+    expected_bytes = text.replace("\n", os.linesep).encode("utf-8")
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+        dir=str(output_path.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(expected_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, output_path)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _ensure_output(output_path: Path, text: str) -> None:
     expected_bytes = text.replace("\n", os.linesep).encode("utf-8")
     if not output_path.exists():
-        if "/" in spec.translation_file:
-            write_new_relative_text(
-                output_root, spec.translation_file, text
-            )
-        else:
-            write_new_child_text(output_root, spec.translation_file, text)
-        return
+        try:
+            _write_new_output(output_path, text)
+            return
+        except FileExistsError:
+            with open_regular_file(output_path, binary=True) as stream:
+                current_bytes = stream.read()
+            if current_bytes == expected_bytes:
+                return
+            raise ValueError(
+                "Chapter transaction found an output that differs from its recorded result."
+            ) from None
 
     with open_regular_file(output_path, binary=True) as stream:
         current_bytes = stream.read()
     if current_bytes == expected_bytes:
         return
-    if (
-        current_bytes
-        and len(current_bytes) < len(expected_bytes)
-        and expected_bytes.startswith(current_bytes)
-    ):
+    if not current_bytes:
         write_text_atomically(str(output_path), text)
         return
     raise ValueError(
@@ -238,7 +288,6 @@ def _apply_record(
     record: dict,
     raw_text: str,
     spec,
-    output_root: str,
     output_path: Path,
     rag,
     validate_translation,
@@ -247,7 +296,7 @@ def _apply_record(
 ) -> None:
     translation_text = _validate_journal(record, raw_text, spec)
     validate_translation(raw_text, translation_text)
-    _ensure_output(output_path, output_root, spec, translation_text)
+    _ensure_output(output_path, translation_text)
     pairs, provenance = _build_tm_update(raw_text, translation_text, spec)
 
     has_disk_fingerprint = hasattr(rag, "current_tm_disk_sha256") and hasattr(
@@ -299,10 +348,10 @@ def commit_chapter_translation(
     rag,
     validate_translation,
 ) -> None:
-    output_path, journal_root, journal_filename, journal_path = _journal_location(
-        output_root, spec.translation_file, spec.tm_key
+    output_path, journal_root, journal_filename, _ = _journal_location(
+        output_root, spec.translation_file
     )
-    if journal_path.exists():
+    if _find_pending_journal(output_root, spec.translation_file) is not None:
         raise ValueError(
             "A chapter transaction is already pending; retry the chapter to recover it."
         )
@@ -328,7 +377,6 @@ def commit_chapter_translation(
         record,
         raw_text,
         spec,
-        output_root,
         output_path,
         rag,
         validate_translation,
@@ -344,17 +392,17 @@ def recover_chapter_translation(
     rag,
     validate_translation,
 ) -> bool:
-    output_path, journal_root, journal_filename, journal_path = _journal_location(
-        output_root, spec.translation_file, spec.tm_key
+    output_path, journal_root, _, _ = _journal_location(
+        output_root, spec.translation_file
     )
-    if not journal_path.exists():
+    pending = _find_pending_journal(output_root, spec.translation_file)
+    if pending is None:
         return False
-    record = _read_journal(journal_root, journal_filename)
+    journal_filename, record = pending
     _apply_record(
         record,
         raw_text,
         spec,
-        output_root,
         output_path,
         rag,
         validate_translation,

@@ -115,13 +115,13 @@ class StorySummaryReviewTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _publish(self):
+    def _publish(self, output_filename=None):
         return publish_reviewed_summary(
             str(self.knowledge_root),
             str(self.archive_root),
             "source_manifest.json",
             self.template_path.name,
-            self.output_path.name,
+            output_filename or self.output_path.name,
         )
 
     def _load(self):
@@ -143,6 +143,10 @@ class StorySummaryReviewTests(unittest.TestCase):
         self.assertEqual(
             template["candidate_provenance_sha256"],
             hashlib.sha256(self.provenance_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            result["output_sha256"],
+            hashlib.sha256(self.template_path.read_bytes()).hexdigest(),
         )
         self.assertEqual(template["decision"], "pending")
         self.assertNotIn(
@@ -186,9 +190,24 @@ class StorySummaryReviewTests(unittest.TestCase):
         bundle = json.loads(self.output_path.read_text(encoding="utf-8"))
 
         self.assertEqual(result["source_count"], 1)
+        self.assertEqual(
+            result["output_sha256"],
+            hashlib.sha256(self.output_path.read_bytes()).hexdigest(),
+        )
         self.assertEqual(bundle["approval_status"], "approved")
         self.assertEqual(bundle["summary"], self.summary_bytes.decode("utf-8"))
         self.assertEqual(self._load(), self.summary_bytes.decode("utf-8"))
+
+    def test_reviewed_summary_requires_json_output_name(self):
+        self._create_template()
+        self._complete_receipt()
+
+        with self.assertRaisesRegex(ValueError, "must end with .json"):
+            self._publish("reviewed-summary.md")
+
+        self.assertFalse(
+            (self.knowledge_root / "reviewed-summary.md").exists()
+        )
 
     def test_pending_or_rejected_receipt_cannot_publish(self):
         self._create_template()

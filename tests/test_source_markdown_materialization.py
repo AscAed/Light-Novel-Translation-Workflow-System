@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from pipeline import get_chapter_specs
 from scripts.ingest_local_sources import main as ingest_local_main
@@ -19,7 +20,7 @@ from source_ingestion import (
     materialize_episode_collection_markdown,
     materialize_episode_markdown,
 )
-from source_manifest import load_manifest, verify_manifest_files
+from source_manifest import append_artifact, load_manifest, verify_manifest_files
 
 
 class SourceMarkdownMaterializationTests(unittest.TestCase):
@@ -134,6 +135,42 @@ class SourceMarkdownMaterializationTests(unittest.TestCase):
 
         self.assertEqual(manifest_path.read_bytes(), original_manifest)
         self.assertFalse((self.archive_root / "normalized").exists())
+
+    def test_manifest_failure_reuses_materialized_markdown_on_retry(self):
+        self._archive(b"synthetic chapter")
+        append_once = [True]
+
+        def fail_normalized_manifest_once(path, artifact):
+            if artifact["kind"] == "normalized_source" and append_once[0]:
+                append_once[0] = False
+                raise OSError("synthetic manifest write failure")
+            return append_artifact(path, artifact)
+
+        with patch(
+            "source_ingestion.append_artifact",
+            side_effect=fail_normalized_manifest_once,
+        ):
+            with self.assertRaisesRegex(OSError, "manifest write failure"):
+                materialize_episode_markdown(
+                    self.archive_root,
+                    work_id=self.work_id,
+                    episode_id=self.episode_id,
+                )
+
+            normalized_files = list((self.archive_root / "normalized").rglob("*.md"))
+            self.assertEqual(len(normalized_files), 1)
+            artifact = materialize_episode_markdown(
+                self.archive_root,
+                work_id=self.work_id,
+                episode_id=self.episode_id,
+            )
+
+        self.assertEqual(
+            (self.archive_root / artifact["relative_path"]).read_bytes(),
+            b"synthetic chapter",
+        )
+        manifest = load_manifest(self.archive_root / "source_manifest.json")
+        self.assertEqual(verify_manifest_files(self.archive_root, manifest), 3)
 
     def test_byte_limit_rejects_before_writing_markdown(self):
         self._archive(b"synthetic chapter")
@@ -257,6 +294,31 @@ class SourceMarkdownMaterializationTests(unittest.TestCase):
         self.assertEqual(
             (self.archive_root / artifact["relative_path"]).read_bytes(),
             b"first\n\nsecond",
+        )
+
+    def test_complete_checkpoint_export_sorts_by_verified_source_position(self):
+        normalized = self._archive_many(
+            [
+                ("episode-10", "Tenth", 10, b"ten"),
+                ("episode-2", "Second", 2, b"two"),
+            ]
+        )
+
+        result = materialize_complete_checkpoint_catalog_markdown(
+            self.archive_root,
+            work_id=self.work_id,
+            checkpoint_relative_path="source_checkpoint_many.json",
+            max_bytes=1024,
+        )
+
+        self.assertEqual(result["episode_ids"], ["episode-2", "episode-10"])
+        self.assertEqual(
+            result["artifact"]["parent_version_ids"],
+            [normalized[1]["version_id"], normalized[0]["version_id"]],
+        )
+        self.assertEqual(
+            (self.archive_root / result["artifact"]["relative_path"]).read_bytes(),
+            b"two\n\nten",
         )
 
     def test_local_catalog_flows_through_export_and_versioned_chapter_map(self):
