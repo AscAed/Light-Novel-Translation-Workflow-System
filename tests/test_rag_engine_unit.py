@@ -4,13 +4,16 @@
 
 import os
 import json
+import hashlib
 import unittest
 import tempfile
 import shutil
 import numpy as np
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, MagicMock
 from rag_engine import RAGEngine
+from utils import write_bytes_atomically
 
 
 class TestRAGEngineUnit(unittest.TestCase):
@@ -83,6 +86,14 @@ Chapter 2 specific guidelines.
                 guidelines_path=self.guidelines_path
             )
 
+    def test_draft_glossary_cannot_be_loaded_for_retrieval(self):
+        draft_path = os.path.join(self.test_dir, "Glossary_draft.json")
+        with open(draft_path, "w", encoding="utf-8") as f:
+            json.dump({"候选词": "候选译名"}, f)
+
+        with self.assertRaisesRegex(ValueError, "candidate draft"):
+            RAGEngine(self.tm_path, draft_path, self.guidelines_path)
+
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_query_translation_memory_empty(self, mock_embed):
         """Verify querying translation memory with empty input returns empty list."""
@@ -142,6 +153,21 @@ Chapter 2 specific guidelines.
 
         self.assertIn("Chapter 10 guidance.", result)
         self.assertNotIn("Volume 2 guidance.", result)
+
+    def test_explicit_chapter_position_overrides_opaque_source_filename(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.guidelines_raw = (
+            "《翻译指导原则》 - [第 1 章]\nChapter 1 guidance.\n"
+            "《翻译指导原则》 - [第 2 章]\nChapter 2 guidance."
+        )
+
+        result = engine.get_partitioned_guidelines(
+            "normalized/opaque-hash.md",
+            chapter_position=2,
+        )
+
+        self.assertIn("Chapter 2 guidance.", result)
+        self.assertNotIn("Chapter 1 guidance.", result)
 
     @patch("rag_engine.RAGEngine._load_current_chapter_raw")
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
@@ -334,18 +360,88 @@ Chapter 2 specific guidelines.
             "SYNTHETIC_PRIVATE_ERROR", "\n".join(captured.output)
         )
 
-    @patch("rag_engine.write_text_atomically", side_effect=OSError("disk full"))
     @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
-    def test_translation_memory_persistence_failure_is_reported(self, mock_embed, mock_write):
+    def test_translation_memory_persistence_failure_preserves_state_for_retry(
+        self, mock_embed
+    ):
         engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        original_tm_data = json.loads(json.dumps(engine.tm_data))
+        cached_embedding = [0.25] * 768
+        engine._chapter_tm_embeddings_cache = {"第3話.md": cached_embedding}
 
-        with self.assertRaisesRegex(OSError, "disk full"):
+        with patch(
+            "rag_engine.write_bytes_atomically", side_effect=OSError("disk full")
+        ) as mock_write:
+            with self.assertRaisesRegex(OSError, "disk full"):
+                engine.update_translation_memory(
+                    "第3話.md",
+                    [{"raw": "新原文", "translated": "新译文"}],
+                )
+
+        mock_write.assert_called_once()
+        self.assertEqual(engine.tm_data, original_tm_data)
+        self.assertIs(
+            engine._chapter_tm_embeddings_cache["第3話.md"],
+            cached_embedding,
+        )
+
+        engine.update_translation_memory(
+            "第3話.md",
+            [{"raw": "新原文", "translated": "新译文"}],
+        )
+
+        with open(self.tm_path, "r", encoding="utf-8") as stream:
+            saved_tm_data = json.load(stream)
+        self.assertEqual(
+            saved_tm_data["chapters"]["第3話.md"][0]["raw"], "新原文"
+        )
+        self.assertEqual(engine.tm_data, saved_tm_data)
+        self.assertNotIn("第3話.md", engine._chapter_tm_embeddings_cache)
+        self.assertEqual(mock_embed.call_count, 2)
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
+    def test_tm_fingerprint_tracks_written_snapshot_not_later_external_edit(
+        self, mock_embed
+    ):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        written = {}
+
+        def write_then_edit(path, content):
+            written["content"] = content
+            write_bytes_atomically(path, content)
+            Path(path).write_bytes(b'{"chapters": {"external.md": []}}')
+
+        with patch("rag_engine.write_bytes_atomically", side_effect=write_then_edit):
             engine.update_translation_memory(
                 "第3話.md",
                 [{"raw": "新原文", "translated": "新译文"}],
             )
 
-        mock_write.assert_called_once()
+        expected_fingerprint = hashlib.sha256(written["content"]).hexdigest()
+        self.assertEqual(engine._tm_disk_sha256, expected_fingerprint)
+        self.assertNotEqual(engine.current_tm_disk_sha256(), expected_fingerprint)
+        with self.assertRaisesRegex(RuntimeError, "changed on disk"):
+            engine.update_translation_memory(
+                "第4話.md",
+                [{"raw": "another source", "translated": "another translation"}],
+            )
+        self.assertEqual(mock_embed.call_count, 1)
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
+    def test_external_tm_change_is_not_overwritten(self, mock_embed):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        original_data = json.loads(json.dumps(engine.tm_data))
+        with open(self.tm_path, "w", encoding="utf-8") as stream:
+            json.dump({"chapters": {"external.md": []}}, stream)
+
+        with self.assertRaisesRegex(RuntimeError, "changed on disk"):
+            engine.update_translation_memory(
+                "第3話.md",
+                [{"raw": "新原文", "translated": "新译文"}],
+            )
+
+        self.assertEqual(engine.tm_data, original_data)
+        mock_embed.assert_not_called()
 
     def test_mock_embedding_response_without_values_is_rejected(self):
         response = MagicMock()

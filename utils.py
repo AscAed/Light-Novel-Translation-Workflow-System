@@ -11,6 +11,19 @@ from typing import List, Optional
 PROVIDER_DATA_CATEGORIES = frozenset(
     {"source_text", "translation_text", "book_knowledge", "evaluation_samples"}
 )
+KNOWLEDGE_DRAFT_FILENAMES = frozenset(
+    {"glossary_draft.json", "story_summary_draft.md"}
+)
+
+
+def reject_knowledge_draft_path(path, role: str) -> None:
+    """Prevent generated candidate files from being used as reviewed inputs."""
+    if not path:
+        return
+    if Path(path).name.casefold() in KNOWLEDGE_DRAFT_FILENAMES:
+        raise ValueError(
+            f"Knowledge candidate draft cannot be configured as {role}."
+        )
 
 
 def parse_api_timeout(value) -> float:
@@ -257,8 +270,45 @@ def write_text_atomically(path: str, content: str) -> None:
         raise
 
 
+def write_bytes_atomically(path: str, content: bytes) -> None:
+    """Atomically replace a file with the exact supplied bytes."""
+    if not isinstance(content, bytes):
+        raise TypeError("Atomic binary content must be bytes.")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError("Symbolic links are not allowed for persisted data.")
+
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, target)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def split_paragraphs(text: str) -> List[str]:
-    return [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
+    paragraphs = []
+    for paragraph in text.split("\n\n"):
+        if not paragraph.strip():
+            continue
+        paragraphs.append(paragraph.strip(" \t\r\n\f\v"))
+    return paragraphs
 
 
 def validate_tm_source_provenance(provenance: dict, pair_count: int) -> None:
@@ -278,6 +328,16 @@ def validate_tm_source_provenance(provenance: dict, pair_count: int) -> None:
         digest = provenance.get(field)
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"TM source provenance requires a valid {field}.")
+
+    if "source_version_id" in provenance:
+        source_version_id = provenance["source_version_id"]
+        if (
+            not isinstance(source_version_id, str)
+            or not source_version_id
+            or source_version_id.strip() != source_version_id
+            or any(ord(character) < 32 for character in source_version_id)
+        ):
+            raise ValueError("TM source provenance has an invalid source_version_id.")
 
     mappings = provenance.get("pair_mappings")
     if not isinstance(mappings, list) or len(mappings) != pair_count:
@@ -347,7 +407,7 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
             raise ValueError(
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
-        normalized = paragraph.strip()
+        normalized = paragraph.strip(" \t\r\n\f\v")
         split_result = split_paragraphs(normalized)
         if len(split_result) != 1 or split_result[0] != normalized:
             raise ValueError(

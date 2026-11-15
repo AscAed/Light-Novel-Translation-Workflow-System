@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from source_ingestion import (  # noqa: E402
     EpisodeMetadata,
+    DEFAULT_MAX_CATALOG_BYTES,
+    DEFAULT_MAX_EPISODE_BYTES,
     LocalEpisodeFile,
     LocalFileAdapter,
     collect_source,
@@ -18,6 +20,7 @@ from utils import open_regular_file, resolve_relative_path  # noqa: E402
 
 
 _CATALOG_FIELDS = frozenset({"schema_version", "work_id", "episodes"})
+DEFAULT_MAX_CATALOG_FILE_BYTES = 16 * 1024 * 1024
 _ENTRY_REQUIRED_FIELDS = frozenset(
     {"episode_id", "title", "position", "relative_path"}
 )
@@ -43,7 +46,28 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _load_catalog(source_root: str, catalog_relative_path: str):
+def _positive_byte_limit(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Must be a positive byte count.") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("Must be a positive byte count.")
+    return parsed
+
+
+def _load_catalog(
+    source_root: str,
+    catalog_relative_path: str,
+    *,
+    max_catalog_file_bytes: int = DEFAULT_MAX_CATALOG_FILE_BYTES,
+):
+    if (
+        isinstance(max_catalog_file_bytes, bool)
+        or not isinstance(max_catalog_file_bytes, int)
+        or max_catalog_file_bytes < 1
+    ):
+        raise ValueError("Local source catalog byte limit must be positive.")
     source_root_path = Path(source_root).resolve(strict=True)
     catalog_path = resolve_relative_path(
         str(source_root_path),
@@ -53,10 +77,16 @@ def _load_catalog(source_root: str, catalog_relative_path: str):
         raise ValueError("Local source catalog must be a regular file.")
 
     with open_regular_file(catalog_path, binary=True) as catalog_file:
+        catalog_bytes = catalog_file.read(max_catalog_file_bytes + 1)
+    if len(catalog_bytes) > max_catalog_file_bytes:
+        raise ValueError("Local source catalog exceeds the configured byte limit.")
+    try:
         catalog = json.loads(
-            catalog_file.read().decode("utf-8"),
+            catalog_bytes.decode("utf-8"),
             object_pairs_hook=_reject_duplicate_keys,
         )
+    except RecursionError as exc:
+        raise ValueError("Local source catalog has excessive nesting.") from exc
 
     if not isinstance(catalog, dict) or set(catalog) != _CATALOG_FIELDS:
         raise ValueError("Local source catalog has an invalid field set.")
@@ -75,6 +105,8 @@ def _load_catalog(source_root: str, catalog_relative_path: str):
     episode_records = catalog["episodes"]
     if not isinstance(episode_records, list):
         raise ValueError("Local source catalog episodes must be an array.")
+    if not episode_records:
+        raise ValueError("Local source catalog must contain at least one episode.")
     episodes = []
     for record in episode_records:
         if (
@@ -155,12 +187,42 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--page-size", type=_positive_int, default=50)
+    parser.add_argument(
+        "--max-episode-bytes",
+        type=_positive_byte_limit,
+        default=DEFAULT_MAX_EPISODE_BYTES,
+        help="Maximum bytes accepted for one source file.",
+    )
+    parser.add_argument(
+        "--max-catalog-bytes",
+        type=_positive_byte_limit,
+        default=DEFAULT_MAX_CATALOG_BYTES,
+        help="Maximum combined bytes accepted from all episode source files.",
+    )
+    parser.add_argument(
+        "--max-catalog-file-bytes",
+        type=_positive_byte_limit,
+        default=DEFAULT_MAX_CATALOG_FILE_BYTES,
+        help="Maximum bytes accepted for the JSON catalog file.",
+    )
+    parser.add_argument(
+        "--max-archive-bytes",
+        type=_positive_byte_limit,
+        help=(
+            "Optional ceiling checked before new manifest content is appended, "
+            "against verified existing payload bytes; not a physical disk quota."
+        ),
+    )
     parser.add_argument("--manifest", default="source_manifest.json")
     parser.add_argument("--checkpoint", default="source_checkpoint.json")
     args = parser.parse_args(argv)
 
     try:
-        work_id, episodes, catalog_path = _load_catalog(args.source_root, args.catalog)
+        work_id, episodes, catalog_path = _load_catalog(
+            args.source_root,
+            args.catalog,
+            max_catalog_file_bytes=args.max_catalog_file_bytes,
+        )
         _validate_output_paths(
             args.source_root,
             args.output_root,
@@ -173,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
             args.source_root,
             episodes,
             page_size=args.page_size,
+            max_episode_bytes=args.max_episode_bytes,
+            max_catalog_bytes=args.max_catalog_bytes,
         )
         report = collect_source(
             adapter,
@@ -180,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             work_id=work_id,
             manifest_relative_path=args.manifest,
             checkpoint_relative_path=args.checkpoint,
+            max_archive_bytes=args.max_archive_bytes,
         )
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"ERROR: {type(exc).__name__}", file=sys.stderr)

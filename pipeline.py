@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import os
 import json
 import re
@@ -8,14 +7,20 @@ import logging
 import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlsplit
+from chapter_transaction import (
+    commit_chapter_translation,
+    has_pending_chapter_transaction,
+    recover_chapter_translation,
+)
 from utils import (
     extract_chapter_num,
     parse_api_timeout,
     parse_provider_data_policy,
     read_child_text,
     read_relative_text,
+    reject_knowledge_draft_path,
     require_provider_data_authorized,
     require_aligned_annotations,
     require_aligned_paragraphs,
@@ -32,6 +37,8 @@ from openai import (
     DefaultAsyncHttpxClient,
 )
 from rag_engine import RAGEngine
+from source_manifest import load_manifest, verify_manifest_artifact
+from story_summary_review import load_reviewed_story_summary
 
 
 def _resolve_project_content_dir(
@@ -83,6 +90,8 @@ class Config:
     RAW_DIR = ""
     OUTPUT_DIR = ""
     CHAPTER_MAP = None
+    SOURCE_MANIFEST_PATH = None
+    TM_REVIEWED_PATH = None
     GLOSSARY_PATH = ""
     GUIDELINES_PATH = ""
     INFO_PATH = ""
@@ -104,9 +113,13 @@ class Config:
     CODING_PLAN_API_KEY = None
     GEMINI_API_KEY = None
     
-    # Sakura and DeepSeek Base URLs
+    # Provider Base URLs. JOJO/JYQF are opt-in aliases for the user-selected
+    # channels; the default model configuration remains unchanged until the
+    # real endpoints and credentials are verified.
     SAKURA_BASE_URL = "http://127.0.0.1:6006/v1"
     DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+    JOJO_BASE_URL = "https://max2.jojocode.com/v1"
+    JYQF_BASE_URL = "https://jyqf.me/v1"
     
     STORY_SUMMARY_PATH = ""
     TM_PATH = ""
@@ -128,6 +141,8 @@ class Config:
     @classmethod
     def load_config(cls, project: Optional[str] = None, config_file: Optional[str] = None):
         cls.CHAPTER_MAP = None
+        cls.SOURCE_MANIFEST_PATH = None
+        cls.TM_REVIEWED_PATH = None
         if config_file and not Path(config_file).is_file():
             raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
@@ -170,17 +185,22 @@ class Config:
                 "TEST_INFO_PATH": "INFO_PATH",
                 "TEST_STORY_SUMMARY_PATH": "STORY_SUMMARY_PATH",
                 "TEST_TM_PATH": "TM_PATH",
+                "TEST_TM_REVIEWED_PATH": "TM_REVIEWED_PATH",
             }
             for env_name, config_name in test_path_mapping.items():
                 value = os.environ.get(env_name)
                 if value:
                     setattr(cls, config_name, value)
             
-            # Setup SAKURA and DEEPSEEK URLs
-            if "SAKURA_BASE_URL" in os.environ:
-                cls.SAKURA_BASE_URL = os.environ["SAKURA_BASE_URL"]
-            if "DEEPSEEK_BASE_URL" in os.environ:
-                cls.DEEPSEEK_BASE_URL = os.environ["DEEPSEEK_BASE_URL"]
+            # Setup OpenAI-compatible provider URLs.
+            for config_name in (
+                "SAKURA_BASE_URL",
+                "DEEPSEEK_BASE_URL",
+                "JOJO_BASE_URL",
+                "JYQF_BASE_URL",
+            ):
+                if config_name in os.environ:
+                    setattr(cls, config_name, os.environ[config_name])
             cls.API_TIMEOUT = parse_api_timeout(
                 os.environ.get("API_TIMEOUT", cls.DEFAULT_API_TIMEOUT)
             )
@@ -303,6 +323,7 @@ class Config:
             "TEST_INFO_PATH": "INFO_PATH",
             "TEST_STORY_SUMMARY_PATH": "STORY_SUMMARY_PATH",
             "TEST_TM_PATH": "TM_PATH",
+            "TEST_TM_REVIEWED_PATH": "TM_REVIEWED_PATH",
         }
         for env_k, cfg_k in env_mapping.items():
             val = os.environ.get(env_k)
@@ -312,10 +333,23 @@ class Config:
         for k, v in cfg_data.items():
             setattr(cls, k, v)
 
+        cls.TM_REVIEWED_PATH = os.environ.get(
+            "TM_REVIEWED_PATH", cfg_data.get("TM_REVIEWED_PATH")
+        )
+
         cls.CODING_PLAN_API_KEY = os.environ.get("CODING_PLAN_API_KEY")
         cls.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-        cls.SAKURA_BASE_URL = os.environ.get("SAKURA_BASE_URL", cls.SAKURA_BASE_URL)
-        cls.DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", cls.DEEPSEEK_BASE_URL)
+        for config_name in (
+            "SAKURA_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "JOJO_BASE_URL",
+            "JYQF_BASE_URL",
+        ):
+            setattr(
+                cls,
+                config_name,
+                os.environ.get(config_name, getattr(cls, config_name)),
+            )
         cls.API_TIMEOUT = parse_api_timeout(
             os.environ.get(
                 "API_TIMEOUT",
@@ -362,14 +396,23 @@ class ChapterSpec:
     raw_file: str
     translation_file: str
     tm_key: str
+    source_version_id: Optional[str] = None
+    chapter_position: Optional[int] = None
 
 
 def get_chapter_specs(
     raw_dir: str,
     output_dir: str,
     chapter_map: Optional[list] = None,
+    source_manifest_path: Optional[str] = None,
 ) -> List[ChapterSpec]:
     """Resolve a reviewed chapter map, or preserve the legacy flat-directory scan."""
+    if source_manifest_path is not None and (
+        not isinstance(source_manifest_path, str)
+        or not source_manifest_path
+        or source_manifest_path.strip() != source_manifest_path
+    ):
+        raise ValueError("SOURCE_MANIFEST_PATH must be a trimmed relative path string.")
     if chapter_map is None:
         return [
             ChapterSpec(filename, filename, filename)
@@ -383,15 +426,24 @@ def get_chapter_specs(
     translation_paths = set()
     tm_keys = set()
     expected_fields = {"raw_file", "translation_file", "tm_key"}
+    source_manifest = None
     for index, item in enumerate(chapter_map, start=1):
-        if not isinstance(item, dict) or set(item) != expected_fields:
+        if (
+            not isinstance(item, dict)
+            or not expected_fields <= set(item)
+            or not set(item)
+            <= expected_fields | {"source_version_id", "chapter_position"}
+        ):
             raise ValueError(
                 f"CHAPTER_MAP entry {index} must contain exactly "
-                "raw_file, translation_file, and tm_key."
+                "raw_file, translation_file, and tm_key, with optional "
+                "source_version_id and chapter_position."
             )
         raw_file = item["raw_file"]
         translation_file = item["translation_file"]
         tm_key = item["tm_key"]
+        source_version_id = item.get("source_version_id")
+        chapter_position = item.get("chapter_position")
         if (
             not isinstance(raw_file, str)
             or not raw_file.lower().endswith(".md")
@@ -418,6 +470,45 @@ def get_chapter_specs(
         )
         if not raw_path.is_file():
             raise ValueError(f"CHAPTER_MAP entry {index} source must be a regular file.")
+        if "source_version_id" in item:
+            if (
+                not isinstance(source_version_id, str)
+                or not source_version_id
+                or source_version_id.strip() != source_version_id
+                or any(ord(character) < 32 for character in source_version_id)
+            ):
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} has an invalid source_version_id."
+                )
+            if not source_manifest_path:
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} requires SOURCE_MANIFEST_PATH "
+                    "when source_version_id is set."
+                )
+            if source_manifest is None:
+                source_manifest_file = resolve_relative_path(
+                    raw_dir, source_manifest_path
+                )
+                source_manifest = load_manifest(source_manifest_file)
+            source_artifact = verify_manifest_artifact(
+                raw_dir, source_manifest, source_version_id
+            )
+            if (
+                source_artifact["kind"] != "normalized_source"
+                or source_artifact["relative_path"] != raw_file
+            ):
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} source version does not match "
+                    "its normalized raw_file."
+                )
+        if "chapter_position" in item and (
+            isinstance(chapter_position, bool)
+            or not isinstance(chapter_position, int)
+            or chapter_position < 1
+        ):
+            raise ValueError(
+                f"CHAPTER_MAP entry {index} has an invalid chapter_position."
+            )
         if translation_path.exists() and not translation_path.is_file():
             raise ValueError(
                 f"CHAPTER_MAP entry {index} translation target must be a regular file."
@@ -435,7 +526,15 @@ def get_chapter_specs(
         raw_paths.add(raw_identity)
         translation_paths.add(translation_identity)
         tm_keys.add(tm_identity)
-        specs.append(ChapterSpec(raw_file, translation_file, tm_key))
+        specs.append(
+            ChapterSpec(
+                raw_file,
+                translation_file,
+                tm_key,
+                source_version_id,
+                chapter_position,
+            )
+        )
     return specs
 
 
@@ -524,6 +623,17 @@ class PrimaryProviderRoute:
     api_key_env: str
 
 
+SOURCE_AND_KNOWLEDGE_CATEGORIES = (
+    "source_text",
+    "book_knowledge",
+)
+FULL_TRANSLATION_CATEGORIES = (
+    "source_text",
+    "translation_text",
+    "book_knowledge",
+)
+
+
 def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
     if not isinstance(model_name, str) or not model_name.strip():
         raise ValueError("A non-empty model name is required for provider routing.")
@@ -541,6 +651,18 @@ def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
             Config.SAKURA_BASE_URL,
             "SAKURA_API_KEY",
         )
+    if lowered_name == "gpt-6-luna" or lowered_name.startswith("gpt-6-luna-"):
+        return PrimaryProviderRoute(
+            "jojo",
+            Config.JOJO_BASE_URL,
+            "JOJO_API_KEY",
+        )
+    if lowered_name == "deepseek-v4.1-flash":
+        return PrimaryProviderRoute(
+            "jyqf",
+            Config.JYQF_BASE_URL,
+            "JYQF_API_KEY",
+        )
     if lowered_name.startswith("deepseek-"):
         return PrimaryProviderRoute(
             "deepseek",
@@ -549,7 +671,8 @@ def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
         )
     raise ValueError(
         "Unsupported model name for primary provider routing; "
-        "supported names must start with sakura-, qwen3.6-plus, or deepseek-."
+        "supported names must start with sakura-, qwen3.6-plus, deepseek-, "
+        "or use the configured gpt-6-luna/deepseek-v4.1-flash aliases."
     )
 
 
@@ -576,6 +699,51 @@ def _is_loopback_url(base_url: str) -> bool:
         return False
 
 
+def validate_provider_configuration() -> None:
+    """Validate every configured pipeline stage before reading source chapters."""
+    required_keys = set()
+    stage_requests = [
+        (Config.INITIAL_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
+        (Config.PROOFREAD_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
+        (Config.PROOFREAD_MODEL, FULL_TRANSLATION_CATEGORIES),
+        (Config.STYLE_MODEL, FULL_TRANSLATION_CATEGORIES),
+    ]
+    if Config.STRICT_REFLECTION_MODE:
+        stage_requests.append(
+            (Config.INITIAL_MODEL, FULL_TRANSLATION_CATEGORIES)
+        )
+    for model, data_categories in stage_requests:
+        route = get_primary_provider_route(model)
+        base_url = validate_provider_base_url(get_base_url(route.base_url))
+        endpoint_is_local = _is_loopback_url(base_url)
+        require_provider_data_authorized(
+            route.provider_id,
+            data_categories,
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=endpoint_is_local,
+        )
+        if not endpoint_is_local:
+            required_keys.add(route.api_key_env)
+        if Config.GEMINI_FALLBACK_ENABLED:
+            require_provider_data_authorized(
+                "gemini",
+                data_categories,
+                Config.PROVIDER_DATA_POLICY,
+            )
+            required_keys.add("GEMINI_API_KEY")
+    if "source_text" in Config.PROVIDER_DATA_POLICY.get(
+        "gemini", frozenset()
+    ):
+        required_keys.add("GEMINI_API_KEY")
+    missing = sorted(name for name in required_keys if not get_api_key(name))
+    if os.environ.get("MOCK_SERVER_PORT"):
+        missing = [name for name in missing if name != "GEMINI_API_KEY"]
+    if missing:
+        raise RuntimeError(
+            f"Missing required provider credentials: {', '.join(missing)}"
+        )
+
+
 def validate_provider_base_url(base_url: str) -> str:
     if not isinstance(base_url, str) or not base_url or any(
         character.isspace() for character in base_url
@@ -599,13 +767,13 @@ def validate_provider_base_url(base_url: str) -> str:
     return base_url
 
 
-def get_openai_client(
+def resolve_openai_client_settings(
     base_url: str,
     api_key: Optional[str],
     *,
     provider_id: Optional[str] = None,
     data_categories=None,
-) -> AsyncOpenAI:
+) -> Tuple[str, str]:
     resolved_base_url = validate_provider_base_url(get_base_url(base_url))
     require_provider_data_authorized(
         provider_id,
@@ -617,12 +785,28 @@ def get_openai_client(
         if not _is_loopback_url(resolved_base_url):
             raise RuntimeError("A provider-specific API key is required for this endpoint.")
         api_key = "local-no-auth"
+    return resolved_base_url, api_key
+
+
+def get_openai_client(
+    base_url: str,
+    api_key: Optional[str],
+    *,
+    provider_id: Optional[str] = None,
+    data_categories=None,
+) -> AsyncOpenAI:
+    resolved_base_url, resolved_api_key = resolve_openai_client_settings(
+        base_url,
+        api_key,
+        provider_id=provider_id,
+        data_categories=data_categories,
+    )
     http_client = DefaultAsyncHttpxClient(
         timeout=Config.API_TIMEOUT,
         follow_redirects=False,
     )
     return AsyncOpenAI(
-        api_key=api_key,
+        api_key=resolved_api_key,
         base_url=resolved_base_url,
         timeout=Config.API_TIMEOUT,
         http_client=http_client,
@@ -780,6 +964,22 @@ class TranslationPipeline:
     def __init__(self):
         if not Config.WORKSPACE_DIR:
             Config.load_config()
+        reject_knowledge_draft_path(Config.GLOSSARY_PATH, "glossary input")
+        reject_knowledge_draft_path(
+            Config.STORY_SUMMARY_PATH, "story summary input"
+        )
+        self.story_summary = ""
+        if os.path.exists(Config.STORY_SUMMARY_PATH):
+            if Path(Config.STORY_SUMMARY_PATH).suffix.lower() == ".json":
+                self.story_summary = load_reviewed_story_summary(
+                    Config.STORY_SUMMARY_PATH,
+                    Config.RAW_DIR,
+                    Config.SOURCE_MANIFEST_PATH,
+                )
+            else:
+                self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
+        else:
+            self.story_summary = "尚无手动配置的故事概要。"
         self.info = load_json(Config.INFO_PATH)
         self.rag = RAGEngine(
             Config.TM_PATH,
@@ -787,12 +987,11 @@ class TranslationPipeline:
             Config.GUIDELINES_PATH,
             api_timeout=Config.API_TIMEOUT,
             provider_data_policy=Config.PROVIDER_DATA_POLICY,
+            source_root=Config.RAW_DIR,
+            source_manifest_path=Config.SOURCE_MANIFEST_PATH,
+            reviewed_tm_path=Config.TM_REVIEWED_PATH,
+            translation_root=Config.OUTPUT_DIR,
         )
-        self.story_summary = ""
-        if os.path.exists(Config.STORY_SUMMARY_PATH):
-            self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
-        else:
-            self.story_summary = "尚无手动配置的故事概要。"
 
     def _get_agent_instruction(self, agent_dir: str) -> str:
         # 1. Custom or legacy lookup inside the project workspace directory
@@ -855,7 +1054,9 @@ class TranslationPipeline:
 
     async def _build_run_context(self, chapter_filename: str, raw_text: str, current_chap_num: Optional[float]) -> dict:
         guidelines = self.rag.get_partitioned_guidelines(
-            chapter_filename, current_raw_text=raw_text
+            chapter_filename,
+            current_raw_text=raw_text,
+            chapter_position=current_chap_num,
         )
         tm_matches = await self.rag.query_translation_memory(raw_text)
         tm_prompt = ""
@@ -888,7 +1089,7 @@ class TranslationPipeline:
     async def _run_context_annotation(self, raw_text: str, static_context: str) -> List[Dict[str, str]]:
         annotator_instr = "你是一个日语轻小说上下文与发言人推断专家。你的任务是阅读给定的日文段落数组，推断每句话或每段的发言人，并补充省略的主语（如果有的话）。"
         
-        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        raw_paras = split_paragraphs(raw_text)
         json_input = json.dumps([{"paragraph": p} for p in raw_paras], ensure_ascii=False, indent=2)
         
         prompt = (
@@ -922,11 +1123,7 @@ class TranslationPipeline:
             annotator_instr,
             response_schema=annotator_schema,
             static_context=static_context,
-            data_categories=[
-                "source_text",
-                "translation_text",
-                "book_knowledge",
-            ],
+            data_categories=SOURCE_AND_KNOWLEDGE_CATEGORIES,
             **Config.PROOFREADER_PARAMS
         )
         
@@ -945,7 +1142,7 @@ class TranslationPipeline:
         translator_instr = self._get_agent_instruction("初译 Agent")
         
         # 1. Parse raw text into JSON array of paragraphs
-        raw_paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+        raw_paras = split_paragraphs(raw_text)
         
         # 2. Build the JSON input block
         input_data = []
@@ -993,11 +1190,7 @@ class TranslationPipeline:
             translator_instr,
             response_schema=translator_schema,
             static_context=static_context,
-            data_categories=[
-                "source_text",
-                "translation_text",
-                "book_knowledge",
-            ],
+            data_categories=SOURCE_AND_KNOWLEDGE_CATEGORIES,
             **Config.TRANSLATOR_PARAMS
         )
         res = await translator.call(prompt)
@@ -1050,7 +1243,7 @@ class TranslationPipeline:
                 proofread_instr,
                 response_schema=proofread_schema,
                 static_context=static_context,
-                data_categories=["source_text", "translation_text", "book_knowledge"],
+                data_categories=FULL_TRANSLATION_CATEGORIES,
                 **Config.PROOFREADER_PARAMS,
             )
             
@@ -1134,7 +1327,7 @@ class TranslationPipeline:
                     translator_instr,
                     response_schema=translator_schema,
                     static_context=static_context,
-                    data_categories=["source_text", "translation_text", "book_knowledge"],
+                    data_categories=FULL_TRANSLATION_CATEGORIES,
                     **Config.TRANSLATOR_PARAMS,
                 )
                 try:
@@ -1167,7 +1360,7 @@ class TranslationPipeline:
             polish_instr,
             response_schema=polish_schema,
             static_context=static_context,
-            data_categories=["source_text", "translation_text", "book_knowledge"],
+            data_categories=FULL_TRANSLATION_CATEGORIES,
             **Config.POLISHER_PARAMS,
         )
         require_aligned_paragraphs(raw_paras, corrected_list, "Proofreading")
@@ -1219,6 +1412,25 @@ class TranslationPipeline:
                 Config.OUTPUT_DIR, spec.translation_file, allow_missing=True
             )
             raw_text = None
+
+        pending_transaction = has_pending_chapter_transaction(
+            Config.OUTPUT_DIR, spec.translation_file, spec.tm_key
+        )
+        if pending_transaction:
+            if raw_text is None:
+                raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+            recovered = recover_chapter_translation(
+                Config.OUTPUT_DIR,
+                raw_text,
+                spec,
+                self.rag,
+                self._validate_transaction_translation,
+            )
+            if recovered:
+                print(f"RECOVERED: {spec.translation_file}")
+                return
+
         if output_path.exists():
             tm_chapters = self.rag.tm_data.get("chapters", {})
             if (
@@ -1237,6 +1449,7 @@ class TranslationPipeline:
         if raw_text is None:
             raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
         if not raw_text.strip():
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
             print(f"Chapter {spec.raw_file} is empty. Writing empty output.")
             if mapped_paths:
                 write_new_relative_text(
@@ -1247,7 +1460,9 @@ class TranslationPipeline:
                     Config.OUTPUT_DIR, spec.translation_file, ""
                 )
             return
-        current_chap_num = extract_chapter_num(spec.raw_file)
+        current_chap_num = spec.chapter_position
+        if current_chap_num is None:
+            current_chap_num = extract_chapter_num(spec.raw_file)
         if current_chap_num is None:
             current_chap_num = extract_chapter_num(spec.tm_key)
         
@@ -1272,51 +1487,16 @@ class TranslationPipeline:
         
         if final_list:
             raw_paras = split_paragraphs(raw_text)
-            require_aligned_paragraphs(raw_paras, final_list, "Final translation")
-            for index, (raw_paragraph, translated_paragraph) in enumerate(
-                zip(raw_paras, final_list), start=1
-            ):
-                mismatch = self._check_quote_mismatch(
-                    raw_paragraph, translated_paragraph
-                )
-                if mismatch:
-                    raise ValueError(
-                        f"Final translation changed Japanese quote marks in "
-                        f"paragraph {index} (difference: {mismatch})."
-                    )
+            self._validate_final_paragraphs(raw_paras, final_list)
             final_text = "\n\n".join(final_list)
-            pairs = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, final_list)]
-            source_provenance = {
-                "schema_version": 1,
-                "producer": "pipeline",
-                "raw_file": spec.raw_file,
-                "raw_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
-                "translation_file": spec.translation_file,
-                "translation_sha256": hashlib.sha256(
-                    final_text.encode("utf-8")
-                ).hexdigest(),
-                "pair_mappings": [
-                    {
-                        "pair_index": index,
-                        "raw_paragraph_indices": [index],
-                        "translation_paragraph_indices": [index],
-                        "trace_status": "matched",
-                    }
-                    for index in range(1, len(pairs) + 1)
-                ],
-            }
-            if mapped_paths:
-                write_new_relative_text(
-                    Config.OUTPUT_DIR, spec.translation_file, final_text
-                )
-            else:
-                write_new_child_text(
-                    Config.OUTPUT_DIR, spec.translation_file, final_text
-                )
-            self.rag.update_translation_memory(
-                spec.tm_key,
-                pairs,
-                source_provenance=source_provenance,
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+            commit_chapter_translation(
+                Config.OUTPUT_DIR,
+                raw_text,
+                spec,
+                final_text,
+                self.rag,
+                self._validate_transaction_translation,
             )
             print(f"SUCCESS: {spec.translation_file}")
         else:
@@ -1324,53 +1504,69 @@ class TranslationPipeline:
                 f"FAILED: {spec.raw_file}: Refinement returned empty results."
             )
 
-    async def run_all(self):
-        required_keys = set()
-        stage_requests = (
-            (
-                Config.INITIAL_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-            (
-                Config.PROOFREAD_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-            (
-                Config.STYLE_MODEL,
-                {"source_text", "translation_text", "book_knowledge"},
-            ),
-        )
-        for model, data_categories in stage_requests:
-            route = get_primary_provider_route(model)
-            base_url = validate_provider_base_url(get_base_url(route.base_url))
-            endpoint_is_local = _is_loopback_url(base_url)
-            require_provider_data_authorized(
-                route.provider_id,
-                data_categories,
-                Config.PROVIDER_DATA_POLICY,
-                endpoint_is_local=endpoint_is_local,
-            )
-            if not endpoint_is_local:
-                required_keys.add(route.api_key_env)
-            if Config.GEMINI_FALLBACK_ENABLED:
-                require_provider_data_authorized(
-                    "gemini",
-                    data_categories,
-                    Config.PROVIDER_DATA_POLICY,
-                )
-                required_keys.add("GEMINI_API_KEY")
-        if "source_text" in Config.PROVIDER_DATA_POLICY.get(
-            "gemini", frozenset()
+    def _validate_final_paragraphs(self, raw_paras, translated_paras):
+        require_aligned_paragraphs(raw_paras, translated_paras, "Final translation")
+        for index, (raw_paragraph, translated_paragraph) in enumerate(
+            zip(raw_paras, translated_paras), start=1
         ):
-            required_keys.add("GEMINI_API_KEY")
-        missing = sorted(name for name in required_keys if not get_api_key(name))
-        if os.environ.get("MOCK_SERVER_PORT"):
-            missing = [name for name in missing if name != "GEMINI_API_KEY"]
-        if missing:
-            raise RuntimeError(f"Missing required provider credentials: {', '.join(missing)}")
-            
+            mismatch = self._check_quote_mismatch(
+                raw_paragraph, translated_paragraph
+            )
+            if mismatch:
+                raise ValueError(
+                    f"Final translation changed Japanese quote marks in "
+                    f"paragraph {index} (difference: {mismatch})."
+                )
+
+    def _validate_transaction_translation(self, raw_text, translation_text):
+        raw_paras = split_paragraphs(raw_text)
+        translated_paras = split_paragraphs(translation_text)
+        self._validate_final_paragraphs(raw_paras, translated_paras)
+        if "\n\n".join(translated_paras) != translation_text:
+            raise ValueError("Chapter transaction translation is not normalized.")
+
+    def _verify_chapter_source_snapshot(self, spec, raw_text, mapped_paths):
+        current_text = (
+            read_relative_text(Config.RAW_DIR, spec.raw_file)
+            if mapped_paths
+            else read_child_text(Config.RAW_DIR, spec.raw_file)
+        )
+        if current_text != raw_text:
+            raise ValueError(
+                f"Source chapter {spec.raw_file} changed during processing."
+            )
+
+        if spec.source_version_id is None:
+            return
+        if not Config.SOURCE_MANIFEST_PATH:
+            raise ValueError(
+                "A source manifest is required to verify the chapter version."
+            )
+        manifest_path = resolve_relative_path(
+            Config.RAW_DIR,
+            Config.SOURCE_MANIFEST_PATH,
+        )
+        manifest = load_manifest(manifest_path)
+        artifact = verify_manifest_artifact(
+            Config.RAW_DIR,
+            manifest,
+            spec.source_version_id,
+        )
+        if (
+            artifact["kind"] != "normalized_source"
+            or artifact["relative_path"] != spec.raw_file
+        ):
+            raise ValueError(
+                "Source version no longer matches the configured chapter."
+            )
+
+    async def run_all(self):
+        validate_provider_configuration()
         chapters = get_chapter_specs(
-            Config.RAW_DIR, Config.OUTPUT_DIR, Config.CHAPTER_MAP
+            Config.RAW_DIR,
+            Config.OUTPUT_DIR,
+            Config.CHAPTER_MAP,
+            Config.SOURCE_MANIFEST_PATH,
         )
         if not chapters:
             raise RuntimeError(

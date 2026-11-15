@@ -1,3 +1,5 @@
+import asyncio
+import io
 import os
 import sys
 import json
@@ -6,6 +8,26 @@ import tempfile
 import shutil
 import subprocess
 import urllib.request
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts.ingest_local_sources import main as ingest_local_sources_main
+from scripts.run_kakuyomu_workflow import run_workflow
+from source_ingestion import collect_source, materialize_episode_markdown
+from tests.test_kakuyomu_page_source import (
+    EPISODE_ID as KAKUYOMU_EPISODE_ID,
+    EXPECTED_TEXT as KAKUYOMU_EXPECTED_TEXT,
+    PAGE_URL as KAKUYOMU_PAGE_URL,
+    PAGE_HTML as KAKUYOMU_PAGE_HTML,
+    ROBOTS as KAKUYOMU_ROBOTS,
+    WORK_ID as KAKUYOMU_WORK_ID,
+    WORK_URL as KAKUYOMU_WORK_URL,
+    FakeClock as KakuyomuFakeClock,
+    FakeOpener as KakuyomuFakeOpener,
+    make_adapter as make_kakuyomu_adapter,
+    make_work_page_html as make_kakuyomu_work_page_html,
+)
 
 class E2ETestSuite(unittest.TestCase):
     @classmethod
@@ -154,6 +176,301 @@ class E2ETestSuite(unittest.TestCase):
         if proc.returncode != 0:
             print(f"\n--- ALIGN RUN FAILED ---\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}\n--------------------------")
         return proc
+
+    def test_local_source_archive_flows_through_versioned_mock_translation(self):
+        source_input_dir = os.path.join(self.test_dir, "source-input")
+        os.makedirs(source_input_dir)
+        source_text = "人工合成の試験文です。"
+        source_bytes = source_text.encode("utf-8")
+        with open(
+            os.path.join(source_input_dir, "episode_0001.txt"), "wb"
+        ) as source_file:
+            source_file.write(source_bytes)
+
+        catalog = {
+            "schema_version": 1,
+            "work_id": "synthetic-e2e-work",
+            "episodes": [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Synthetic episode",
+                    "position": 1,
+                    "relative_path": "episode_0001.txt",
+                }
+            ],
+        }
+        with open(
+            os.path.join(source_input_dir, "catalog.json"),
+            "w",
+            encoding="utf-8",
+        ) as catalog_file:
+            json.dump(catalog, catalog_file, ensure_ascii=False)
+
+        ingest_stdout = io.StringIO()
+        ingest_stderr = io.StringIO()
+        with redirect_stdout(ingest_stdout), redirect_stderr(ingest_stderr):
+            ingest_result = ingest_local_sources_main(
+                [
+                    "--source-root",
+                    source_input_dir,
+                    "--catalog",
+                    "catalog.json",
+                    "--output-root",
+                    self.raw_dir,
+                ]
+            )
+
+        self.assertEqual(ingest_result, 0)
+        self.assertEqual(ingest_stderr.getvalue(), "")
+        self.assertEqual(json.loads(ingest_stdout.getvalue())["status"], "complete")
+        self.assertNotIn(source_text, ingest_stdout.getvalue())
+        self.assertEqual(
+            Path(os.path.join(source_input_dir, "episode_0001.txt")).read_bytes(),
+            source_bytes,
+        )
+
+        normalized = materialize_episode_markdown(
+            self.raw_dir,
+            work_id="synthetic-e2e-work",
+            episode_id="episode-1",
+        )
+        self._assert_versioned_mock_translation(
+            normalized,
+            source_text=source_text,
+            tm_key="synthetic-episode-1",
+        )
+
+    def test_kakuyomu_page_archive_flows_through_versioned_mock_translation(self):
+        adapter, opener, _ = make_kakuyomu_adapter()
+        report = collect_source(
+            adapter,
+            root=self.raw_dir,
+            work_id=KAKUYOMU_WORK_ID,
+        )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(
+            [request[0] for request in opener.requests],
+            ["https://kakuyomu.jp/robots.txt", KAKUYOMU_PAGE_URL],
+        )
+        normalized = materialize_episode_markdown(
+            self.raw_dir,
+            work_id=KAKUYOMU_WORK_ID,
+            episode_id=KAKUYOMU_EPISODE_ID,
+        )
+        self.assertEqual(
+            Path(self.raw_dir, normalized["relative_path"]).read_bytes(),
+            KAKUYOMU_EXPECTED_TEXT.encode("utf-8"),
+        )
+        self._assert_versioned_mock_translation(
+            normalized,
+            source_text=KAKUYOMU_EXPECTED_TEXT,
+            tm_key="synthetic-kakuyomu-episode",
+        )
+
+    def test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation(self):
+        from kakuyomu_page_source import discover_kakuyomu_work_catalog
+        from pipeline import Config
+
+        work_html = make_kakuyomu_work_page_html(
+            KAKUYOMU_WORK_ID,
+            [(KAKUYOMU_EPISODE_ID, "第1話 はじまり")],
+        )
+        config_path = os.path.join(self.test_dir, "pipeline-config.json")
+        self.write_file(config_path, {"synthetic": True}, is_json=True)
+        opener = KakuyomuFakeOpener(
+            {
+                "https://kakuyomu.jp/robots.txt": (
+                    KAKUYOMU_ROBOTS.encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                ),
+                KAKUYOMU_WORK_URL: (
+                    work_html.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+                KAKUYOMU_PAGE_URL: (
+                    KAKUYOMU_PAGE_HTML.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+            }
+        )
+        clock = KakuyomuFakeClock()
+
+        def discover_test_work(work_url, **options):
+            return discover_kakuyomu_work_catalog(
+                work_url,
+                opener=opener,
+                sleep=clock.sleep,
+                clock=clock.now,
+                **options,
+            )
+
+        def load_test_config(*, config_file):
+            self.assertEqual(config_file, config_path)
+
+        workflow_output = io.StringIO()
+        with (
+            patch.multiple(
+                Config,
+                WORKSPACE_DIR=self.test_dir,
+                RAW_DIR=self.raw_dir,
+                OUTPUT_DIR=self.output_dir,
+                CHAPTER_MAP=None,
+                SOURCE_MANIFEST_PATH=None,
+                TM_REVIEWED_PATH=None,
+                GLOSSARY_PATH=os.path.join(
+                    self.knowledge_dir, "Glossary.json"
+                ),
+                GUIDELINES_PATH=os.path.join(
+                    self.knowledge_dir, "guidelines.txt"
+                ),
+                INFO_PATH=os.path.join(
+                    self.knowledge_dir, "作品基本信息.json"
+                ),
+                STORY_SUMMARY_PATH=os.path.join(
+                    self.knowledge_dir, "STORY_SUMMARY.md"
+                ),
+                TM_PATH=os.path.join(
+                    self.knowledge_dir, "translation_memory.json"
+                ),
+                PROVIDER_DATA_POLICY={},
+                GEMINI_FALLBACK_ENABLED=False,
+                STRICT_REFLECTION_MODE=False,
+                MIN_JITTER=0,
+                MAX_JITTER=0,
+            ),
+            patch(
+                "rag_engine.RAGEngine._generate_embedding_sync",
+                return_value=[0.1] * 768,
+            ),
+            redirect_stdout(workflow_output),
+        ):
+            report = run_workflow(
+                source_root=self.raw_dir,
+                work_url=KAKUYOMU_WORK_URL,
+                translation_root=self.output_dir,
+                config_file=config_path,
+                discovered_catalog="source_catalog.discovered.json",
+                config_loader=load_test_config,
+                discovery_factory=discover_test_work,
+            )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(
+            report["discovered_catalog"],
+            "source_catalog.discovered.json",
+        )
+        discovered_catalog = json.loads(
+            Path(self.raw_dir, report["discovered_catalog"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(discovered_catalog["work_id"], KAKUYOMU_WORK_ID)
+        self.assertEqual(
+            discovered_catalog["episodes"][0]["page_url"],
+            KAKUYOMU_PAGE_URL,
+        )
+        self.assertEqual(
+            [request[0] for request in opener.requests],
+            [
+                "https://kakuyomu.jp/robots.txt",
+                KAKUYOMU_WORK_URL,
+                KAKUYOMU_PAGE_URL,
+            ],
+        )
+        self.assertEqual(clock.sleeps, [2, 2])
+        self.assertNotIn(KAKUYOMU_EXPECTED_TEXT, workflow_output.getvalue())
+        translated = Path(
+            self.output_dir,
+            f"episode-0001-{KAKUYOMU_EPISODE_ID}.md",
+        ).read_text(encoding="utf-8")
+        self.assertIn("【润色】", translated)
+
+        tm_path = Path(self.knowledge_dir, "translation_memory.json")
+        tm = json.loads(tm_path.read_text(encoding="utf-8"))
+        tm_key = f"kakuyomu:{KAKUYOMU_WORK_ID}:{KAKUYOMU_EPISODE_ID}"
+        self.assertEqual(
+            "\n\n".join(pair["raw"] for pair in tm["chapters"][tm_key]),
+            KAKUYOMU_EXPECTED_TEXT,
+        )
+        self.assertEqual(
+            tm["source_provenance"][tm_key]["source_version_id"],
+            report["episodes"][0]["source_version_id"],
+        )
+
+    def _assert_versioned_mock_translation(self, normalized, *, source_text, tm_key):
+        chapter_map = [
+            {
+                "raw_file": normalized["relative_path"],
+                "translation_file": "pilot-chapter.md",
+                "tm_key": tm_key,
+                "source_version_id": normalized["version_id"],
+            }
+        ]
+
+        from pipeline import Config, TranslationPipeline
+
+        pipeline_output = io.StringIO()
+        with (
+            patch.multiple(
+                Config,
+                WORKSPACE_DIR=self.test_dir,
+                RAW_DIR=self.raw_dir,
+                OUTPUT_DIR=self.output_dir,
+                CHAPTER_MAP=chapter_map,
+                SOURCE_MANIFEST_PATH="source_manifest.json",
+                TM_REVIEWED_PATH=None,
+                GLOSSARY_PATH=os.path.join(
+                    self.knowledge_dir, "Glossary.json"
+                ),
+                GUIDELINES_PATH=os.path.join(
+                    self.knowledge_dir, "guidelines.txt"
+                ),
+                INFO_PATH=os.path.join(
+                    self.knowledge_dir, "作品基本信息.json"
+                ),
+                STORY_SUMMARY_PATH=os.path.join(
+                    self.knowledge_dir, "STORY_SUMMARY.md"
+                ),
+                TM_PATH=os.path.join(
+                    self.knowledge_dir, "translation_memory.json"
+                ),
+                PROVIDER_DATA_POLICY={},
+                GEMINI_FALLBACK_ENABLED=False,
+                STRICT_REFLECTION_MODE=False,
+                MIN_JITTER=0,
+                MAX_JITTER=0,
+            ),
+            patch(
+                "rag_engine.RAGEngine._generate_embedding_sync",
+                return_value=[0.1] * 768,
+            ),
+            redirect_stdout(pipeline_output),
+        ):
+            asyncio.run(TranslationPipeline().run_all())
+
+        translation_path = os.path.join(self.output_dir, "pilot-chapter.md")
+        with open(translation_path, "r", encoding="utf-8") as translation_file:
+            translation_text = translation_file.read()
+        self.assertIn("【润色】", translation_text)
+        self.assertNotIn(source_text, pipeline_output.getvalue())
+
+        tm_path = os.path.join(
+            self.knowledge_dir, "translation_memory.json"
+        )
+        with open(tm_path, "r", encoding="utf-8") as tm_file:
+            translation_memory = json.load(tm_file)
+        self.assertEqual(
+            "\n\n".join(
+                pair["raw"]
+                for pair in translation_memory["chapters"][tm_key]
+            ),
+            source_text,
+        )
+        self.assertEqual(
+            translation_memory["source_provenance"][tm_key]["source_version_id"],
+            normalized["version_id"],
+        )
 
     # ==========================================
     # TIER 1: Feature Coverage (30 Cases)
