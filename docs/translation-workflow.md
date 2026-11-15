@@ -55,7 +55,7 @@ python scripts/run_kakuyomu_workflow.py `
 
 审批 CLI 展示每条映射并要求操作者输入计划的完整 SHA-256。摘要绑定作品 ID、解析后的原文/译文根目录、catalog/manifest 路径，以及逐话 ID、位置、标题、来源文件与版本、译文目标和 TM 键。审核者标签与时间一并写入新回执。回执是本地普通 JSON 文件，未签名、未认证审核者身份；它记录人工声明，不证明审核者身份或判断质量。计划或来源身份变化会使旧摘要/回执失效。
 
-当前分支经 Kakuyomu 编排入口执行翻译时要求 `--approval-receipt`。无回执时工作流在创建 `TranslationPipeline` 和调用 Provider 前返回 `approval_required`。同一映射因已存在译文目标而重新计划时，可继续使用匹配的旧回执；该例外仅适用于计划没有其他问题且全部来源仍通过核验的情况。执行前还会检查既有译文和 TM 是否与本次来源及事务状态一致，不一致则停止。此审批门禁尚未合并到 `origin/main`；验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁当前工作分支)。
+`main` 经 Kakuyomu 编排入口执行翻译时要求 `--approval-receipt`。无回执时工作流在创建 `TranslationPipeline` 和调用 Provider 前返回 `approval_required`。同一映射因已存在译文目标而重新计划时，可继续使用匹配的旧回执；该例外仅适用于计划没有其他问题且全部来源仍通过核验的情况。执行前还会检查既有译文和 TM 是否与本次来源及事务状态一致，不一致则停止。此门禁由 PR #62 合并；验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁-pr-62-已合并)。
 
 ## 上下文来源
 

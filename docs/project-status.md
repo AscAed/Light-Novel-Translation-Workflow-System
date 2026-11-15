@@ -1,12 +1,12 @@
 # 项目现状
 
-> 主线基线：截至 2026-11-16，本工作分支基于 `origin/main` HEAD `3abc69eb5c13cc2c86780cd08748d5ecc7ba82d2`；`main` 包含 PR #60 的 Kakuyomu 只读映射预览。该基线的完整测试结果为非 E2E unittest 358 项、0 失败、4 项平台能力跳过，以及本地 mock E2E 7 项通过（245.766 秒）；管理员安全路径专项为 11 项中 10 项通过、仅 Windows FIFO 跳过，3 个符号链接用例均通过。当前分支另增本地翻译计划审批门禁，详情与验证见[当前工作分支记录](development.md#2026-11-16-翻译计划审批门禁当前工作分支)，不要把它描述为已合并主线能力。PR #60 的 Codex 审查无 findings，CodeRabbit 在合并时仍为 `in_progress`，未观察到 CI status checks。Kakuyomu source-only 采集完成主页声明的 88/88 话，manifest 中 267 个 artifact 文件曾全部通过哈希校验；映射和原文格式人工验收仍待完成。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)和[开发与验证](development.md)。
+> 主线基线：截至 2026-11-16，`main` HEAD `c988c4b749a9972a89edffe9bc2c4bc867ebb3da` 已包含 PR #62 的 Kakuyomu 翻译计划审批门禁。当前代码树非 E2E unittest 为 368 项、0 失败、4 项平台能力跳过；本地 mock E2E 为 7 项通过（253.608 秒）；管理员安全路径专项为 11 项中 10 项通过、仅 Windows FIFO 跳过，3 个符号链接用例均通过。PR #62 没有配置状态检查；本地验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁-pr-62-已合并)。PR #60 的 Codex 审查无 findings，CodeRabbit 在合并时仍为 `in_progress`。Kakuyomu source-only 采集完成主页声明的 88/88 话，manifest 中 267 个 artifact 文件曾全部通过哈希校验；映射和原文格式人工验收仍待完成。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)和[开发与验证](development.md)。
 
-## 当前工作分支增量
+## 翻译计划审批门禁（PR #62）
 
 - `部分实现` Kakuyomu 编排入口的翻译计划人工审批：计划摘要绑定原文/译文根目录、catalog/manifest 和逐话来源版本及目标映射；审批 CLI 展示映射并要求人工输入完整摘要，缺少匹配回执时在创建该入口的流水线前停止。其他直接调用流水线的路径未被此门禁覆盖。回执为本地未签名 JSON，审核者标签未认证；不构成可信身份或语义质量证明。
-- `已验证` 当前分支非 E2E unittest 共 368 项、0 失败、4 项平台能力跳过；定向回归 25 项通过，审批路径 synthetic E2E 1 项通过；完整 mock E2E runner 7 项通过（253.608 秒）。用户另行提供的安全路径结果为 9 项、3 项跳过，未绑定此 checkout；本会话管理员复跑当前 checkout 为 11 项、10 项通过、1 项 Windows FIFO 跳过。
-- `未验证` 真实 Provider/API、人工检查 88 话映射与文本格式、Notion、EPUB 阅读器及部署。审批门禁仍待完整回归和 PR 审查。
+- `已验证` PR #62 合并前，非 E2E unittest 共 368 项、0 失败、4 项平台能力跳过；定向回归 25 项通过，审批路径 synthetic E2E 1 项通过；完整 mock E2E runner 7 项通过（253.608 秒）。用户另行提供的安全路径结果为 9 项、3 项跳过，未绑定此 checkout；管理员复跑为 11 项、10 项通过、1 项 Windows FIFO 跳过。
+- `未验证` 真实 Provider/API、人工检查 88 话映射与文本格式、Notion、EPUB 阅读器及部署。
 > 引用会话范围：本次续接已分页读取两个引用会话至 `hasMore=false`；会话仅作目标/决策线索，当前能力以工作树、测试及文档记录为准。
 
 > 2026-11-15 历史复核快照：分支 `codex/translation-workflow-20261115`、HEAD `c3f313b`；当时工作区包含此前的未提交修改和任务增量。两个引用会话已分页读取至 `hasMore=false`，并以当时源码交叉核对。URL adapter 增量后的相关回归和 mock E2E 见[开发与验证](development.md#2026-11-15-当前-checkout-回归验证)；来源到版本化 mock 翻译端到端路径见同日端到端记录。当前状态以本文首段及开发与验证中的最新检查点为准。
