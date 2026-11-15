@@ -189,4 +189,5 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 验证：提交前同一代码树完整非 E2E unittest 348 项运行、0 失败、4 项普通 Windows 权限/平台限制跳过；管理员 PowerShell 下路径安全模块 11 项运行、10 项通过、1 项 FIFO 跳过，全部 3 个符号链接用例通过；当前 HEAD 聚焦回归 225 项通过；同一代码树 mock E2E 7 项通过（230.911 秒）。`compileall`、提交前 `git diff --check` 和文档链接检查通过。mock/synthetic 结果不代表真实 Provider、Notion、人工翻译质量或部署验收。
 - 用户提供的路径测试输出为 9 项运行、3 项跳过，但没有运行时 HEAD 或逐项跳过原因，不绑定到当前 commit。管理员运行的 11 项结果是当前代码测试方法集合的权限复核。
 - 本节首次远端复核时 PR #58 为 open、`mergeable=true`，head `92c9095`；该文档提交的 workflow-runs 查询为空。11 个此前未解决的 inline review threads 均已回复并解决。PR review submissions 只有 `COMMENTED`，没有 `APPROVED`；读取 `main` 分支保护规则因 GitHub 集成返回 403，所需审批/检查门槛未知，因此未合并。之后的提交仅限 Markdown，精确 head 和重新查询结果以 PR 页面为准。PR #56 已独立合并，不能与 #58 混为一谈。
-- PR #58 描述已更新为当前 commit 的验证数字和限制。仍待独立 reviewer 审阅/审批及仓库门槛确认；真实 Provider 的 allowlist/端点、单话翻译与人工验收、Notion、EPUBCheck/阅读器、部署仍未验证。额度状态不可见。
+- 2026-11-16 本机 Provider 配置存在性复核：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY`、`PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。只检查是否存在，未读取密钥或配置值；真实 Provider 单话翻译目前受此阻塞。配置应由凭据所有者通过本机安全方式提供，并在运行前再次验证 allowlist 与目标 Provider。
+- PR #58 描述已更新为当前代码/测试基线、文档 head 和限制。仍待独立 reviewer 审阅/审批及仓库门槛确认；真实 Provider 的 allowlist/端点、单话翻译与人工验收、Notion、EPUBCheck/阅读器、部署仍未验证。额度状态不可见。

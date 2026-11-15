@@ -15,6 +15,7 @@
 - 对当前 HEAD 重跑审查回归聚焦集合：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_review tests.test_source_markdown_materialization tests.test_tm_review tests.test_story_summary_review tests.test_epub_builder tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_source_manifest -q`，225 项通过。
 - `.venv\Scripts\python.exe tests\run_tests.py`：提交前的同一代码树上 7 项本地 mock E2E 通过，230.911 秒，退出码 0；content-filter 与段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
 - Python `compileall`、`git diff --check` 和提交前 Markdown 本地链接目标检查通过。PR #58 的 11 个此前未解决 inline review threads 已逐项回复并解决；当前 PR review submissions 只有 `COMMENTED`，没有 `APPROVED`。该提交的 GitHub Actions workflow-runs 查询为空；读取 `main` 分支保护规则因 GitHub 集成返回 403 而无法验证。PR 未合并，不能以 `mergeable=true` 代替审批或 required checks。
+- 2026-11-16 本机 Provider 配置存在性预检只输出布尔状态：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY` 和 `PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。未读取或输出任何配置值或密钥；当前机器无法执行真实 Provider 单话翻译。
 - 真实 Provider/Notion、人工译文与来源格式验收、EPUBCheck/阅读器和部署仍未验证。用户提供的 `Ran 9 tests ... OK (skipped=3)` 输出未绑定到当前 HEAD，不替代以上专项结果。
 
 ## 2026-11-16 PR 审查回归工作区（提交前历史快照）
