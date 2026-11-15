@@ -152,3 +152,20 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 下一步可直接执行：由用户人工检查已生成章节的代表性段落、U+3000、ruby、标点及目录顺序；随后本地设置已授权的 JOJO/JYQF 最小数据类别 allowlist 与端点/模型配置（不提交或打印密钥），核对确定性 `CHAPTER_MAP`/TM 键，先通过现有契约检查，再运行受控单话真实 Provider 翻译并人工验收。配置缺失时停留在当前 source-only 状态，不要转向其他 Provider 或 Notion。
 - 当前代码/文档工作区按 `git status --short --branch`：分支 `codex/translation-workflow-20261115`，HEAD `c3f313b`，无暂存内容；24 个已修改跟踪文件为 `.env.example`、`README.md`、`docs/architecture.md`、`docs/decisions/README.md`、`docs/development.md`、`docs/handoffs/2026-11-15-translation-workflow.md`、`docs/knowledge-governance.md`、`docs/model-provider-configuration-plan.md`、`docs/project-status.md`、`docs/roadmap.md`、`docs/security-notes.md`、`docs/source-ingestion-and-publication-plan.md`、`docs/translation-workflow.md`、`epub_builder.py`、`pipeline.py`、`scripts/auto_extract_knowledge.py`、`scripts/build_epub_candidate.py`、`source_ingestion.py`、`tests/test_e2e.py`、`tests/test_epub_builder.py`、`tests/test_knowledge_extraction_unit.py`、`tests/test_local_source_ingestion_cli.py`、`tests/test_pipeline_contracts.py`、`utils.py`；5 个未跟踪文件为 `kakuyomu_page_source.py`、`scripts/ingest_kakuyomu_pages.py`、`scripts/run_kakuyomu_workflow.py`、`tests/test_kakuyomu_page_source.py`、`tests/test_kakuyomu_workflow.py`。均保持原样，不暂存、不提交、不清理或重置；忽略目录中的原文/译文不纳入 Git。
 - 额度状态不可见，未判断剩余额度阈值。以上状态可供后续 Codex 直接续接，无需重新调查已完成的目录发现、采集、I3 导出或 U+3000 修复。
+
+## 2026-11-16 续接与 PR 状态
+
+- 当前实现提交：`3ffb7f1eada063095ae9e7d4485977ecd8b597ce`，分支 `codex/translation-workflow-20261115`，已推送到 `origin`。本次提交 41 个文件，包含翻译工作流修复、Kakuyomu 来源 adapter/CLI、回归测试及文档更新；未提交书籍原文、译文或凭据。
+- 验证：完整非 E2E unittest 333 项运行、0 失败、4 跳过；3 项符号链接用例因 Windows `WinError 1314` 无创建权限，1 项 FIFO 因 Windows 不支持 `os.mkfifo`。完整 `tests\run_tests.py` mock E2E 为 7 项通过（229.307 秒），`compileall` 与提交前 `git diff --check` 通过。
+- 符号链接专项：用户提供的历史命令输出为 9 项运行、3 项跳过、0 失败。对当前 checkout 重新运行 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v` 得到 11 项运行、7 项通过、4 项跳过；三个 symlink 用例分别报告 `WinError 1314`，FIFO 用例为平台不支持。结果计数差异说明两次测试使用的测试集合不同；均没有测试失败。
+- 用户明确批准提权尝试，但当前执行器阻止启动管理员 PowerShell；未尝试绕过。若需补跑，请在开始菜单以“管理员身份”打开 PowerShell、批准 UAC，然后执行：
+
+  ```powershell
+  Set-Location -LiteralPath 'D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System'
+  ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  .\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v
+  ```
+
+  第二行应返回 `True`。FIFO 用例在 Windows 上仍可能因 `os.mkfifo` 不可用而正常跳过。
+- GitHub 状态复核：PR #56 已合并；PR #58 指向 `3ffb7f1`，状态仍为 open，虽标记 mergeable，但 review threads 尚未清理且该提交的 workflow-runs 查询为空，因此本轮未合并 PR #58。PR #58 描述已同步当前测试数字和限制；评论的修复状态仍待审阅确认。
+- 剩余人类工作：管理员环境补跑 symlink 用例；人工验收已归档章节的段落、U+3000、ruby、标点及顺序；本地确认 Provider allowlist/端点后执行获授权的单话真实翻译并人工验收。真实 Provider、Notion、EPUB 阅读器和部署未在本轮验证。
