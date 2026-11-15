@@ -185,8 +185,8 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 
 ## 2026-11-16 提交与 PR 状态复核
 
-- 当前分支 `codex/translation-workflow-20261115`，HEAD `e9adc8d83ce4887e0eee52ae466f7846e8574bab`；工作区在本次文档更新前干净，并与 `origin` 同步。`e9adc8d` 将上一节的代码/测试增量提交并推送至 PR #58；书籍原文、译文和凭据没有纳入提交。
+- 当前分支 `codex/translation-workflow-20261115`。代码/测试实现提交 `e9adc8d83ce4887e0eee52ae466f7846e8574bab` 已推送至 PR #58；其后 `92c9095` 及本次后续提交只更新 Markdown 状态，不改变经验证的代码/测试树。书籍原文、译文和凭据没有纳入这些提交。
 - 验证：提交前同一代码树完整非 E2E unittest 348 项运行、0 失败、4 项普通 Windows 权限/平台限制跳过；管理员 PowerShell 下路径安全模块 11 项运行、10 项通过、1 项 FIFO 跳过，全部 3 个符号链接用例通过；当前 HEAD 聚焦回归 225 项通过；同一代码树 mock E2E 7 项通过（230.911 秒）。`compileall`、提交前 `git diff --check` 和文档链接检查通过。mock/synthetic 结果不代表真实 Provider、Notion、人工翻译质量或部署验收。
 - 用户提供的路径测试输出为 9 项运行、3 项跳过，但没有运行时 HEAD 或逐项跳过原因，不绑定到当前 commit。管理员运行的 11 项结果是当前代码测试方法集合的权限复核。
-- PR #58 仍为 open，GitHub `mergeable=true`，head 为 `e9adc8d83ce4887e0eee52ae466f7846e8574bab`；11 个此前未解决的 inline review threads 均已回复并解决。PR review submissions 目前只有 `COMMENTED`，没有 `APPROVED`；commit workflow-runs 结果为空。读取 `main` 分支保护规则因 GitHub 集成返回 403，所需审批/检查门槛未知，因此未合并。PR #56 已独立合并，不能与 #58 混为一谈。
+- 本节首次远端复核时 PR #58 为 open、`mergeable=true`，head `92c9095`；该文档提交的 workflow-runs 查询为空。11 个此前未解决的 inline review threads 均已回复并解决。PR review submissions 只有 `COMMENTED`，没有 `APPROVED`；读取 `main` 分支保护规则因 GitHub 集成返回 403，所需审批/检查门槛未知，因此未合并。之后的提交仅限 Markdown，精确 head 和重新查询结果以 PR 页面为准。PR #56 已独立合并，不能与 #58 混为一谈。
 - PR #58 描述已更新为当前 commit 的验证数字和限制。仍待独立 reviewer 审阅/审批及仓库门槛确认；真实 Provider 的 allowlist/端点、单话翻译与人工验收、Notion、EPUBCheck/阅读器、部署仍未验证。额度状态不可见。

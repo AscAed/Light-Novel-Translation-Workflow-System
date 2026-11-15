@@ -2,7 +2,7 @@
 
 ## 2026-11-16 当前 checkout 验证
 
-- 当前 checkout：分支 `codex/translation-workflow-20261115`，HEAD `e9adc8d83ce4887e0eee52ae466f7846e8574bab`，与 `origin` 同步。代码与测试变更已提交；本节对应的后续文档状态更新另见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-提交与-pr-状态复核)。
+- 当前 checkout：分支 `codex/translation-workflow-20261115`；代码/测试实现基线为 `e9adc8d83ce4887e0eee52ae466f7846e8574bab`，后续提交只同步 Markdown 状态，不改变本节验证的代码与测试。本次最新 PR 快照见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-提交与-pr-状态复核)。
 - 完整非 E2E 单测命令：
 
   ```powershell
@@ -25,7 +25,7 @@
 - 之后以 `Start-Process -Verb RunAs` 启动 PowerShell 重跑 `tests.test_security_path_traversal -v`：11 项运行，10 项通过、1 项跳过、0 失败；三个符号链接用例均通过，FIFO 用例仍因平台能力跳过。用户此前提供的 9 项/3 项跳过输出未提供 HEAD 与跳过原因，仍作为独立历史结果，不替代本次专项结果。
 - `.venv\Scripts\python.exe tests\run_tests.py` 完整本地 mock E2E：7 项通过，230.911 秒，退出码 0。测试输出中的 content-filter 和段落错配异常来自预期负向 fixture。
 - 当前工作区的 `compileall`、`git diff --check` 和 Markdown 本地链接目标检查通过。此记录不表示真实 Provider/Notion 调用、人工译文/版式验收、EPUBCheck/阅读器或部署已通过。
-- GitHub PR 状态：PR #56 已合并。PR #58 仍开放，远端 head 为 `bd9f4f3996c0117d7d69af6389029092b146808c`；该 head 的 Actions workflow-runs 查询为空，且仍有未解决的 Codex/CodeRabbit 审查意见。本节的工作区改动尚未推送，不以 mergeable 标记代替审查与 CI 验收，因此 PR #58 未合并。
+- GitHub PR 状态的 `bd9f4f3` 与未推送工作区内容均为本历史检查点快照；当前 PR 状态以本文开头的 `e9adc8d` 实现基线及[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-提交与-pr-状态复核)中的后续记录为准。
 
 ## 2026-11-15 当前工作区定向验证
 
