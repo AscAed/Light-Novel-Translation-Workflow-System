@@ -1,6 +1,6 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；最新提交、回归与 PR 状态见文末“2026-11-16 提交与 PR 状态复核”。项目路线图仍有后续阶段，额度信息不可见。
+> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；代码/测试与合并前 PR 状态见文末“2026-11-16 7135904 后续复核”。项目路线图仍有后续阶段，额度信息不可见。
 
 ## 目标与会话
 
@@ -191,3 +191,11 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 本节首次远端复核时 PR #58 为 open、`mergeable=true`，head `92c9095`；该文档提交的 workflow-runs 查询为空。11 个此前未解决的 inline review threads 均已回复并解决。PR review submissions 只有 `COMMENTED`，没有 `APPROVED`；读取 `main` 分支保护规则因 GitHub 集成返回 403，所需审批/检查门槛未知，因此未合并。之后的提交仅限 Markdown，精确 head 和重新查询结果以 PR 页面为准。PR #56 已独立合并，不能与 #58 混为一谈。
 - 2026-11-16 本机 Provider 配置存在性复核：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY`、`PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。只检查是否存在，未读取密钥或配置值；真实 Provider 单话翻译目前受此阻塞。配置应由凭据所有者通过本机安全方式提供，并在运行前再次验证 allowlist 与目标 Provider。
 - PR #58 描述已更新为当前代码/测试基线、文档 head 和限制。仍待独立 reviewer 审阅/审批及仓库门槛确认；真实 Provider 的 allowlist/端点、单话翻译与人工验收、Notion、EPUBCheck/阅读器、部署仍未验证。额度状态不可见。
+
+## 2026-11-16 7135904 后续复核
+
+- 代码/测试基线为 `71359040b88434a37ac379247674a6155e614f86`；工作区复核时干净。`b3f8047` 修复 EPUB POSIX 路径/自链接、Unicode 段落缩进、提交译文字节校验和空输出冲突处理；`7135904` 将响应体读取超时转为可恢复的来源暂停。
+- 对该实现树的完整非 E2E unittest 为 350 项、0 失败、4 跳过；完整 mock E2E 为 7 项通过、348.780 秒。聚焦 EPUB/契约/Kakuyomu 工作流回归 108 项通过；来源 adapter/ingestion/workflow 回归 62 项通过。`compileall` 与 `git diff --check` 通过。均为合成/mock 或本地验证，未调用真实 Provider/Notion。
+- 本轮当前普通 Windows 会话重跑 `tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 个 symlink 用例因 `WinError 1314` 跳过，FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。未取得管理员执行会话。用户另行提供的 `-q` 结果为 9 项运行、3 项跳过，但没有 SHA、逐项跳过原因或权限状态，且与当前文件的 11 个测试方法数不符，因此只作为独立用户提供快照，不归属到本代码基线。
+- 合并前远端快照：PR #58 为 open，head `71359040b88434a37ac379247674a6155e614f86`、base `d7e2afda43add0a75cf6d720cfb9a8079d6333a6`，`mergeable=true`。所有 inline review threads 已回复并解决；review submissions 仍无 `APPROVED`。GitHub Actions runs 与 commit statuses 为空；唯一 check-run 是 CodeRabbit `skipped`。读取 `main` 分支保护规则仍因 GitHub 集成 403 而不可验证。因此 `mergeable` 只表明无冲突，不证明审批或检查门槛已满足；是否可合并须以随后的 GitHub 合并结果为准。
+- 本机 Provider 配置存在性预检仍显示根目录 `.env` 不存在，且 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key、`PROOFREAD_MODEL` 未设置；未读取密钥。真实 Provider 单话翻译、人工译文与来源格式验收、Notion、EPUBCheck/阅读器及部署均未验证。
