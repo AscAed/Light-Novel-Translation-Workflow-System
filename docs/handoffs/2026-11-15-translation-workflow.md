@@ -215,3 +215,12 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - PR #58 在 `854bd86` 上仍为 open 且 `mergeable=true`，但新 review 添加两项未解决意见：`kakuyomu_page_source.py` 未捕获 chunked response 的 `http.client.IncompleteRead`，失败会使采集 checkpoint 留在 `in_progress`；`epub_builder.py` 在 `cwd=input_dir` 下使用未经解析的相对 Pandoc 可执行文件路径，可能通过版本检查后在转换阶段找不到程序。已核对相关代码，尚未修复或关闭意见。
 - 当前 PR review submissions 只有 `COMMENTED`，没有 `APPROVED`；head 的 CodeRabbit check-run 为 `skipped`，不能作为通过。分支保护读取仍因集成 403 不可验证。由于原任务范围为 Markdown-only，未修改上述代码；PR 未合并。若继续合并工作，需要先明确允许扩展到代码修复与针对性回归，再重新检查审查和 GitHub 门槛。
 - `854bd86` 文档同步只覆盖当时的远端快照；若其后 PR head 或 review 状态变化，以 GitHub 当前状态为准。真实 Provider/Notion、人工翻译验收、EPUBCheck/阅读器、部署及额度仍未验证。
+
+## 2026-11-16 PR #63 后主线复核
+
+- 当前主线为 `main`，HEAD `fe43ea3fb9ff6ac3a901e4c73641bcb9c6af38e6`；PR #63 只同步 Markdown，代码基线是 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`。本轮检查开始时工作区干净；本次追加文档更新尚未提交。
+- GitHub API 确认 PR #56、#58、#62、#63 均已合并，`gh pr list --state open` 返回空列表。旧小节中 PR #58 仍 open 的状态是当时快照，不是当前状态。
+- 当前代码树路径安全模块普通权限运行 11 项、7 项通过、4 项跳过；3 项符号链接因 `WinError 1314` 跳过，1 项 FIFO 因 Windows 不提供 `os.mkfifo` 跳过。经用户授权的管理员运行 11 项、10 项通过、1 项 FIFO 跳过；3 项符号链接用例均通过。用户另行提供的 9 项/3 项 `-q` 输出未绑定到当前 SHA。
+- 完整非 E2E unittest 368 项及完整 mock E2E 7 项通过的最近记录来自代码基线 `c988c4b`；本轮只重跑路径安全专项，没有重跑完整套件。PR #63 未修改代码，因此先前代码树验证仍对应当前代码基线。
+- 真实 Provider 配置仍待本机安全配置和验证；真实翻译与人工质量/来源格式验收、Notion、EPUBCheck/阅读器、部署仍未完成。下一步可在配置好 JOJO/JYQF 端点、密钥和最小数据授权后，执行单话真实翻译并由用户验收；不要将 mock 结果视为真实模型质量证明。
+- 详细测试基线见[开发与验证](../development.md#2026-11-16-主线复核pr-63-后)；现状摘要见[项目现状](../project-status.md)。

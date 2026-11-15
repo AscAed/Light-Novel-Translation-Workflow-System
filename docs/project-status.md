@@ -1,6 +1,6 @@
 # 项目现状
 
-> 主线基线：截至 2026-11-16，`main` HEAD `c988c4b749a9972a89edffe9bc2c4bc867ebb3da` 已包含 PR #62 的 Kakuyomu 翻译计划审批门禁。当前代码树非 E2E unittest 为 368 项、0 失败、4 项平台能力跳过；本地 mock E2E 为 7 项通过（253.608 秒）；管理员安全路径专项为 11 项中 10 项通过、仅 Windows FIFO 跳过，3 个符号链接用例均通过。PR #62 没有配置状态检查；本地验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁-pr-62-已合并)。PR #60 的 Codex 审查无 findings，CodeRabbit 在合并时仍为 `in_progress`。Kakuyomu source-only 采集完成主页声明的 88/88 话，manifest 中 267 个 artifact 文件曾全部通过哈希校验；映射和原文格式人工验收仍待完成。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)和[开发与验证](development.md)。
+> 主线基线：截至 2026-11-16，`main` HEAD `fe43ea3fb9ff6ac3a901e4c73641bcb9c6af38e6`；PR #63 为 PR #62 合并后的 Markdown 状态同步，代码基线 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da` 包含 Kakuyomu 翻译计划审批门禁。该代码基线的非 E2E unittest 为 368 项、0 失败、4 项平台能力跳过；本地 mock E2E 为 7 项通过（253.608 秒）。当前主线专项复核中，管理员安全路径测试为 11 项中 10 项通过、1 项因 Windows FIFO 能力跳过，3 个符号链接用例均通过；普通权限运行则有 3 个符号链接用例因 `WinError 1314` 跳过。PR #56、#58、#62、#63 均已合并，当前无开放 PR。验证记录见[开发与验证](development.md)。PR #60 的 Codex 审查无 findings，CodeRabbit 在合并时仍为 `in_progress`。Kakuyomu source-only 采集完成主页声明的 88/88 话，manifest 中 267 个 artifact 文件曾全部通过哈希校验；映射和原文格式人工验收仍待完成。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。
 
 ## 翻译计划审批门禁（PR #62）
 
