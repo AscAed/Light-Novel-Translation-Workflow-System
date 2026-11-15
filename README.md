@@ -44,6 +44,7 @@ python scripts/validate_tm_provenance.py --project <项目目录名>
 python scripts/validate_knowledge_provenance.py --root <原文数据根目录> --manifest source_manifest.json --provenance <知识目录/KNOWLEDGE_PROVENANCE_draft.json>
 python scripts/ingest_kakuyomu_pages.py --source-root <catalog目录> --catalog <catalog.json> --output-root <原文数据根目录>
 python scripts/ingest_kakuyomu_pages.py --source-root <原文数据根目录> --work-url <作品主页URL> --output-root <原文数据根目录>
+python scripts/run_kakuyomu_workflow.py --source-root <原文数据根目录> --catalog source_catalog.discovered.json --translation-root <译文数据根目录> --manifest source_manifest.json --plan-only
 python scripts/run_kakuyomu_workflow.py --source-root <原文数据根目录> --catalog <相对catalog.json> --translation-root <译文数据根目录> --config <项目配置.json>
 python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --create-template review_receipt.json
 python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --source-root <原文数据根目录> --manifest source_manifest.json --review <回执文件名> --output Glossary_reviewed.json
@@ -51,6 +52,8 @@ python tests/run_tests.py
 ```
 
 Kakuyomu 页面导入和依赖安装会访问外网，运行前需在同一 PowerShell 会话中设置仓库要求的代理环境变量。配置模式和验证限制见[开发与验证](docs/development.md)。仓库没有依赖锁文件、CI 配置或部署清单；安装依赖不代表真实模型端点或外部部署已验证。
+
+`run_kakuyomu_workflow.py --plan-only` 只读取已有 catalog、manifest 和目标目录，输出待人工核对的章节映射 JSON；无需 Provider 配置，不联网、不写文件、不输出原文。摘要哈希用于识别该份预览，不代表审核凭证，也不会被正式翻译命令强制校验。
 
 ## 维护约定
 

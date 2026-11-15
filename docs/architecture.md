@@ -22,6 +22,10 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 
 显式 JSON 的 `CHAPTER_MAP` 为嵌套项目提供逐章映射：可由操作者逐项指定，也可由 `scripts/run_kakuyomu_workflow.py` 根据 catalog 中明确列出的 episode ID/position 生成确定性映射；译文文件名和 TM 键由稳定 episode ID 派生，不依赖标题或原文文件名推断。`chapter_position` 是可选的正整数；提供时优先用于摘要窗口和章节指导选择，避免从内容哈希或平台 ID 推断章节号。若使用 `source_version_id`，还须配置相对 `RAW_DIR` 的 `SOURCE_MANIFEST_PATH`，程序会验证所选 artifact 类型、路径和文件哈希。流水线、对齐器、知识抽取和 TM 来源审计消费同一映射；省略新增字段时保持旧契约。Kakuyomu 编排重试时，仅跳过输出、TM 词对、段落映射和当前来源版本 provenance 均匹配的已提交章节；冲突内容不覆盖。该 CLI 不发现页面。
 
+## 章节映射预览
+
+`scripts/run_kakuyomu_workflow.py --plan-only` 是本地预览入口：只读已有 catalog、manifest 与来源 artifact，验证 episode 元数据、最新 raw/normalized 版本、文件哈希、来源父版本和译文目标路径，然后输出 JSON 映射与 `plan_sha256`。该模式不加载项目配置或 Provider 密钥、不联网、不读取已有译文/TM 内容、不写文件或输出书籍正文。`ready_for_review` 只表示预览完整且没有检测到目标冲突；审核凭证和正式运行对预览摘要的强制绑定尚未实现。正式模式仍按当前 catalog/来源版本重算映射。
+
 ## 模块职责
 
 | 模块 | 当前责任 | 主要输入/输出 |
@@ -43,7 +47,7 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 | `source_ingestion.py` | 消费注入适配器的分页和原文 bytes；维护断点并写版本化本地副本；提供显式相对路径本地文件 adapter、字节保真 Markdown 物化和章节集合导出 | `SourceAdapter`/`LocalFileAdapter`/指定版本 -> 原文、元数据、Markdown/export artifact、manifest/checkpoint |
 | `kakuyomu_page_source.py` | 检查 Kakuyomu robots；从作品页 Next.js Apollo 目录中按 `publicEpisodeCount` 校验并发现公开 episode URL，再提取可见标题/正文文本；不登录、不跟随重定向、不访问 `/read` | 作品主页或显式 episode catalog -> UTF-8 章节文本/目录与来源指纹 |
 | `scripts/ingest_kakuyomu_pages.py` | 从作品主页发现公开目录或加载显式 catalog，验证输出不覆盖输入并把全部所列页面接入版本化归档核心 | `source-root` + work URL/catalog + output-root -> discovered catalog/manifest/checkpoint/raw source |
-| `scripts/run_kakuyomu_workflow.py` | 先校验显式项目配置和 Provider 授权/凭据；支持从作品页发现并排他保存完整公开 catalog，检查输出冲突后获取所有目录话目、物化来源版本并运行现有翻译流水线 | source root + work URL 或 catalog + translation root/project JSON -> catalog/versioned source/translation/TM |
+| `scripts/run_kakuyomu_workflow.py` | `--plan-only` 对本地 catalog/manifest 做只读来源版本核验并输出章节映射预览；正式模式先校验显式项目配置和 Provider 授权/凭据，再支持作品页发现并排他保存公开 catalog、获取目录话目、物化来源版本并运行现有翻译流水线 | source root + catalog/manifest + translation root -> JSON 映射预览；或 work URL/catalog + project JSON -> catalog/versioned source/translation/TM |
 | `prompts/*.md` | 阶段角色的指令文本 | 被 `TranslationPipeline` 按路径读取 |
 | `tests/` | Mock API 和本地行为测试 | 临时项目目录；无真实模型质量验证 |
 
