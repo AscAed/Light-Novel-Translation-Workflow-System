@@ -1,16 +1,23 @@
 import hashlib
 import json
+import posixpath
 import shutil
 import subprocess
 import tempfile
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
-from epub_builder import build_epub_candidate, get_pandoc_version
+from epub_builder import (
+    _rewrite_cross_chapter_links,
+    build_epub_candidate,
+    get_pandoc_version,
+)
 from scripts.build_epub_candidate import main as build_epub_cli
 from source_ingestion import source_artifact_id
 from source_manifest import verify_manifest_artifact
@@ -204,9 +211,11 @@ class EpubCandidateTests(unittest.TestCase):
                     Path(staged_inputs[0]).parent,
                     self.input_root,
                 )
-                self.assertTrue(
-                    all(not value.startswith("--") for value in staged_inputs)
+                self.assertEqual(
+                    staged_inputs[0],
+                    "--lua-filter=payload.md",
                 )
+                self.assertEqual(Path(kwargs["cwd"]).name, "inputs")
                 observed["option_separator"] = separator
                 observed["yaml_metadata_disabled"] = True
                 option_named_chapter.write_bytes(
@@ -340,24 +349,34 @@ class EpubCandidateTests(unittest.TestCase):
         self.assertNotIn("First footnote.", second_chapter)
 
     def test_cross_chapter_links_and_footnotes_keep_global_scope(self):
-        (self.input_root / "chapter-1.md").write_text(
+        chapter_dir = self.input_root / "vol"
+        chapter_dir.mkdir()
+        self.catalog["chapters"][0]["translation_path"] = "vol/chapter-1.md"
+        self.catalog["chapters"][1]["translation_path"] = "vol/chapter-2.md"
+        self._write_catalog()
+        (chapter_dir / "chapter-1.md").write_text(
             "# Chapter One\n\n"
             "[Next chapter](chapter-2.md#part-two).\n\n"
             "Shared note[^shared].\n",
             encoding="utf-8",
         )
-        (self.input_root / "chapter-2.md").write_text(
+        (chapter_dir / "chapter-2.md").write_text(
             "# Chapter Two\n\n"
             "## Part Two\n\n"
             "[^shared]: Shared cross-chapter footnote.\n",
             encoding="utf-8",
         )
 
-        self._build()
+        with patch("epub_builder._rewrite_cross_chapter_links"):
+            self._build()
 
         output_dir = self.output_root / "synthetic-work" / "edition-001"
         manifest = json.loads((output_dir / "build.json").read_text(encoding="utf-8"))
         self.assertFalse(manifest["pandoc"]["file_scope"])
+        epub_path = output_dir / "candidate.epub"
+        windows_normcase = lambda path: path.replace("/", "\\").casefold()
+        with patch("epub_builder.os.path.normcase", side_effect=windows_normcase):
+            _rewrite_cross_chapter_links(epub_path, self.catalog["chapters"])
         with zipfile.ZipFile(output_dir / "candidate.epub") as archive:
             xhtml = "\n".join(
                 archive.read(name).decode("utf-8", errors="ignore")
@@ -366,6 +385,41 @@ class EpubCandidateTests(unittest.TestCase):
             )
         self.assertIn("Shared cross-chapter footnote.", xhtml)
         self.assertIn("ch002.xhtml#part-two", xhtml)
+
+    def test_self_links_resolve_to_file_scoped_heading_ids(self):
+        (self.input_root / "chapter-1.md").write_text(
+            "# Chapter One\n\n"
+            "[Jump](chapter-1.md#section).\n\n"
+            "## Section\n",
+            encoding="utf-8",
+        )
+
+        self._build()
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        with zipfile.ZipFile(output_dir / "candidate.epub") as archive:
+            chapter_name, chapter = next(
+                (name, ET.fromstring(archive.read(name)))
+                for name in archive.namelist()
+                if name.endswith(".xhtml")
+                and b"Jump" in archive.read(name)
+            )
+        anchor = next(
+            element
+            for element in chapter.iter()
+            if element.tag.endswith("}a")
+            and "".join(element.itertext()) == "Jump"
+        )
+        target = urlsplit(anchor.get("href", ""))
+        self.assertIn(
+            target.path,
+            ("", posixpath.basename(chapter_name)),
+        )
+        target_id = target.fragment
+        self.assertTrue(target_id)
+        self.assertTrue(
+            any(element.get("id") == target_id for element in chapter.iter())
+        )
 
     def test_cli_builds_candidate_without_echoing_chapter_text(self):
         output = StringIO()

@@ -362,7 +362,10 @@ def _chapter_xhtml_paths(archive, chapters):
             "Pandoc output does not map the selected chapters in spine order."
         )
     return {
-        os.path.normcase(posixpath.normpath(chapter["translation_path"])): name
+        os.path.normcase(posixpath.normpath(chapter["translation_path"])): (
+            posixpath.normpath(chapter["translation_path"]),
+            name,
+        )
         for chapter, name in zip(chapters, chapter_documents)
     }
 
@@ -380,7 +383,7 @@ def _rewrite_cross_chapter_links(epub_path, chapters):
             archive_path_by_translation = _chapter_xhtml_paths(source, chapters)
             translation_by_archive = {
                 archive_path: translation_path
-                for translation_path, archive_path in archive_path_by_translation.items()
+                for translation_path, archive_path in archive_path_by_translation.values()
             }
             with zipfile.ZipFile(temporary_path, "w") as rewritten:
                 for info in source.infolist():
@@ -406,11 +409,12 @@ def _rewrite_cross_chapter_links(epub_path, chapters):
                                     unquote(parsed.path),
                                 )
                             )
-                            target_archive = archive_path_by_translation.get(
+                            target_chapter = archive_path_by_translation.get(
                                 os.path.normcase(target_translation)
                             )
-                            if target_archive is None:
+                            if target_chapter is None:
                                 continue
+                            _, target_archive = target_chapter
                             rewritten_path = posixpath.relpath(
                                 target_archive,
                                 start=posixpath.dirname(info.filename),
@@ -702,7 +706,7 @@ def build_epub_candidate(
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-            pandoc_inputs.append(str(input_path))
+            pandoc_inputs.append(chapter["translation_path"])
 
         command = [
             pandoc_executable,
@@ -721,7 +725,7 @@ def build_epub_candidate(
         ]
         result = subprocess.run(
             command,
-            cwd=root,
+            cwd=input_dir,
             capture_output=True,
             text=True,
             encoding="utf-8",

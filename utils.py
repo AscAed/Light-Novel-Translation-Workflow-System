@@ -407,7 +407,7 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
             raise ValueError(
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
-        normalized = paragraph.strip()
+        normalized = paragraph.strip(" \t\r\n\f\v")
         split_result = split_paragraphs(normalized)
         if len(split_result) != 1 or split_result[0] != normalized:
             raise ValueError(

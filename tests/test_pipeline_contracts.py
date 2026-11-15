@@ -1192,6 +1192,15 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
         require_aligned_paragraphs(["source"], target, "Test")
         self.assertEqual(target, ["translated text"])
 
+        unicode_indentation = ["　translated text", "\u00a0translated text"]
+        require_aligned_paragraphs(
+            ["source one", "source two"], unicode_indentation, "Test"
+        )
+        self.assertEqual(
+            unicode_indentation,
+            ["　translated text", "\u00a0translated text"],
+        )
+
         with self.assertRaisesRegex(ValueError, "multiple paragraphs at index 1"):
             require_aligned_paragraphs(
                 ["source"], ["first\n\nsecond"], "Test"
@@ -1529,7 +1538,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 1,
             )
 
-    async def test_empty_output_recovers_from_pending_transaction(self):
+    async def test_empty_output_after_pending_transaction_is_preserved_as_conflict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             raw_dir = Path(temp_dir) / "生肉"
             output_dir = Path(temp_dir) / "熟肉"
@@ -1560,16 +1569,16 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                         await pipeline.run_chapter("第1話.md")
                     output_path = output_dir / "第1話.md"
                     output_path.write_bytes(b"")
-                    await pipeline.run_chapter("第1話.md")
+                    with self.assertRaisesRegex(
+                        ValueError, "differs from its recorded result"
+                    ):
+                        await pipeline.run_chapter("第1話.md")
 
+            self.assertEqual(output_path.read_bytes(), b"")
+            pipeline.rag.update_translation_memory.assert_called_once()
             self.assertEqual(
-                output_path.read_text(encoding="utf-8"),
-                "translated paragraph",
-            )
-            pipeline.rag.update_translation_memory.assert_called()
-            self.assertEqual(pipeline.rag.update_translation_memory.call_count, 2)
-            self.assertEqual(
-                list(output_dir.glob(".codex-chapter-transaction-*.json")), []
+                len(list(output_dir.glob(".codex-chapter-transaction-*.json"))),
+                1,
             )
 
     async def test_empty_existing_output_does_not_warn_about_missing_tm(self):

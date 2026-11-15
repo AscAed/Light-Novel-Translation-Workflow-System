@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import hashlib
+import io
 import json
 import math
 import os
@@ -39,6 +40,7 @@ from source_ingestion import (  # noqa: E402
     materialize_episode_markdown,
 )
 from utils import (  # noqa: E402
+    open_regular_file,
     read_relative_text,
     resolve_relative_path,
     split_paragraphs,
@@ -152,10 +154,21 @@ def _is_committed_translation(
 ) -> bool:
     try:
         raw_text = read_relative_text(source_root, source_artifact["raw_file"])
-        translation_text = read_relative_text(
+        translation_path = resolve_relative_path(
             translation_root, target["translation_file"]
         )
+        with open_regular_file(translation_path, binary=True) as stream:
+            translation_bytes = stream.read()
+        with io.TextIOWrapper(
+            io.BytesIO(translation_bytes), encoding="utf-8"
+        ) as text_stream:
+            translation_text = text_stream.read()
     except (OSError, UnicodeError, ValueError, KeyError):
+        return False
+    expected_translation_bytes = translation_text.replace(
+        "\n", os.linesep
+    ).encode("utf-8")
+    if translation_bytes != expected_translation_bytes:
         return False
 
     chapters = tm_data.get("chapters")

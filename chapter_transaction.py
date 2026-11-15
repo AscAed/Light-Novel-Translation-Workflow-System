@@ -14,7 +14,6 @@ from utils import (
     resolve_child_path,
     resolve_relative_path,
     split_paragraphs,
-    write_text_atomically,
 )
 
 _MAX_JOURNAL_BYTES = 64 * 1024 * 1024
@@ -256,9 +255,6 @@ def _ensure_output(output_path: Path, text: str) -> None:
     with open_regular_file(output_path, binary=True) as stream:
         current_bytes = stream.read()
     if current_bytes == expected_bytes:
-        return
-    if not current_bytes:
-        write_text_atomically(str(output_path), text)
         return
     raise ValueError(
         "Chapter transaction found an output that differs from its recorded result."

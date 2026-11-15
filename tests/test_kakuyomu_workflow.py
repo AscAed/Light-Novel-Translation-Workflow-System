@@ -85,8 +85,10 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             output_path = translation_root / "episode-0001-123456789.md"
             raw_path.parent.mkdir(parents=True)
             translation_root.mkdir()
-            raw_text = "source paragraph"
-            translation_text = "translated paragraph"
+            raw_text = "source paragraph\n\nsecond source paragraph"
+            translation_text = (
+                "translated paragraph\n\nsecond translated paragraph"
+            )
             raw_path.write_text(raw_text, encoding="utf-8")
             output_path.write_text(translation_text, encoding="utf-8")
             target = {
@@ -101,10 +103,15 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 "chapters": {
                     target["tm_key"]: [
                         {
-                            "raw": raw_text,
-                            "translated": translation_text,
+                            "raw": "source paragraph",
+                            "translated": "translated paragraph",
                             "embedding": [0.1],
-                        }
+                        },
+                        {
+                            "raw": "second source paragraph",
+                            "translated": "second translated paragraph",
+                            "embedding": [0.1],
+                        },
                     ]
                 },
                 "source_provenance": {
@@ -122,11 +129,12 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         "source_version_id": chapter["source_version_id"],
                         "pair_mappings": [
                             {
-                                "pair_index": 1,
-                                "raw_paragraph_indices": [1],
-                                "translation_paragraph_indices": [1],
+                                "pair_index": index,
+                                "raw_paragraph_indices": [index],
+                                "translation_paragraph_indices": [index],
                                 "trace_status": "matched",
                             }
+                            for index in (1, 2)
                         ],
                     }
                 },
@@ -141,6 +149,23 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     tm_data,
                 )
             )
+            original_output_bytes = output_path.read_bytes()
+            alternate_newline = b"\n" if os.linesep == "\r\n" else b"\r\n"
+            output_path.write_bytes(
+                original_output_bytes.replace(
+                    os.linesep.encode("ascii"), alternate_newline
+                )
+            )
+            self.assertFalse(
+                _is_committed_translation(
+                    str(source_root),
+                    str(translation_root),
+                    target,
+                    chapter,
+                    tm_data,
+                )
+            )
+            output_path.write_bytes(original_output_bytes)
             output_path.write_text("edited translation", encoding="utf-8")
             self.assertFalse(
                 _is_committed_translation(
