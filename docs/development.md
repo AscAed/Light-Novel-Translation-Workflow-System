@@ -1,6 +1,17 @@
 # 开发与验证
 
-## 2026-11-16 当前 checkout 验证
+## 2026-11-16 合并后的当前验证
+
+- 当前主分支：`main`，HEAD `b1048a31dad00497c8807d8cbf5570f2c0795e38`。PR #58 于 2026-11-16（Asia/Shanghai）以 squash 合并；实现/测试提交为 `8f1f89fb62a221fffd8415489fff82cbf4248116`。本地检查确认该实现提交与合并提交的文件树一致。
+- 完整非 E2E unittest：按仓库既有模块选择运行 351 项，0 失败、4 项跳过。定向 Kakuyomu adapter/workflow 与 EPUB builder 回归运行 52 项，全部通过。
+- 完整本地 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项，266.420 秒，退出码 0。输出中的 content-filter 与段落错配异常来自预期负向 fixture；未调用真实 Provider 或 Notion。
+- 安全路径专项：普通权限运行 11 项时，3 个符号链接用例因 `WinError 1314` 跳过，FIFO 用例因 Windows 不支持跳过。随后依用户授权以管理员 PowerShell 重跑：11 项中 10 项通过、仅 FIFO 用例跳过；3 个符号链接用例均实际执行并通过。
+- Python `compileall` 与 `git diff --check` 通过。synthetic/mock 测试不代表真实 Provider、翻译质量、出版文件、阅读器或部署已验收。
+- PR #58 所有 inline review threads 均已解决；没有 review submission 为 `APPROVED`，CodeRabbit check 为 `skipped`。合并前检查得到 `main` 未启用 branch protection，仓库 rulesets 查询为空，未发现 required-check/审批门禁。用户明确要求合并后已合并；跳过的 CodeRabbit 检查不记为通过。
+- 最近一次本机 Provider 配置存在性检查未发现根目录 `.env`，Process/User/Machine 环境也未设置 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`。没有读取密钥值；真实 Provider 单话翻译仍受配置缺失阻塞。
+- 仍未验证：获准 Provider 的真实端点调用及单话翻译、人工原文/译文格式与质量验收、Notion、EPUBCheck/目标阅读器，以及部署。下一步依赖安全提供 Provider 配置与 allowlist，再执行受控单话翻译并人工验收。
+
+## 2026-11-16 7135904 基线验证（历史快照）
 
 - 当前 checkout：分支 `codex/translation-workflow-20261115`；已验证的代码/测试基线为 `71359040b88434a37ac379247674a6155e614f86`。本地工作区干净。PR 和审查状态见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-7135904-后续复核)。
 - 完整非 E2E 单测命令：
@@ -14,7 +25,7 @@
 - 两个聚焦回归集合：`tests.test_epub_builder tests.test_pipeline_contracts tests.test_kakuyomu_workflow` 为 108 项通过；`tests.test_kakuyomu_page_source tests.test_source_ingestion tests.test_kakuyomu_workflow` 为 62 项通过。
 - `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，348.780 秒，退出码 0；content-filter 与段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
 - Python `compileall`、`git diff --check` 及提交前 Markdown 本地链接目标检查通过。上述测试为本地 synthetic/mock 验证，不代表真实 Provider、Notion、翻译质量、出版文件或部署已验收。
-- 用户另外提供 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 输出：9 项运行、3 项跳过、0 失败。该计数与当前 checkout 的 11 项测试不同，且输出未含 HEAD、逐项跳过原因或权限状态，不绑定到 `7135904`。若需验证符号链接用例，请在管理员 PowerShell 中运行下方命令；FIFO 在 Windows 仍可能正常跳过：
+- 用户另外提供 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 输出：9 项运行、3 项跳过、0 失败。该计数与 `7135904` 基线的 11 项测试不同，且输出未含 HEAD、逐项跳过原因或权限状态，不绑定到该基线。该时点若需验证符号链接用例，可在管理员 PowerShell 中运行下方命令；FIFO 在 Windows 仍可能正常跳过：
 
   ```powershell
   Set-Location -LiteralPath 'D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System'
@@ -24,7 +35,7 @@
 
   第二行应返回 `True`。
 - 代码/测试基线 `7135904` 之后，PR #58 的 Markdown 状态同步 head 为 `854bd861f532675cf293b844e90bd26cdbd677d2`。该 head 上新增两条尚未解决的 Codex review：chunked HTTP 响应 `IncompleteRead` 未转为可恢复暂停，以及相对 `pandoc_executable` 在切换 `cwd` 后失效。代码未在本次 Markdown-only 工作中修改。review submissions 仍只有 `COMMENTED`，没有 `APPROVED`；该 head 的唯一 check-run 是 CodeRabbit `skipped`。`main` 分支保护读取因集成返回 403，正式审批/required-check 门槛未知。详见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-合并前状态复核-854bd86)。
-- 2026-11-16 本机 Provider 配置存在性预检只输出布尔状态：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY` 和 `PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。未读取或输出任何配置值或密钥；当前机器无法执行真实 Provider 单话翻译。
+- 2026-11-16 本机 Provider 配置存在性预检只输出布尔状态：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY` 和 `PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。未读取或输出任何配置值或密钥；该检查点无法执行真实 Provider 单话翻译。
 - 真实 Provider/Notion、人工译文与来源格式验收、EPUBCheck/阅读器和部署仍未验证。
 
 ## 2026-11-16 PR 审查回归工作区（历史快照）
