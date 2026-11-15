@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 from pipeline import Config
 from scripts import auto_extract_knowledge
+from source_ingestion import source_artifact_id
 
 
 def make_client(response_text):
@@ -71,12 +72,14 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             sample_text,
             [],
             "synthetic-model",
+            "synthetic-provider",
         )
 
         self.assertEqual(
             provenance["source_files"][0]["source_version_id"],
             "source-version-1",
         )
+        self.assertEqual(provenance["producer"]["provider_id"], "synthetic-provider")
 
     def test_bounded_source_read_accepts_limit_and_normalizes_newlines(self):
         source_path = self.raw_dir / "第1話.md"
@@ -90,6 +93,69 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             )
 
         self.assertEqual(content, "a\nb")
+
+    def test_bound_source_is_rechecked_after_mapping_validation_before_provider(self):
+        source_path = self.raw_dir / "normalized" / "episode-1.md"
+        source_path.parent.mkdir()
+        original = b"versioned source"
+        source_path.write_bytes(original)
+        (self.raw_dir / "source_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifacts": [
+                        {
+                            "artifact_id": source_artifact_id(
+                                "synthetic-work",
+                                "normalized_source",
+                                "episode-1",
+                            ),
+                            "version_id": "version-1",
+                            "kind": "normalized_source",
+                            "content_sha256": hashlib.sha256(original).hexdigest(),
+                            "relative_path": "normalized/episode-1.md",
+                            "parent_version_ids": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        chapter_map = [
+            {
+                "raw_file": "normalized/episode-1.md",
+                "translation_file": "episode-1.md",
+                "tm_key": "episode-1",
+                "source_version_id": "version-1",
+            }
+        ]
+        translation_root = self.root / "translations"
+        translation_root.mkdir()
+        original_reader = auto_extract_knowledge._read_source_chapter
+
+        def replace_before_read(*args, **kwargs):
+            source_path.write_bytes(b"changed source")
+            return original_reader(*args, **kwargs)
+
+        with patch.object(Config, "CHAPTER_MAP", chapter_map), patch.object(
+            Config, "OUTPUT_DIR", str(translation_root)
+        ), patch.object(
+            Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"
+        ), patch(
+            "scripts.auto_extract_knowledge._read_source_chapter",
+            side_effect=replace_before_read,
+        ), patch(
+            "scripts.auto_extract_knowledge.get_openai_client"
+        ) as client_factory:
+            with self.assertRaisesRegex(ValueError, "changed after source-version"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir), str(self.output_dir)
+                    )
+                )
+
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
 
     def test_oversized_source_is_rejected_before_provider_creation(self):
         (self.raw_dir / "第1話.md").write_bytes(b"12345")
@@ -294,6 +360,14 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                 self.assertEqual(
                     client.chat.completions.create.call_args.kwargs["model"],
                     model,
+                )
+                provenance = json.loads(
+                    (
+                        output_dir / "KNOWLEDGE_PROVENANCE_draft.json"
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    provenance["producer"]["provider_id"], provider_id
                 )
 
     def test_unsupported_extraction_model_fails_before_source_read(self):

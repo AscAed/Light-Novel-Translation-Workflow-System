@@ -10,6 +10,7 @@ from source_manifest import (
     append_artifact,
     load_manifest,
     new_manifest,
+    parse_manifest_bytes,
     validate_manifest,
     verify_manifest_artifact,
     verify_manifest_files,
@@ -62,6 +63,14 @@ class SourceManifestTests(unittest.TestCase):
         self.assertEqual(actual["schema_version"], 1)
         self.assertEqual(len(actual["artifacts"]), 2)
         self.assertEqual(load_manifest(self.manifest_path), actual)
+
+    def test_parse_manifest_bytes_rejects_duplicate_fields_and_invalid_schema(self):
+        with self.assertRaisesRegex(ValueError, "duplicate JSON field"):
+            parse_manifest_bytes(
+                b'{"schema_version":1,"schema_version":1,"artifacts":[]}'
+            )
+        with self.assertRaisesRegex(ValueError, "Unsupported source manifest"):
+            parse_manifest_bytes(b'{"schema_version":2,"artifacts":[]}')
 
     def test_append_rejects_duplicate_version_without_changing_file(self):
         artifact = self._artifact()

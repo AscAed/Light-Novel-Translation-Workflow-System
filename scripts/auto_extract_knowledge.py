@@ -15,6 +15,7 @@ from pipeline import (
     get_primary_provider_route,
     resolve_openai_client_settings,
 )
+from source_manifest import load_manifest
 from utils import (
     open_regular_file,
     resolve_child_path,
@@ -78,7 +79,13 @@ def _sha256_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _read_source_chapter(raw_dir, raw_file, *, mapped):
+def _read_source_chapter(
+    raw_dir,
+    raw_file,
+    *,
+    mapped,
+    expected_sha256=None,
+):
     path = (
         resolve_relative_path(raw_dir, raw_file)
         if mapped
@@ -90,10 +97,19 @@ def _read_source_chapter(raw_dir, raw_file, *, mapped):
         raise _SourceChapterSizeLimitError(
             "Source chapter exceeds the knowledge extraction size limit."
         )
+    if (
+        expected_sha256 is not None
+        and hashlib.sha256(content).hexdigest() != expected_sha256
+    ):
+        raise ValueError(
+            "Mapped chapter changed after source-version validation."
+        )
     return content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _build_provenance_manifest(chapter_inputs, sample_text, glossary_entries, model):
+def _build_provenance_manifest(
+    chapter_inputs, sample_text, glossary_entries, model, provider_id
+):
     source_files = []
     paragraphs_by_chapter = {}
     for chapter in chapter_inputs:
@@ -140,7 +156,7 @@ def _build_provenance_manifest(chapter_inputs, sample_text, glossary_entries, mo
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "producer": {
             "script": "scripts/auto_extract_knowledge.py",
-            "provider_id": "deepseek",
+            "provider_id": provider_id,
             "model": model,
         },
         "prompt_sample_sha256": _sha256_text(sample_text),
@@ -179,6 +195,24 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         print("No raw chapters found.")
         return
 
+    bound_chapters = [
+        chapter
+        for chapter in chapters
+        if not isinstance(chapter, str) and chapter.source_version_id is not None
+    ]
+    artifacts_by_version = {}
+    if bound_chapters:
+        if not Config.SOURCE_MANIFEST_PATH:
+            raise ValueError("Bound chapter sources require a source manifest.")
+        manifest_path = resolve_relative_path(
+            raw_dir, Config.SOURCE_MANIFEST_PATH
+        )
+        manifest = load_manifest(manifest_path)
+        artifacts_by_version = {
+            artifact["version_id"]: artifact
+            for artifact in manifest["artifacts"]
+        }
+
     draft_names = (
         "Glossary_draft.json",
         "STORY_SUMMARY_draft.md",
@@ -200,7 +234,24 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         else:
             raw_file = chapter.raw_file
             tm_key = chapter.tm_key
-            content = _read_source_chapter(raw_dir, raw_file, mapped=True)
+            expected_sha256 = None
+            if chapter.source_version_id is not None:
+                artifact = artifacts_by_version.get(chapter.source_version_id)
+                if (
+                    artifact is None
+                    or artifact["kind"] != "normalized_source"
+                    or artifact["relative_path"] != raw_file
+                ):
+                    raise ValueError(
+                        "Mapped chapter source-version binding changed."
+                    )
+                expected_sha256 = artifact["content_sha256"]
+            content = _read_source_chapter(
+                raw_dir,
+                raw_file,
+                mapped=True,
+                expected_sha256=expected_sha256,
+            )
         section_header = f"\n\n--- {raw_file} ---\n\n"
         content_start = len(sample_text) + len(section_header)
         sample_text += section_header + content
@@ -260,6 +311,7 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         sample_text,
         glossary_entries,
         Config.PROOFREAD_MODEL,
+        provider_id,
     )
     os.makedirs(output_dir, exist_ok=True)
     glossary_path = os.path.join(output_dir, "Glossary_draft.json")

@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from source_ingestion import source_artifact_id
 from source_manifest import (
     latest_artifacts_by_kind,
-    load_manifest,
+    parse_manifest_bytes,
     verify_manifest_artifact,
 )
 from utils import open_regular_file, resolve_relative_path
@@ -275,39 +275,95 @@ def _uses_cross_chapter_references(chapters, chapter_texts):
 
 
 def _chapter_xhtml_paths(archive, chapters):
-    expected_titles = [chapter["title"] for chapter in chapters]
-    title_set = set(expected_titles)
-    matching_documents = []
-    for name in archive.namelist():
-        if not name.lower().endswith(".xhtml"):
+    opf_names = [
+        name
+        for name in archive.namelist()
+        if name.lower().endswith(".opf")
+    ]
+    if len(opf_names) != 1:
+        raise ValueError("Pandoc output must contain one package document.")
+    opf_name = opf_names[0]
+    try:
+        package = ET.fromstring(archive.read(opf_name))
+    except ET.ParseError as exc:
+        raise ValueError("Pandoc output package document is invalid.") from exc
+
+    manifest_items = {}
+    for item in package.iter():
+        if _local_name(item) != "item":
             continue
+        item_id = item.get("id")
+        if not item_id or item_id in manifest_items:
+            raise ValueError("Pandoc output package has invalid manifest IDs.")
+        manifest_items[item_id] = item
+
+    spine = next(
+        (element for element in package.iter() if _local_name(element) == "spine"),
+        None,
+    )
+    if spine is None:
+        raise ValueError("Pandoc output package is missing its spine.")
+
+    opf_directory = posixpath.dirname(opf_name)
+    chapter_documents = []
+    for itemref in spine:
+        if _local_name(itemref) != "itemref" or itemref.get("linear") == "no":
+            continue
+        item = manifest_items.get(itemref.get("idref"))
+        if item is None:
+            raise ValueError("Pandoc output spine references a missing item.")
+        properties = set(item.get("properties", "").split())
+        if "nav" in properties:
+            continue
+        if item.get("media-type") != "application/xhtml+xml":
+            raise ValueError("Pandoc output spine contains a non-XHTML chapter.")
+        href = item.get("href")
+        parsed_href = urlsplit(href or "")
+        if (
+            not parsed_href.path
+            or parsed_href.scheme
+            or parsed_href.netloc
+            or parsed_href.query
+            or parsed_href.fragment
+        ):
+            raise ValueError("Pandoc output chapter path is invalid.")
+        decoded_href = unquote(parsed_href.path)
+        if decoded_href.startswith("/") or "\\" in decoded_href:
+            raise ValueError("Pandoc output chapter path is invalid.")
+        document_path = posixpath.normpath(
+            posixpath.join(opf_directory, decoded_href)
+        )
+        if document_path == ".." or document_path.startswith("../"):
+            raise ValueError("Pandoc output chapter path escapes the EPUB.")
         try:
-            document = ET.fromstring(archive.read(name))
-        except ET.ParseError:
-            continue
-        heading = next(
+            document = ET.fromstring(archive.read(document_path))
+        except (KeyError, ET.ParseError) as exc:
+            raise ValueError("Pandoc output chapter document is invalid.") from exc
+        body = next(
             (
                 element
                 for element in document.iter()
-                if _local_name(element) == "h1"
+                if _local_name(element) == "body"
             ),
             None,
         )
-        title = (
-            "".join(heading.itertext()).strip()
-            if heading is not None
-            else ""
-        )
-        if title in title_set:
-            matching_documents.append((name, title))
+        if (
+            body is None
+            or "bodymatter"
+            not in body.get("{http://www.idpf.org/2007/ops}type", "").split()
+        ):
+            continue
+        if not any(_local_name(element) == "h1" for element in document.iter()):
+            raise ValueError("Pandoc output chapter is missing its H1.")
+        chapter_documents.append(document_path)
 
-    if [title for _, title in matching_documents] != expected_titles:
+    if len(chapter_documents) != len(chapters):
         raise ValueError(
-            "Pandoc output does not map the selected chapter titles in order."
+            "Pandoc output does not map the selected chapters in spine order."
         )
     return {
         os.path.normcase(posixpath.normpath(chapter["translation_path"])): name
-        for chapter, (name, _) in zip(chapters, matching_documents)
+        for chapter, name in zip(chapters, chapter_documents)
     }
 
 
@@ -397,7 +453,9 @@ def _validate_source_versions(
     if not root.is_dir():
         raise ValueError("Source root must be a directory.")
     manifest_path = resolve_relative_path(str(root), manifest_relative_path)
-    manifest = load_manifest(manifest_path)
+    with open_regular_file(manifest_path, binary=True) as stream:
+        manifest_bytes = stream.read()
+    manifest = parse_manifest_bytes(manifest_bytes)
     latest_normalized = latest_artifacts_by_kind(
         manifest, "normalized_source"
     )
@@ -426,8 +484,7 @@ def _validate_source_versions(
                 "A source version is stale relative to the source manifest."
             )
 
-    with open_regular_file(manifest_path, binary=True) as stream:
-        manifest_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     return (
         manifest_path.relative_to(root).as_posix(),
         manifest_sha256,
@@ -649,7 +706,7 @@ def build_epub_candidate(
 
         command = [
             pandoc_executable,
-            "--from=markdown",
+            "--from=markdown-yaml_metadata_block",
             "--to=epub3",
             *(["--file-scope"] if file_scope else []),
             "--split-level=1",

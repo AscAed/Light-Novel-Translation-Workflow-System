@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -37,7 +38,12 @@ from source_ingestion import (  # noqa: E402
     collect_source,
     materialize_episode_markdown,
 )
-from utils import resolve_relative_path  # noqa: E402
+from utils import (  # noqa: E402
+    read_relative_text,
+    resolve_relative_path,
+    split_paragraphs,
+    validate_tm_source_provenance,
+)
 
 
 def _positive_int(value: str) -> int:
@@ -69,16 +75,24 @@ def _minimum_delay(value: str) -> float:
     return parsed
 
 
+def _roots_are_disjoint(source_path: Path, translation_path: Path) -> bool:
+    try:
+        common = Path(os.path.commonpath((source_path, translation_path)))
+    except ValueError as exc:
+        source_drive = os.path.splitdrive(str(source_path))[0].casefold()
+        translation_drive = os.path.splitdrive(str(translation_path))[0].casefold()
+        if source_drive and translation_drive and source_drive != translation_drive:
+            return True
+        raise ValueError("Source and translation roots must be disjoint.") from exc
+    return common not in (source_path, translation_path)
+
+
 def _resolve_roots(source_root: str, translation_root: str) -> tuple[Path, Path]:
     source_path = Path(source_root).resolve(strict=True)
     translation_path = Path(translation_root).resolve(strict=True)
     if not source_path.is_dir() or not translation_path.is_dir():
         raise ValueError("Source and translation roots must be directories.")
-    try:
-        common = Path(os.path.commonpath((source_path, translation_path)))
-    except ValueError as exc:
-        raise ValueError("Source and translation roots must be disjoint.") from exc
-    if common in (source_path, translation_path):
+    if not _roots_are_disjoint(source_path, translation_path):
         raise ValueError("Source and translation roots must be disjoint.")
     return source_path, translation_path
 
@@ -125,17 +139,75 @@ def _check_translation_targets(translation_root: Path, targets) -> None:
             target["translation_file"],
             allow_missing=True,
         )
-        pending = has_pending_chapter_transaction(
-            str(translation_root),
-            target["translation_file"],
-            target["tm_key"],
-        )
         if output_path.exists() and not output_path.is_file():
             raise ValueError("A translation target is not a regular file.")
-        if output_path.exists() and not pending:
-            raise FileExistsError(
-                "A translation target already exists; archive or review it first."
-            )
+
+
+def _is_committed_translation(
+    source_root: str,
+    translation_root: str,
+    target: dict,
+    source_artifact: dict,
+    tm_data: dict,
+) -> bool:
+    try:
+        raw_text = read_relative_text(source_root, source_artifact["raw_file"])
+        translation_text = read_relative_text(
+            translation_root, target["translation_file"]
+        )
+    except (OSError, UnicodeError, ValueError, KeyError):
+        return False
+
+    chapters = tm_data.get("chapters")
+    provenance_by_chapter = tm_data.get("source_provenance")
+    pairs = chapters.get(target["tm_key"]) if isinstance(chapters, dict) else None
+    provenance = (
+        provenance_by_chapter.get(target["tm_key"])
+        if isinstance(provenance_by_chapter, dict)
+        else None
+    )
+    if not isinstance(pairs, list) or not isinstance(provenance, dict):
+        return False
+    try:
+        validate_tm_source_provenance(provenance, len(pairs))
+    except (TypeError, ValueError):
+        return False
+
+    raw_paragraphs = split_paragraphs(raw_text)
+    translated_paragraphs = split_paragraphs(translation_text)
+    if (
+        provenance.get("raw_file") != source_artifact["raw_file"]
+        or provenance.get("translation_file") != target["translation_file"]
+        or provenance.get("raw_sha256")
+        != hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        or provenance.get("translation_sha256")
+        != hashlib.sha256(translation_text.encode("utf-8")).hexdigest()
+        or provenance.get("source_version_id")
+        != source_artifact["source_version_id"]
+        or len(raw_paragraphs) != len(translated_paragraphs)
+        or len(pairs) != len(raw_paragraphs)
+        or "\n\n".join(translated_paragraphs) != translation_text
+    ):
+        return False
+    expected_mappings = [
+        {
+            "pair_index": index,
+            "raw_paragraph_indices": [index],
+            "translation_paragraph_indices": [index],
+            "trace_status": "matched",
+        }
+        for index in range(1, len(raw_paragraphs) + 1)
+    ]
+    if provenance.get("pair_mappings") != expected_mappings:
+        return False
+    return all(
+        isinstance(pair, dict)
+        and pair.get("raw") == raw
+        and pair.get("translated") == translated
+        for pair, raw, translated in zip(
+            pairs, raw_paragraphs, translated_paragraphs
+        )
+    )
 
 
 def _validate_project_config() -> None:
@@ -254,8 +326,11 @@ def run_workflow(
         return {
             "status": "source_incomplete",
             "source_status": source_report["status"],
+            "pause_reason": source_report["reason"],
             "work_id": work_id,
-            "episodes": source_report["episodes"],
+            "discovered_count": source_report["discovered_count"],
+            "completed_count": source_report["completed_count"],
+            "pending_count": source_report["pending_count"],
             "discovered_catalog": (
                 str(catalog_path.relative_to(source_path))
                 if discovery is not None
@@ -277,13 +352,15 @@ def run_workflow(
                 "translation_file": target["translation_file"],
                 "tm_key": target["tm_key"],
                 "source_version_id": artifact["version_id"],
+                "chapter_position": target["position"],
             }
         )
 
     Config.CHAPTER_MAP = chapter_map
     pipeline = TranslationPipeline()
-    tm_chapters = pipeline.rag.tm_data.get("chapters", {})
-    for target in targets:
+    tm_data = pipeline.rag.tm_data
+    tm_chapters = tm_data.get("chapters", {})
+    for target, chapter in zip(targets, chapter_map):
         pending = has_pending_chapter_transaction(
             str(translation_path),
             target["translation_file"],
@@ -294,13 +371,20 @@ def run_workflow(
             target["translation_file"],
             allow_missing=True,
         )
-        if output_path.exists() and not pending:
+        committed = _is_committed_translation(
+            str(source_path),
+            str(translation_path),
+            target,
+            chapter,
+            tm_data,
+        )
+        if (
+            (output_path.exists() or target["tm_key"] in tm_chapters)
+            and not pending
+            and not committed
+        ):
             raise FileExistsError(
-                "A translation target appeared during the workflow."
-            )
-        if target["tm_key"] in tm_chapters and not pending:
-            raise FileExistsError(
-                "Translation memory already contains this episode key."
+                "Existing translation output or memory does not match the current source."
             )
 
     asyncio.run(pipeline.run_all())

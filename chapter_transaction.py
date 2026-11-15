@@ -180,14 +180,16 @@ def _validate_journal(record: dict, raw_text: str, spec) -> str:
         "tm_base_sha256",
         "translation_text",
     }
+    allowed_fields = expected_fields | {"chapter_position"}
     if (
-        set(record) != expected_fields
+        set(record) not in (expected_fields, allowed_fields)
         or isinstance(record.get("schema_version"), bool)
         or record.get("schema_version") != 1
         or record.get("raw_file") != spec.raw_file
         or record.get("translation_file") != spec.translation_file
         or record.get("tm_key") != spec.tm_key
         or record.get("source_version_id") != spec.source_version_id
+        or record.get("chapter_position") != spec.chapter_position
     ):
         raise ValueError("Chapter transaction does not match the current chapter map.")
 
@@ -362,6 +364,7 @@ def commit_chapter_translation(
         "translation_file": spec.translation_file,
         "tm_key": spec.tm_key,
         "source_version_id": spec.source_version_id,
+        "chapter_position": spec.chapter_position,
         "raw_sha256": _sha256(raw_text.encode("utf-8")),
         "translation_sha256": _sha256(translation_text.encode("utf-8")),
         "tm_base_sha256": getattr(rag, "tm_disk_sha256", None),

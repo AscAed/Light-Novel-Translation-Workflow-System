@@ -4,13 +4,16 @@
 
 import os
 import json
+import hashlib
 import unittest
 import tempfile
 import shutil
 import numpy as np
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, MagicMock
 from rag_engine import RAGEngine
+from utils import write_bytes_atomically
 
 
 class TestRAGEngineUnit(unittest.TestCase):
@@ -150,6 +153,21 @@ Chapter 2 specific guidelines.
 
         self.assertIn("Chapter 10 guidance.", result)
         self.assertNotIn("Volume 2 guidance.", result)
+
+    def test_explicit_chapter_position_overrides_opaque_source_filename(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.guidelines_raw = (
+            "《翻译指导原则》 - [第 1 章]\nChapter 1 guidance.\n"
+            "《翻译指导原则》 - [第 2 章]\nChapter 2 guidance."
+        )
+
+        result = engine.get_partitioned_guidelines(
+            "normalized/opaque-hash.md",
+            chapter_position=2,
+        )
+
+        self.assertIn("Chapter 2 guidance.", result)
+        self.assertNotIn("Chapter 1 guidance.", result)
 
     @patch("rag_engine.RAGEngine._load_current_chapter_raw")
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
@@ -352,7 +370,7 @@ Chapter 2 specific guidelines.
         engine._chapter_tm_embeddings_cache = {"第3話.md": cached_embedding}
 
         with patch(
-            "rag_engine.write_text_atomically", side_effect=OSError("disk full")
+            "rag_engine.write_bytes_atomically", side_effect=OSError("disk full")
         ) as mock_write:
             with self.assertRaisesRegex(OSError, "disk full"):
                 engine.update_translation_memory(
@@ -380,6 +398,34 @@ Chapter 2 specific guidelines.
         self.assertEqual(engine.tm_data, saved_tm_data)
         self.assertNotIn("第3話.md", engine._chapter_tm_embeddings_cache)
         self.assertEqual(mock_embed.call_count, 2)
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
+    def test_tm_fingerprint_tracks_written_snapshot_not_later_external_edit(
+        self, mock_embed
+    ):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        written = {}
+
+        def write_then_edit(path, content):
+            written["content"] = content
+            write_bytes_atomically(path, content)
+            Path(path).write_bytes(b'{"chapters": {"external.md": []}}')
+
+        with patch("rag_engine.write_bytes_atomically", side_effect=write_then_edit):
+            engine.update_translation_memory(
+                "第3話.md",
+                [{"raw": "新原文", "translated": "新译文"}],
+            )
+
+        expected_fingerprint = hashlib.sha256(written["content"]).hexdigest()
+        self.assertEqual(engine._tm_disk_sha256, expected_fingerprint)
+        self.assertNotEqual(engine.current_tm_disk_sha256(), expected_fingerprint)
+        with self.assertRaisesRegex(RuntimeError, "changed on disk"):
+            engine.update_translation_memory(
+                "第4話.md",
+                [{"raw": "another source", "translated": "another translation"}],
+            )
+        self.assertEqual(mock_embed.call_count, 1)
 
     @patch("rag_engine.RAGEngine._generate_embedding_sync", return_value=[0.5] * 768)
     def test_external_tm_change_is_not_overwritten(self, mock_embed):

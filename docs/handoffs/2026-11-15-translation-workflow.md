@@ -1,6 +1,6 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-15。本轮计划梳理、当前可实施代码和文档工作已完成；项目路线图仍有后续阶段。额度信息不可见，未判断是否触及额度阈值。若继续执行，优先从文末“最终续接状态”开始，较早检查点是历史记录。
+> 状态基准：2026-11-16。较早的“最终续接状态”和 PR 快照为历史记录；最新工作区验证、提权测试和 PR 状态见文末“2026-11-16 审查回归与最新状态”。项目路线图仍有后续阶段，额度信息不可见。
 
 ## 目标与会话
 
@@ -174,3 +174,11 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 
 - 用户本次提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；当前 `a10926b` 中该模块有 11 个测试方法，因此不将此 9 项结果归属到当前 HEAD。详细边界及当前 11 项测试记录见[开发与验证](../development.md#2026-11-16-当前-checkout-验证)。
 - 当前 GitHub 快照：PR #58 仍为 open，head `a10926b`、base `d7e2afd`；对该 head 的 GitHub Actions workflow-runs 查询为空。PR #56 已合并，和仍开放的 PR #58 是不同变更。PR #58 未合并；合并前须重新核对审查意见并满足必要验证。
+
+## 2026-11-16 审查回归与最新状态
+
+- 当前 checkout 分支 `codex/translation-workflow-20261115`，基线 HEAD `bd9f4f3996c0117d7d69af6389029092b146808c`。基线上有 20 个已修改文件，包含 Kakuyomu 重跑与根目录校验、章节位置和来源版本绑定、段落对齐、RAG 磁盘指纹、EPUB YAML 元数据与 OPF spine 映射、manifest 单快照处理、README 代理说明，以及对应回归测试和文档；增量尚未提交或推送。用户原文、译文和凭据未纳入 Git。
+- 完整非 E2E unittest 运行 348 项，0 失败、4 项因普通 Windows 会话能力限制跳过；完整 mock E2E 7 项通过，230.911 秒。Python `compileall`、`git diff --check` 和文档本地链接目标检查通过。测试过程与限制见[开发与验证](../development.md#2026-11-16-pr-审查回归工作区)。
+- 用户同意对权限受限用例提权后，已用 `Start-Process -Verb RunAs` 重跑路径安全模块：11 项运行、10 项通过、仅 FIFO 用例跳过；此前普通权限跳过的 3 个符号链接用例均通过。用户提供的 9 项/3 项跳过结果仍不绑定到此 checkout。
+- PR #56 已合并。PR #58 仍开放，远端 head 为 `bd9f4f3996c0117d7d69af6389029092b146808c`，`mergeable=true`，但该 head 的 Actions 查询为空，且 Codex/CodeRabbit review threads 仍有未解决意见。本地未提交增量不属于该远端 head；未执行合并。
+- 本地增量已针对 PR #58 已知的 EPUB YAML 元数据读取、OPF spine 身份映射和 manifest 快照、RAG TM 指纹、来源读取绑定、章节对齐空白规范化、跨盘根路径判定、README 代理前置条件等意见补齐实现和回归测试；尚未推送，不能据此关闭远端 review threads。真实 Provider/Notion、人工译文验收、EPUBCheck/阅读器和部署仍未验证。

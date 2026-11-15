@@ -265,8 +265,8 @@ def gale_church_align(raw_paras: list[str], trans_paras: list[str]) -> list[tupl
 
 def align_chapter(raw_content: str, trans_content: str) -> list[tuple[str, str]]:
     """Determine alignment strategy and execute paragraph alignment."""
-    raw_paras = [p.strip() for p in raw_content.split("\n\n") if p.strip()]
-    trans_paras = [p.strip() for p in trans_content.split("\n\n") if p.strip()]
+    raw_paras = split_paragraphs(raw_content)
+    trans_paras = split_paragraphs(trans_content)
 
     if check_anchors_match(raw_paras, trans_paras):
         return align_anchor_guided(raw_paras, trans_paras)

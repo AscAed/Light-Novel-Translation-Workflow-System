@@ -160,20 +160,28 @@ def _reject_duplicate_keys(pairs):
     return result
 
 
+def parse_manifest_bytes(content: bytes) -> dict:
+    try:
+        manifest = json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Source manifest could not be read as valid JSON.") from exc
+    validate_manifest(manifest)
+    return manifest
+
+
 def load_manifest(path) -> dict:
     manifest_path = Path(path)
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("Source manifest path must be a regular file.")
     try:
-        with open_regular_file(manifest_path) as manifest_file:
-            manifest = json.load(
-                manifest_file,
-                object_pairs_hook=_reject_duplicate_keys,
-            )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        with open_regular_file(manifest_path, binary=True) as manifest_file:
+            content = manifest_file.read()
+    except OSError as exc:
         raise ValueError("Source manifest could not be read as valid JSON.") from exc
-    validate_manifest(manifest)
-    return manifest
+    return parse_manifest_bytes(content)
 
 
 def _verify_artifact_file(root, artifact: dict) -> None:

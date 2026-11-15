@@ -28,6 +28,7 @@ from scripts.align_chapters import (
     load_existing_tm,
     main as align_main,
 )
+from utils import split_paragraphs
 
 
 class TestParagraphAlignmentUnit(unittest.TestCase):
@@ -133,6 +134,24 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
         aligned = align_chapter("原文一\n\n原文二", "译文段落")
         self.assertEqual(len(aligned), 1)
         self.assertEqual(aligned[0], ("原文一\n\n原文二", "译文段落"))
+
+    def test_align_chapter_preserves_unicode_indentation_for_provenance(self):
+        raw = "\u3000source paragraph\n\n「source quote」"
+        translated = "\u3000translated paragraph\n\n「translated quote」"
+
+        aligned = align_chapter(raw, translated)
+
+        self.assertEqual(
+            aligned,
+            [
+                ("\u3000source paragraph", "\u3000translated paragraph"),
+                ("「source quote」", "「translated quote」"),
+            ],
+        )
+        raw_indices, _ = _find_ordered_paragraph_indices(
+            split_paragraphs(raw), aligned[0][0]
+        )
+        self.assertEqual(raw_indices, [1])
 
     def test_aligned_text_maps_back_to_ordered_source_paragraph_indices(self):
         indices, next_index = _find_ordered_paragraph_indices(

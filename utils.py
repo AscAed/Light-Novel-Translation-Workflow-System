@@ -270,12 +270,45 @@ def write_text_atomically(path: str, content: str) -> None:
         raise
 
 
+def write_bytes_atomically(path: str, content: bytes) -> None:
+    """Atomically replace a file with the exact supplied bytes."""
+    if not isinstance(content, bytes):
+        raise TypeError("Atomic binary content must be bytes.")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError("Symbolic links are not allowed for persisted data.")
+
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, target)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def split_paragraphs(text: str) -> List[str]:
-    paragraphs = [
-        paragraph.strip(" \t\r\n\f\v")
-        for paragraph in text.split("\n\n")
-    ]
-    return [paragraph for paragraph in paragraphs if paragraph]
+    paragraphs = []
+    for paragraph in text.split("\n\n"):
+        if not paragraph.strip():
+            continue
+        paragraphs.append(paragraph.strip(" \t\r\n\f\v"))
+    return paragraphs
 
 
 def validate_tm_source_provenance(provenance: dict, pair_count: int) -> None:

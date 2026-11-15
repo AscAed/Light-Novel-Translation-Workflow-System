@@ -13,6 +13,7 @@ from unittest.mock import patch
 from epub_builder import build_epub_candidate, get_pandoc_version
 from scripts.build_epub_candidate import main as build_epub_cli
 from source_ingestion import source_artifact_id
+from source_manifest import verify_manifest_artifact
 
 
 class EpubCandidateTests(unittest.TestCase):
@@ -191,7 +192,7 @@ class EpubCandidateTests(unittest.TestCase):
         observed = {}
 
         def mutate_source_after_snapshot(command, **kwargs):
-            if "--from=markdown" in command:
+            if "--from=markdown-yaml_metadata_block" in command:
                 separator = command.index("--")
                 staged_inputs = command[separator + 1 :]
                 self.assertEqual(len(staged_inputs), 2)
@@ -207,6 +208,7 @@ class EpubCandidateTests(unittest.TestCase):
                     all(not value.startswith("--") for value in staged_inputs)
                 )
                 observed["option_separator"] = separator
+                observed["yaml_metadata_disabled"] = True
                 option_named_chapter.write_bytes(
                     b"# Chapter One\n\nChanged after validation.\n"
                 )
@@ -223,6 +225,7 @@ class EpubCandidateTests(unittest.TestCase):
             (output_dir / "build.json").read_text(encoding="utf-8")
         )
         self.assertIn("option_separator", observed)
+        self.assertTrue(observed["yaml_metadata_disabled"])
         self.assertEqual(
             build_manifest["chapters"][0]["content_sha256"],
             hashlib.sha256(original_bytes).hexdigest(),
@@ -235,6 +238,74 @@ class EpubCandidateTests(unittest.TestCase):
             )
         self.assertIn("Synthetic translation one.", xhtml)
         self.assertNotIn("Changed after validation.", xhtml)
+
+    def test_build_uses_one_manifest_snapshot_for_validation_and_hash(self):
+        manifest_path = self.source_root / "source_manifest.json"
+        original_bytes = manifest_path.read_bytes()
+        changed = {"done": False}
+        original_verify = verify_manifest_artifact
+
+        def mutate_manifest_after_snapshot(root, manifest, version_id):
+            if not changed["done"]:
+                changed["done"] = True
+                manifest_path.write_bytes(original_bytes + b"\n")
+            return original_verify(root, manifest, version_id)
+
+        with patch(
+            "epub_builder.verify_manifest_artifact",
+            side_effect=mutate_manifest_after_snapshot,
+        ):
+            self._build()
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        build_manifest = json.loads(
+            (output_dir / "build.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(changed["done"])
+        self.assertEqual(
+            build_manifest["source_manifest"]["content_sha256"],
+            hashlib.sha256(original_bytes).hexdigest(),
+        )
+
+    def test_build_maps_chapter_by_spine_order_when_pandoc_changes_title(self):
+        title = "What's next?"
+        (self.input_root / "chapter-1.md").write_text(
+            f"# {title}\n\nSynthetic translation one.\n",
+            encoding="utf-8",
+        )
+        self.catalog["chapters"][0]["title"] = title
+        self._write_catalog()
+
+        result = self._build()
+
+        self.assertEqual(result["status"], "candidate")
+
+    def test_chapter_yaml_metadata_cannot_embed_unselected_css(self):
+        sentinel = "PRIVATE-CSS-SENTINEL"
+        (self.input_root / "private.css").write_text(
+            f"/* {sentinel} */", encoding="utf-8"
+        )
+        (self.input_root / "chapter-1.md").write_text(
+            "# Chapter One\n\n---\ncss: private.css\n...\n\n"
+            "Synthetic translation one.\n",
+            encoding="utf-8",
+        )
+
+        self._build()
+
+        artifact = (
+            self.output_root
+            / "synthetic-work"
+            / "edition-001"
+            / "candidate.epub"
+        )
+        with zipfile.ZipFile(artifact) as archive:
+            self.assertTrue(
+                all(
+                    sentinel.encode("utf-8") not in archive.read(name)
+                    for name in archive.namelist()
+                )
+            )
 
     def test_independent_chapters_scope_duplicate_footnotes_locally(self):
         (self.input_root / "chapter-1.md").write_text(

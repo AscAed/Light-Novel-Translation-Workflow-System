@@ -397,6 +397,7 @@ class ChapterSpec:
     translation_file: str
     tm_key: str
     source_version_id: Optional[str] = None
+    chapter_position: Optional[int] = None
 
 
 def get_chapter_specs(
@@ -430,17 +431,19 @@ def get_chapter_specs(
         if (
             not isinstance(item, dict)
             or not expected_fields <= set(item)
-            or not set(item) <= expected_fields | {"source_version_id"}
+            or not set(item)
+            <= expected_fields | {"source_version_id", "chapter_position"}
         ):
             raise ValueError(
                 f"CHAPTER_MAP entry {index} must contain exactly "
                 "raw_file, translation_file, and tm_key, with optional "
-                "source_version_id."
+                "source_version_id and chapter_position."
             )
         raw_file = item["raw_file"]
         translation_file = item["translation_file"]
         tm_key = item["tm_key"]
         source_version_id = item.get("source_version_id")
+        chapter_position = item.get("chapter_position")
         if (
             not isinstance(raw_file, str)
             or not raw_file.lower().endswith(".md")
@@ -498,6 +501,14 @@ def get_chapter_specs(
                     f"CHAPTER_MAP entry {index} source version does not match "
                     "its normalized raw_file."
                 )
+        if "chapter_position" in item and (
+            isinstance(chapter_position, bool)
+            or not isinstance(chapter_position, int)
+            or chapter_position < 1
+        ):
+            raise ValueError(
+                f"CHAPTER_MAP entry {index} has an invalid chapter_position."
+            )
         if translation_path.exists() and not translation_path.is_file():
             raise ValueError(
                 f"CHAPTER_MAP entry {index} translation target must be a regular file."
@@ -516,7 +527,13 @@ def get_chapter_specs(
         translation_paths.add(translation_identity)
         tm_keys.add(tm_identity)
         specs.append(
-            ChapterSpec(raw_file, translation_file, tm_key, source_version_id)
+            ChapterSpec(
+                raw_file,
+                translation_file,
+                tm_key,
+                source_version_id,
+                chapter_position,
+            )
         )
     return specs
 
@@ -1037,7 +1054,9 @@ class TranslationPipeline:
 
     async def _build_run_context(self, chapter_filename: str, raw_text: str, current_chap_num: Optional[float]) -> dict:
         guidelines = self.rag.get_partitioned_guidelines(
-            chapter_filename, current_raw_text=raw_text
+            chapter_filename,
+            current_raw_text=raw_text,
+            chapter_position=current_chap_num,
         )
         tm_matches = await self.rag.query_translation_memory(raw_text)
         tm_prompt = ""
@@ -1441,7 +1460,9 @@ class TranslationPipeline:
                     Config.OUTPUT_DIR, spec.translation_file, ""
                 )
             return
-        current_chap_num = extract_chapter_num(spec.raw_file)
+        current_chap_num = spec.chapter_position
+        if current_chap_num is None:
+            current_chap_num = extract_chapter_num(spec.raw_file)
         if current_chap_num is None:
             current_chap_num = extract_chapter_num(spec.tm_key)
         

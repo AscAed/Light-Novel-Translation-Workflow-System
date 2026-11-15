@@ -971,6 +971,69 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             split_paragraphs("　全角空格保留\n\n\u00a0不换行空格保留"),
             ["　全角空格保留", "\u00a0不换行空格保留"],
         )
+        self.assertEqual(
+            split_paragraphs("第一段\n\n　\n\n\u00a0\n\n第二段"),
+            ["第一段", "第二段"],
+        )
+
+    def test_chapter_map_preserves_catalog_position(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            output_dir = root / "translated"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            (raw_dir / "normalized-hash.md").write_text(
+                "synthetic source", encoding="utf-8"
+            )
+            chapter_map = [
+                {
+                    "raw_file": "normalized-hash.md",
+                    "translation_file": "episode-0002.md",
+                    "tm_key": "episode:2",
+                    "chapter_position": 2,
+                }
+            ]
+
+            specs = get_chapter_specs(
+                str(raw_dir), str(output_dir), chapter_map
+            )
+
+        self.assertEqual(specs[0].chapter_position, 2)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            output_dir = root / "translated"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            (raw_dir / "normalized-hash.md").write_text(
+                "synthetic source", encoding="utf-8"
+            )
+            chapter_map[0]["chapter_position"] = True
+            with self.assertRaisesRegex(ValueError, "chapter_position"):
+                get_chapter_specs(str(raw_dir), str(output_dir), chapter_map)
+
+    async def test_context_passes_explicit_position_to_guideline_selection(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline.rag = SimpleNamespace(
+            get_partitioned_guidelines=Mock(return_value="chapter rules"),
+            query_translation_memory=AsyncMock(return_value=[]),
+            get_cleaned_glossary=Mock(return_value=[]),
+        )
+        pipeline.story_summary = ""
+        pipeline.info = {}
+
+        await pipeline._build_run_context(
+            "normalized/opaque-content-hash.md",
+            "synthetic source",
+            2,
+        )
+
+        pipeline.rag.get_partitioned_guidelines.assert_called_once_with(
+            "normalized/opaque-content-hash.md",
+            current_raw_text="synthetic source",
+            chapter_position=2,
+        )
 
     async def test_mapped_chapter_writes_nested_output_and_uses_tm_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1000,6 +1063,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 "Ntera/chapter10.md",
                 "Volume2/chapter10.md",
                 "source-version-1",
+                2,
             )
             pipeline = TranslationPipeline.__new__(TranslationPipeline)
             pipeline.rag = SimpleNamespace(
@@ -1031,7 +1095,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 pipeline._build_run_context.await_args.args,
-                ("Volume 2/chapter10.md", "synthetic source", 10.0),
+                ("Volume 2/chapter10.md", "synthetic source", 2),
             )
             pipeline.rag.update_translation_memory.assert_called_once()
             self.assertEqual(
@@ -1219,7 +1283,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                         return_value=[0.5],
                     ):
                         with patch(
-                            "rag_engine.write_text_atomically",
+                            "rag_engine.write_bytes_atomically",
                             side_effect=OSError("disk full"),
                         ):
                             with self.assertRaisesRegex(OSError, "disk full"):
@@ -1323,6 +1387,41 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
 
             pipeline.rag.update_translation_memory.assert_called_once()
             self.assertEqual(output_path.read_text(encoding="utf-8"), "translated")
+
+    async def test_pending_chapter_transaction_preserves_shortened_output_prefix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            raw_dir = Path(temp_dir) / "生肉"
+            output_dir = Path(temp_dir) / "熟肉"
+            raw_dir.mkdir()
+            output_dir.mkdir()
+            (raw_dir / "第1話.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(side_effect=OSError("disk full")),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        await pipeline.run_chapter("第1話.md")
+                    output_path = output_dir / "第1話.md"
+                    output_path.write_text("translated", encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "differs from its recorded"):
+                        await pipeline.run_chapter("第1話.md")
+
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "translated")
+            pipeline.rag.update_translation_memory.assert_called_once()
 
     async def test_output_publish_interruption_recovers_from_pending_transaction(self):
         with tempfile.TemporaryDirectory() as temp_dir:

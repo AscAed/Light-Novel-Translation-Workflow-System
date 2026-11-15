@@ -16,6 +16,16 @@
 - 用户已授权尝试提权，但当前执行器此前无法启动管理员进程；没有绕过策略。上述 `-q` 输出本身未说明 PowerShell 是否提升，也不能替代在管理员 PowerShell 中对当前 11 项测试运行 `-v`。
 - `git diff --check HEAD`、Python `compileall` 通过。`.venv\Scripts\python.exe tests\run_tests.py` 重跑 7 项完整 mock E2E，229.307 秒，退出码 0；runner 汇总前显示的 content-filter 和段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
 
+## 2026-11-16 PR 审查回归工作区
+
+- 基线为分支 `codex/translation-workflow-20261115`、HEAD `bd9f4f3996c0117d7d69af6389029092b146808c`；本节结果覆盖该基线上的未提交修复与回归测试，不代表远端 PR head 已包含这些改动。
+- 本增量修复审查确认的边界：Kakuyomu 重跑只跳过与来源版本/TM/译文一致的已提交章节；章节位置显式传入摘要与指导选择；来源抽取校验实际读取字节；RAG 以原子二进制写入的字节快照计算 TM 指纹；对齐复用统一段落拆分；跨 Windows 盘符的根目录视为互不包含；EPUB 禁用正文 YAML 元数据、按 OPF spine 正文顺序映射章节，并用同一 manifest 字节快照完成解析、验证和哈希。
+- 完整非 E2E unittest 选择运行 348 项，0 失败、4 项跳过。3 项符号链接用例在普通权限会话中因 `WinError 1314` 跳过，FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- 之后以 `Start-Process -Verb RunAs` 启动 PowerShell 重跑 `tests.test_security_path_traversal -v`：11 项运行，10 项通过、1 项跳过、0 失败；三个符号链接用例均通过，FIFO 用例仍因平台能力跳过。用户此前提供的 9 项/3 项跳过输出未提供 HEAD 与跳过原因，仍作为独立历史结果，不替代本次专项结果。
+- `.venv\Scripts\python.exe tests\run_tests.py` 完整本地 mock E2E：7 项通过，230.911 秒，退出码 0。测试输出中的 content-filter 和段落错配异常来自预期负向 fixture。
+- 当前工作区的 `compileall`、`git diff --check` 和 Markdown 本地链接目标检查通过。此记录不表示真实 Provider/Notion 调用、人工译文/版式验收、EPUBCheck/阅读器或部署已通过。
+- GitHub PR 状态：PR #56 已合并。PR #58 仍开放，远端 head 为 `bd9f4f3996c0117d7d69af6389029092b146808c`；该 head 的 Actions workflow-runs 查询为空，且仍有未解决的 Codex/CodeRabbit 审查意见。本节的工作区改动尚未推送，不以 mergeable 标记代替审查与 CI 验收，因此 PR #58 未合并。
+
 ## 2026-11-15 当前工作区定向验证
 
 - 基线：分支 `codex/translation-workflow-20261115`、当前 HEAD `c3f313b`；工作区包含续接开始前的未提交修改和本任务增量，完整保留清单见 handoff。Provider 环境为本机 `.venv` Python 3.14.7。
@@ -152,7 +162,7 @@
 }
 ```
 
-`RAW_DIR` 必须指向该 manifest 的数据根目录。选定版本须是 `normalized_source` artifact，且其 manifest 路径和文件 SHA-256 必须与映射一致；未配置来源版本时，旧三字段 `CHAPTER_MAP` 保持兼容。
+`RAW_DIR` 必须指向该 manifest 的数据根目录。选定版本须是 `normalized_source` artifact，且其 manifest 路径和文件 SHA-256 必须与映射一致；`chapter_position` 可选，用于源文件名/TM key 不含可解析章节号时选择剧情摘要窗口和章节指导。未配置新增字段时，旧三字段 `CHAPTER_MAP` 保持兼容。
 
 ```powershell
 # 翻译项目目录
@@ -324,6 +334,7 @@ python -m pip install -r requirements.txt
 ### 2026-11-15 I4 来源版本绑定子项（首次验证）
 
 - 扩展 `CHAPTER_MAP`：可选 `source_version_id` 需要 `SOURCE_MANIFEST_PATH`（相对 `RAW_DIR`），并验证目标版本存在、属于 `normalized_source`、路径与 `raw_file` 一致且文件 SHA-256 有效；不带该字段的既有三字段映射保持兼容。
+- `CHAPTER_MAP.chapter_position` 可选，必须是大于零的整数；有目录序号但原文路径为内容寻址名称时，流水线用它选择剧情摘要窗口和章节指导，不从哈希或平台 ID 推断章节号。
 - `pipeline.py` 和 `scripts/align_chapters.py` 将版本 ID 写入 TM 来源记录；`scripts/auto_extract_knowledge.py` 将版本 ID 写入章节输入/来源清单；`scripts/validate_tm_provenance.py` 在配置 manifest 时复核版本、路径及哈希，未配置时将版本关联报告为 `unverified`。
 - `.venv\Scripts\python.exe -m unittest tests.test_source_manifest tests.test_source_ingestion tests.test_local_source_ingestion_cli tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_security_path_traversal tests.test_pipeline_contracts tests.test_align_chapters_unit tests.test_knowledge_extraction_unit tests.test_tm_provenance_unit -q`：182 项运行，178 项通过、4 项跳过、0 项失败。3 项符号链接测试因 Windows `WinError 1314` 跳过，FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。
 - `.venv\Scripts\python.exe tests\run_tests.py`：4 项本地 mock E2E 通过，527.593 秒，退出码 0。runner 控制台中负向 fixture 的内容拦截、格式异常 traceback 是预期断言输入；不代表 E2E 失败或真实 Provider 调用。

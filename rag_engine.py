@@ -20,7 +20,7 @@ from utils import (
     read_child_text,
     require_provider_data_authorized,
     validate_tm_source_provenance,
-    write_text_atomically,
+    write_bytes_atomically,
 )
 from scripts.validate_knowledge_provenance import audit_knowledge_provenance
 from tm_review import load_reviewed_tm_snapshot
@@ -486,10 +486,15 @@ class RAGEngine:
         self,
         chapter_filename: str,
         current_raw_text: Optional[str] = None,
+        chapter_position: Optional[int] = None,
     ) -> str:
         """Retrieve global and matching/semantic-fallback chapter guidelines under 10KB."""
         global_guidelines, chapter_dict = self._parse_guidelines_content()
-        target_chap = extract_chapter_num(chapter_filename, default=0.0)
+        target_chap = (
+            chapter_position
+            if chapter_position is not None
+            else extract_chapter_num(chapter_filename, default=0.0)
+        )
 
         if target_chap in chapter_dict:
             matched_content = chapter_dict[target_chap]
@@ -634,17 +639,21 @@ class RAGEngine:
                 updated_tm_data.pop("source_provenance", None)
 
         try:
-            content = json.dumps(updated_tm_data, ensure_ascii=False, indent=2)
+            content = json.dumps(
+                updated_tm_data,
+                ensure_ascii=False,
+                indent=2,
+            ).encode("utf-8")
             if self.current_tm_disk_sha256() != self._tm_disk_sha256:
                 raise RuntimeError(
                     "Translation memory changed on disk; reload before updating."
                 )
-            write_text_atomically(self.tm_path, content)
+            write_bytes_atomically(self.tm_path, content)
         except Exception:
             logger.exception("Failed to write translation memory to %s", self.tm_path)
             raise
 
         self.tm_data = updated_tm_data
-        self._tm_disk_sha256 = self.current_tm_disk_sha256()
+        self._tm_disk_sha256 = hashlib.sha256(content).hexdigest()
         if hasattr(self, "_chapter_tm_embeddings_cache"):
             self._chapter_tm_embeddings_cache.pop(chapter_filename, None)
