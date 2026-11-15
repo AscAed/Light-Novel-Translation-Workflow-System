@@ -2,7 +2,7 @@
 
 ## 2026-11-16 当前 checkout 验证
 
-- 基线：分支 `codex/translation-workflow-20261115`，测试前 HEAD `c3f313b`；工作树含待审阅的实现、回归测试和文档修改。
+- 文档更新前的 checkout：分支 `codex/translation-workflow-20261115`，HEAD `a10926b`，工作树干净。代码与测试基线为 `3ffb7f1`；`a10926b` 仅更新 Markdown 状态记录，没有改动实现或测试文件。
 - 完整非 E2E 单测命令：
 
   ```powershell
@@ -10,9 +10,10 @@
   & .\.venv\Scripts\python.exe -m unittest @targets -q
   ```
 
-  333 项运行，0 失败，4 项跳过。3 项符号链接用例因 Windows `WinError 1314` 未授予创建权限而跳过；FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。
-- 当前版本单独运行 `tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 项跳过原因同为 `WinError 1314`，1 项为 FIFO 平台能力缺失。用户此前报告的 9 项/3 项结果与此 checkout 的测试集合不同，不替代本次结果。
-- 已获用户授权尝试提权，但当前执行器阻止启动管理员进程；没有绕过策略或把符号链接用例记为通过。需在管理员 PowerShell 中重跑该模块，确认三个符号链接用例是否可执行。
+  在代码与测试基线 `3ffb7f1` 上运行 333 项，0 失败、4 项跳过。3 项符号链接用例因 Windows `WinError 1314` 无法创建链接而跳过；FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。
+- 在 HEAD `a10926b` 运行 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 项因 `WinError 1314` 跳过，1 项为 FIFO 平台能力缺失。
+- 用户另行提供的 PowerShell `-q` 输出为 `Ran 9 tests ... OK (skipped=3)`。该输出未提供运行时 HEAD，且 `-q` 不显示跳过原因；计数与当前 checkout 的 11 个测试方法不一致，因此单独保留，不绑定到 `a10926b`，也不据此断言符号链接用例已运行或已通过。
+- 用户已授权尝试提权，但当前执行器此前无法启动管理员进程；没有绕过策略。上述 `-q` 输出本身未说明 PowerShell 是否提升，也不能替代在管理员 PowerShell 中对当前 11 项测试运行 `-v`。
 - `git diff --check HEAD`、Python `compileall` 通过。`.venv\Scripts\python.exe tests\run_tests.py` 重跑 7 项完整 mock E2E，229.307 秒，退出码 0；runner 汇总前显示的 content-filter 和段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
 
 ## 2026-11-15 当前工作区定向验证

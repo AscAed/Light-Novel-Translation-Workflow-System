@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态基准：2026-11-15，代码基线 `c3f313b`，分支 `codex/translation-workflow-20261115`；工作区有未提交修改。阶段为建议路线，非已批准承诺。阶段 0–3 均为`部分实现`，阶段 4–5 为`计划`。Kakuyomu I2 已从主页发现并 source-only 获取 88/88 个公开目录话目；88 个单话 Markdown 和一份有序全书 export 均已生成，manifest 文件哈希通过验证。用户明确表示不需要官方澄清并要求按普通 URL 路线继续；既有平台规则观察作为风险记录，不是平台背书/法律结论或当前官方答复前置。采集器遵守 robots，不登录、不访问 `/read`；不覆盖草稿/私有话或平台公开计数以外的完整性。真实 Provider 翻译、Notion、正文格式人工验收尚未执行。synthetic E2E 另验证 homepage-to-mock-translation 链路。阶段 2 有术语/概要/TM 的局部本地审核回执与 approved-only 原型；回执不签名、不认证审核者身份、不调用审核 Provider；旧 Markdown 概要仍无审核/来源新鲜度保证。I2 显式归档上限不构成物理磁盘配额；I3 的 checkpoint 未签名且可编辑，格式语义清洗/差异映射未实现；I4 只读发现旧来源引用，未持久化传播译文/知识过期状态。I5 builder 已校验来源版本与 source manifest，但仍是显式选集 candidate，不是质量/全书完整性批准。D-11 有单写入者进程中断恢复，不保证多进程、断电或自动冲突处理。验证范围和阶段缺口见[开发与验证](development.md)。
+> 状态基准：2026-11-16；本次文档更新前工作区快照为 HEAD `a10926b`（当时干净），代码与测试基线 `3ffb7f1`，分支 `codex/translation-workflow-20261115`。阶段为建议路线，非已批准承诺。阶段 0–3 均为`部分实现`，阶段 4–5 为`计划`。Kakuyomu I2 已从主页发现并 source-only 获取 88/88 个公开目录话目；88 个单话 Markdown 和一份有序全书 export 均已生成，manifest 文件哈希通过验证。用户明确表示不需要官方澄清并要求按普通 URL 路线继续；既有平台规则观察作为风险记录，不是平台背书/法律结论或当前官方答复前置。采集器遵守 robots，不登录、不访问 `/read`；不覆盖草稿/私有话或平台公开计数以外的完整性。真实 Provider 翻译、Notion、正文格式人工验收尚未执行。synthetic E2E 另验证 homepage-to-mock-translation 链路。阶段 2 有术语/概要/TM 的局部本地审核回执与 approved-only 原型；回执不签名、不认证审核者身份、不调用审核 Provider；旧 Markdown 概要仍无审核/来源新鲜度保证。I2 显式归档上限不构成物理磁盘配额；I3 的 checkpoint 未签名且可编辑，格式语义清洗/差异映射未实现；I4 只读发现旧来源引用，未持久化传播译文/知识过期状态。I5 builder 已校验来源版本与 source manifest，但仍是显式选集 candidate，不是质量/全书完整性批准。D-11 有单写入者进程中断恢复，不保证多进程、断电或自动冲突处理。验证范围和阶段缺口见[开发与验证](development.md)。
 
 ## 进度快照
 

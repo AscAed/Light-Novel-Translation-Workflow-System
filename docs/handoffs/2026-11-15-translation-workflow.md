@@ -169,3 +169,8 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
   第二行应返回 `True`。FIFO 用例在 Windows 上仍可能因 `os.mkfifo` 不可用而正常跳过。
 - GitHub 状态复核：PR #56 已合并；PR #58 指向 `3ffb7f1`，状态仍为 open，虽标记 mergeable，但 review threads 尚未清理且该提交的 workflow-runs 查询为空，因此本轮未合并 PR #58。PR #58 描述已同步当前测试数字和限制；评论的修复状态仍待审阅确认。
 - 剩余人类工作：管理员环境补跑 symlink 用例；人工验收已归档章节的段落、U+3000、ruby、标点及顺序；本地确认 Provider allowlist/端点后执行获授权的单话真实翻译并人工验收。真实 Provider、Notion、EPUB 阅读器和部署未在本轮验证。
+
+## 2026-11-16 路径测试结果续记
+
+- 用户本次提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；当前 `a10926b` 中该模块有 11 个测试方法，因此不将此 9 项结果归属到当前 HEAD。详细边界及当前 11 项测试记录见[开发与验证](../development.md#2026-11-16-当前-checkout-验证)。
+- 当前 GitHub 快照：PR #58 仍为 open，head `a10926b`、base `d7e2afd`；对该 head 的 GitHub Actions workflow-runs 查询为空。PR #56 已合并，和仍开放的 PR #58 是不同变更。PR #58 未合并；合并前须重新核对审查意见并满足必要验证。
