@@ -1,6 +1,15 @@
 # 开发与验证
 
-## 2026-11-16 合并后的当前验证
+## 2026-11-16 PR 60 合并后基线
+
+- 当前主分支：`main`，HEAD `df4e3ed84aee8616e10dafde4f6608017bd7b3e2`。PR #60 将只读 Kakuyomu 章节映射预览 squash 合并；合并树与已验证分支 `codex/translation-plan-preview-20261116` 的 tree `a3cef677a0407d24392fafd81eb9b87c8ba05c0c` 一致。
+- 当前代码树完整非 E2E unittest：20 个模块运行 358 项，0 失败、4 项按 Windows 符号链接权限/FIFO 能力跳过。管理员权限安全路径复跑 11 项，10 项通过、仅 FIFO 跳过；3 项符号链接用例均执行通过。
+- 当前代码树本地 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项，245.766 秒，退出码 0。负向 fixture 的 content-filter 与段落错配异常是预期输出；未调用真实 Provider。
+- GitHub PR #60：Codex 自动审查完成且无 findings；CodeRabbit 在合并时仍为 `in_progress`；commit status 列表为空，未发现 CI 检查结果。PR 已合并，不把仍运行的 CodeRabbit 检查称为通过。
+- 本机 `--plan-only` 对 88 话试点返回 `ready_for_review`，88/88 个来源通过文件哈希/版本关系核验，0 问题、0 目标冲突、0 网络请求/Provider 调用/写入。人工映射与原文格式验收仍未完成；摘要不是签名审批回执，也未被正式运行强制校验。
+- 真实 Provider/API 调用、翻译质量、Notion、EPUBCheck/目标阅读器和部署仍未验证；最近一次本机 Provider 配置存在性检查未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`。
+
+## 2026-11-16 PR #58/#59 检查点（历史）
 
 - 当前主分支：`main`，HEAD `75305937a6b8020ab2dfc515c720f4fa871c5dce`。PR #58 于 2026-11-16（Asia/Shanghai）以 squash 合并；实现/测试提交为 `8f1f89fb62a221fffd8415489fff82cbf4248116`，PR #59 随后同步项目状态文档。
 - 完整非 E2E unittest：按仓库既有模块选择运行 351 项，0 失败、4 项跳过。定向 Kakuyomu adapter/workflow 与 EPUB builder 回归运行 52 项，全部通过。
@@ -13,7 +22,7 @@
 
 ## 2026-11-16 Kakuyomu 本地映射预览验证
 
-- 实现分支：`codex/translation-plan-preview-20261116`，基于 `origin/main` `75305937a6b8020ab2dfc515c720f4fa871c5dce`。新增 `scripts/run_kakuyomu_workflow.py --plan-only`，可对已有 catalog 做只读计划检查，不需要项目 Provider 配置。
+- 实现分支：`codex/translation-plan-preview-20261116`，基于 `origin/main` `75305937a6b8020ab2dfc515c720f4fa871c5dce`；已由 PR #60 squash 合并至 `main`，合并提交 `df4e3ed84aee8616e10dafde4f6608017bd7b3e2`。新增 `scripts/run_kakuyomu_workflow.py --plan-only`，可对已有 catalog 做只读计划检查，不需要项目 Provider 配置。
 - `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow -q`：15 项通过。覆盖只读行为、JSON CLI、不泄露原文/译文、目标文件冲突、catalog 元数据错配、来源更新后的 normalized 过期、normalized 文件缺失及 manifest 缺少 normalized artifact。
 - 当前分支完整非 E2E unittest：按 `tests/test_*.py` 逐模块运行并排除 `test_e2e.py`，20 个模块共 358 项，0 失败、4 项跳过。跳过项为 3 个普通权限下无法创建符号链接的用例及 1 个 Windows 不支持的 FIFO 用例；随后管理员权限复跑安全路径模块，11 项中 10 项通过、仅 FIFO 跳过，3 个符号链接用例均执行通过。用户提供的同名测试输出为 9 项、3 项跳过；因该计数与当前 checkout 中的 11 项不同，分开记录，不将其当作本分支基线。
 - `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 运行 7 项，245.766 秒，退出码 0。输出中的 content-filter 和段落错配异常来自预期负向 fixture；仅访问本机 mock server，不代表真实 Provider 已验证。

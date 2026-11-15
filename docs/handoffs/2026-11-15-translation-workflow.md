@@ -181,7 +181,7 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 
 ## 2026-11-16 路径测试结果续记
 
-- 用户提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；该 9 项结果不归属到本交接记录中的任何特定 SHA。后续当前 checkout 的管理员结果见本文件最新状态段，[开发与验证](../development.md#2026-11-16-合并后的当前验证)记录此结果。
+- 用户提供的命令输出：`.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q`，`Ran 9 tests ... OK (skipped=3)`。输出未包含运行时 HEAD、逐项跳过原因或管理员权限状态；该 9 项结果不归属到本交接记录中的任何特定 SHA。后续当前 checkout 的管理员结果见本文件最新状态段，[开发与验证](../development.md#2026-11-16-pr-60-合并后基线)记录了已合并代码树的复核。
 - 当前 GitHub 快照：PR #58 仍为 open，head `a10926b`、base `d7e2afd`；对该 head 的 GitHub Actions workflow-runs 查询为空。PR #56 已合并，和仍开放的 PR #58 是不同变更。PR #58 未合并；合并前须重新核对审查意见并满足必要验证。
 
 ## 2026-11-16 审查回归与最新状态
