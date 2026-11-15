@@ -147,6 +147,8 @@ class _KakuyomuRequestClient:
             raise ValueError("Kakuyomu request failed.") from None
         except urllib.error.URLError:
             raise SourceUnavailable("Kakuyomu request failed.") from None
+        except TimeoutError:
+            raise SourceUnavailable("Kakuyomu response timed out.") from None
         if len(payload) > max_bytes:
             raise ValueError("Kakuyomu response exceeds the byte limit.")
         return payload, content_type

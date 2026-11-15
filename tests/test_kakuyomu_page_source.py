@@ -118,6 +118,11 @@ class FakeResponse(io.BytesIO):
         return self._url
 
 
+class TimeoutBodyResponse(FakeResponse):
+    def read(self, size=-1):
+        raise TimeoutError("synthetic response body timeout")
+
+
 class FakeOpener:
     def __init__(self, responses):
         self.responses = responses
@@ -131,6 +136,8 @@ class FakeOpener:
             raise response
         if response is None:
             raise AssertionError(f"Unexpected request: {url}")
+        if isinstance(response, FakeResponse):
+            return response
         payload, content_type = response
         return FakeResponse(payload, url, content_type)
 
@@ -192,6 +199,58 @@ def make_adapter(
 
 
 class KakuyomuPageAdapterTests(unittest.TestCase):
+    def test_response_body_timeout_pauses_collection_and_can_resume(self):
+        responses = {
+            "https://kakuyomu.jp/robots.txt": (
+                ROBOTS.encode("utf-8"),
+                "text/plain; charset=utf-8",
+            ),
+            PAGE_URL: TimeoutBodyResponse(
+                b"", PAGE_URL, "text/html; charset=utf-8"
+            ),
+        }
+        opener = FakeOpener(responses)
+        clock = FakeClock()
+
+        def create_adapter():
+            return KakuyomuPageAdapter(
+                WORK_ID,
+                (
+                    KakuyomuEpisodePage(
+                        EpisodeMetadata(EPISODE_ID, "第1話 はじまり", 1),
+                        PAGE_URL,
+                    ),
+                ),
+                opener=opener,
+                sleep=clock.sleep,
+                clock=clock.now,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            paused = collect_source(
+                create_adapter(),
+                root=temporary,
+                work_id=WORK_ID,
+            )
+            responses[PAGE_URL] = (
+                PAGE_HTML.encode("utf-8"),
+                "text/html; charset=utf-8",
+            )
+            resumed = collect_source(
+                create_adapter(),
+                root=temporary,
+                work_id=WORK_ID,
+            )
+
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(paused["reason"], "unavailable")
+        self.assertEqual(resumed["status"], "complete")
+        self.assertEqual(resumed["completed_count"], 1)
+        self.assertEqual(
+            [request[0] for request in opener.requests if "/episodes/" in request[0]],
+            [PAGE_URL, PAGE_URL],
+        )
+
     def test_request_delay_is_bounded_for_adapter_and_both_clis(self):
         for parser in (_ingest_minimum_delay, _workflow_minimum_delay):
             with self.subTest(parser=parser.__module__):
