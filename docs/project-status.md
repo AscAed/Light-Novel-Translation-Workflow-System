@@ -1,6 +1,6 @@
 # 项目现状
 
-> 状态基准：2026-11-16，最近实现提交为分支 `codex/translation-workflow-20261115` 上的 `3ffb7f1`。PR #58 已更新但仍开放；完整非 E2E 单测为 333 项运行、4 项平台限制跳过，mock E2E 为 7 项通过。Kakuyomu source-only 采集已完成主页声明的 88/88 话；88 个单话 Markdown 与有序全书 export 均从 manifest 版本物化。manifest 267 个 artifact 文件校验通过；本轮未调用真实 Provider/Notion。实际正文/标点/ruby 仍待人工格式验收，88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细 Git、PR 与权限验证边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)和[开发与验证](development.md#2026-11-16-当前-checkout-验证)。
+> 状态基准：2026-11-16，最近实现提交为分支 `codex/translation-workflow-20261115` 上的 `e9adc8d`。PR #58 仍开放；当前代码的完整非 E2E 单测为 348 项运行、0 失败、4 项普通 Windows 权限/平台限制跳过；提权路径测试为 11 项运行、10 项通过、1 项 FIFO 跳过，聚焦审查回归为 225 项通过，mock E2E 为 7 项通过。11 个此前未解决的 PR inline review threads 已回复并解决，但没有审批记录或 GitHub Actions workflow run，PR 未合并。Kakuyomu source-only 采集已完成主页声明的 88/88 话；88 个单话 Markdown 与有序全书 export 均从 manifest 版本物化。manifest 267 个 artifact 文件校验通过；未调用真实 Provider/Notion。实际正文/标点/ruby 仍待人工格式验收；88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细 Git、PR 与权限验证边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)和[开发与验证](development.md#2026-11-16-当前-checkout-验证)。
 > 引用会话范围：本次续接已分页读取两个引用会话至 `hasMore=false`；会话仅作目标/决策线索，当前能力以工作树、测试及文档记录为准。
 
 > 2026-11-15 本次复核：分支 `codex/translation-workflow-20261115`、HEAD `c3f313b`；工作区包含此前的未提交修改和本任务增量，具体以 `git status --short --branch` 为准。两个引用会话已分页读取至 `hasMore=false`，并以当前源码交叉核对。URL adapter 增量后的相关回归和 mock E2E 见[开发与验证](development.md#2026-11-15-当前-checkout-回归验证)；来源到版本化 mock 翻译端到端路径见同日端到端记录。

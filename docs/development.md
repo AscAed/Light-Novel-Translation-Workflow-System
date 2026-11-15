@@ -2,7 +2,7 @@
 
 ## 2026-11-16 当前 checkout 验证
 
-- 文档更新前的 checkout：分支 `codex/translation-workflow-20261115`，HEAD `a10926b`，工作树干净。代码与测试基线为 `3ffb7f1`；`a10926b` 仅更新 Markdown 状态记录，没有改动实现或测试文件。
+- 当前 checkout：分支 `codex/translation-workflow-20261115`，HEAD `e9adc8d83ce4887e0eee52ae466f7846e8574bab`，与 `origin` 同步。代码与测试变更已提交；本节对应的后续文档状态更新另见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-提交与-pr-状态复核)。
 - 完整非 E2E 单测命令：
 
   ```powershell
@@ -10,13 +10,14 @@
   & .\.venv\Scripts\python.exe -m unittest @targets -q
   ```
 
-  在代码与测试基线 `3ffb7f1` 上运行 333 项，0 失败、4 项跳过。3 项符号链接用例因 Windows `WinError 1314` 无法创建链接而跳过；FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。
-- 在 HEAD `a10926b` 运行 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 项因 `WinError 1314` 跳过，1 项为 FIFO 平台能力缺失。
-- 用户另行提供的 PowerShell `-q` 输出为 `Ran 9 tests ... OK (skipped=3)`。该输出未提供运行时 HEAD，且 `-q` 不显示跳过原因；计数与当前 checkout 的 11 个测试方法不一致，因此单独保留，不绑定到 `a10926b`，也不据此断言符号链接用例已运行或已通过。
-- 用户已授权尝试提权，但当前执行器此前无法启动管理员进程；没有绕过策略。上述 `-q` 输出本身未说明 PowerShell 是否提升，也不能替代在管理员 PowerShell 中对当前 11 项测试运行 `-v`。
-- `git diff --check HEAD`、Python `compileall` 通过。`.venv\Scripts\python.exe tests\run_tests.py` 重跑 7 项完整 mock E2E，229.307 秒，退出码 0；runner 汇总前显示的 content-filter 和段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
+  在提交前、与当前 HEAD 内容相同的代码树上运行 348 项，0 失败、4 项跳过。普通权限下 3 项符号链接用例因 Windows `WinError 1314` 无法创建链接而跳过；FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。
+- 管理员 PowerShell 下对当前路径安全模块运行 `.\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、10 项通过、1 项跳过、0 失败；3 项符号链接用例均通过，FIFO 用例仍因 Windows 平台能力跳过。
+- 对当前 HEAD 重跑审查回归聚焦集合：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_review tests.test_source_markdown_materialization tests.test_tm_review tests.test_story_summary_review tests.test_epub_builder tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_align_chapters_unit tests.test_rag_engine_unit tests.test_source_manifest -q`，225 项通过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：提交前的同一代码树上 7 项本地 mock E2E 通过，230.911 秒，退出码 0；content-filter 与段落错配异常来自预期负向 fixture。未调用真实 Provider 或 Notion。
+- Python `compileall`、`git diff --check` 和提交前 Markdown 本地链接目标检查通过。PR #58 的 11 个此前未解决 inline review threads 已逐项回复并解决；当前 PR review submissions 只有 `COMMENTED`，没有 `APPROVED`。该提交的 GitHub Actions workflow-runs 查询为空；读取 `main` 分支保护规则因 GitHub 集成返回 403 而无法验证。PR 未合并，不能以 `mergeable=true` 代替审批或 required checks。
+- 真实 Provider/Notion、人工译文与来源格式验收、EPUBCheck/阅读器和部署仍未验证。用户提供的 `Ran 9 tests ... OK (skipped=3)` 输出未绑定到当前 HEAD，不替代以上专项结果。
 
-## 2026-11-16 PR 审查回归工作区
+## 2026-11-16 PR 审查回归工作区（提交前历史快照）
 
 - 基线为分支 `codex/translation-workflow-20261115`、HEAD `bd9f4f3996c0117d7d69af6389029092b146808c`；本节结果覆盖该基线上的未提交修复与回归测试，不代表远端 PR head 已包含这些改动。
 - 本增量修复审查确认的边界：Kakuyomu 重跑只跳过与来源版本/TM/译文一致的已提交章节；章节位置显式传入摘要与指导选择；来源抽取校验实际读取字节；RAG 以原子二进制写入的字节快照计算 TM 指纹；对齐复用统一段落拆分；跨 Windows 盘符的根目录视为互不包含；EPUB 禁用正文 YAML 元数据、按 OPF spine 正文顺序映射章节，并用同一 manifest 字节快照完成解析、验证和哈希。

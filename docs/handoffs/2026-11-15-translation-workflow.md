@@ -1,6 +1,6 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-16。较早的“最终续接状态”和 PR 快照为历史记录；最新工作区验证、提权测试和 PR 状态见文末“2026-11-16 审查回归与最新状态”。项目路线图仍有后续阶段，额度信息不可见。
+> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；最新提交、回归与 PR 状态见文末“2026-11-16 提交与 PR 状态复核”。项目路线图仍有后续阶段，额度信息不可见。
 
 ## 目标与会话
 
@@ -182,3 +182,11 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 用户同意对权限受限用例提权后，已用 `Start-Process -Verb RunAs` 重跑路径安全模块：11 项运行、10 项通过、仅 FIFO 用例跳过；此前普通权限跳过的 3 个符号链接用例均通过。用户提供的 9 项/3 项跳过结果仍不绑定到此 checkout。
 - PR #56 已合并。PR #58 仍开放，远端 head 为 `bd9f4f3996c0117d7d69af6389029092b146808c`，`mergeable=true`，但该 head 的 Actions 查询为空，且 Codex/CodeRabbit review threads 仍有未解决意见。本地未提交增量不属于该远端 head；未执行合并。
 - 本地增量已针对 PR #58 已知的 EPUB YAML 元数据读取、OPF spine 身份映射和 manifest 快照、RAG TM 指纹、来源读取绑定、章节对齐空白规范化、跨盘根路径判定、README 代理前置条件等意见补齐实现和回归测试；尚未推送，不能据此关闭远端 review threads。真实 Provider/Notion、人工译文验收、EPUBCheck/阅读器和部署仍未验证。
+
+## 2026-11-16 提交与 PR 状态复核
+
+- 当前分支 `codex/translation-workflow-20261115`，HEAD `e9adc8d83ce4887e0eee52ae466f7846e8574bab`；工作区在本次文档更新前干净，并与 `origin` 同步。`e9adc8d` 将上一节的代码/测试增量提交并推送至 PR #58；书籍原文、译文和凭据没有纳入提交。
+- 验证：提交前同一代码树完整非 E2E unittest 348 项运行、0 失败、4 项普通 Windows 权限/平台限制跳过；管理员 PowerShell 下路径安全模块 11 项运行、10 项通过、1 项 FIFO 跳过，全部 3 个符号链接用例通过；当前 HEAD 聚焦回归 225 项通过；同一代码树 mock E2E 7 项通过（230.911 秒）。`compileall`、提交前 `git diff --check` 和文档链接检查通过。mock/synthetic 结果不代表真实 Provider、Notion、人工翻译质量或部署验收。
+- 用户提供的路径测试输出为 9 项运行、3 项跳过，但没有运行时 HEAD 或逐项跳过原因，不绑定到当前 commit。管理员运行的 11 项结果是当前代码测试方法集合的权限复核。
+- PR #58 仍为 open，GitHub `mergeable=true`，head 为 `e9adc8d83ce4887e0eee52ae466f7846e8574bab`；11 个此前未解决的 inline review threads 均已回复并解决。PR review submissions 目前只有 `COMMENTED`，没有 `APPROVED`；commit workflow-runs 结果为空。读取 `main` 分支保护规则因 GitHub 集成返回 403，所需审批/检查门槛未知，因此未合并。PR #56 已独立合并，不能与 #58 混为一谈。
+- PR #58 描述已更新为当前 commit 的验证数字和限制。仍待独立 reviewer 审阅/审批及仓库门槛确认；真实 Provider 的 allowlist/端点、单话翻译与人工验收、Notion、EPUBCheck/阅读器、部署仍未验证。额度状态不可见。
