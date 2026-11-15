@@ -1,6 +1,6 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；代码/测试与合并前 PR 状态见文末“2026-11-16 7135904 后续复核”。项目路线图仍有后续阶段，额度信息不可见。
+> 状态基准：2026-11-16。较早的“最终续接状态”、路径测试快照和“审查回归与最新状态”均为历史记录；代码/测试与最新合并前 PR 状态见文末“2026-11-16 合并前状态复核 854bd86”。项目路线图仍有后续阶段，额度信息不可见。
 
 ## 目标与会话
 
@@ -199,3 +199,10 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 本轮当前普通 Windows 会话重跑 `tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过；3 个 symlink 用例因 `WinError 1314` 跳过，FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。未取得管理员执行会话。用户另行提供的 `-q` 结果为 9 项运行、3 项跳过，但没有 SHA、逐项跳过原因或权限状态，且与当前文件的 11 个测试方法数不符，因此只作为独立用户提供快照，不归属到本代码基线。
 - 合并前远端快照：PR #58 为 open，head `71359040b88434a37ac379247674a6155e614f86`、base `d7e2afda43add0a75cf6d720cfb9a8079d6333a6`，`mergeable=true`。所有 inline review threads 已回复并解决；review submissions 仍无 `APPROVED`。GitHub Actions runs 与 commit statuses 为空；唯一 check-run 是 CodeRabbit `skipped`。读取 `main` 分支保护规则仍因 GitHub 集成 403 而不可验证。因此 `mergeable` 只表明无冲突，不证明审批或检查门槛已满足；是否可合并须以随后的 GitHub 合并结果为准。
 - 本机 Provider 配置存在性预检仍显示根目录 `.env` 不存在，且 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key、`PROOFREAD_MODEL` 未设置；未读取密钥。真实 Provider 单话翻译、人工译文与来源格式验收、Notion、EPUBCheck/阅读器及部署均未验证。
+
+## 2026-11-16 合并前状态复核 854bd86
+
+- 最新代码/测试实现仍为 `71359040b88434a37ac379247674a6155e614f86`；`854bd86` 只更新 Markdown 验证与交接状态，不改代码或测试。用户提供的路径测试结果仍为 9 项运行、3 项跳过；没有 SHA/逐项原因，不能归属到该实现提交。当前普通会话实测为 11 项、7 项通过、4 项跳过，3 项 symlink 因 `WinError 1314`、FIFO 因 Windows 平台限制跳过。
+- PR #58 在 `854bd86` 上仍为 open 且 `mergeable=true`，但新 review 添加两项未解决意见：`kakuyomu_page_source.py` 未捕获 chunked response 的 `http.client.IncompleteRead`，失败会使采集 checkpoint 留在 `in_progress`；`epub_builder.py` 在 `cwd=input_dir` 下使用未经解析的相对 Pandoc 可执行文件路径，可能通过版本检查后在转换阶段找不到程序。已核对相关代码，尚未修复或关闭意见。
+- 当前 PR review submissions 只有 `COMMENTED`，没有 `APPROVED`；head 的 CodeRabbit check-run 为 `skipped`，不能作为通过。分支保护读取仍因集成 403 不可验证。由于原任务范围为 Markdown-only，未修改上述代码；PR 未合并。若继续合并工作，需要先明确允许扩展到代码修复与针对性回归，再重新检查审查和 GitHub 门槛。
+- `854bd86` 文档同步只覆盖当时的远端快照；若其后 PR head 或 review 状态变化，以 GitHub 当前状态为准。真实 Provider/Notion、人工翻译验收、EPUBCheck/阅读器、部署及额度仍未验证。

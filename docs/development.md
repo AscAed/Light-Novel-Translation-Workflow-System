@@ -23,7 +23,7 @@
   ```
 
   第二行应返回 `True`。
-- PR #58 当前 head 为 `71359040b88434a37ac379247674a6155e614f86`，状态 open 且 `mergeable=true`。所有 inline review threads 已回复并标记解决；review submissions 仍只有 `COMMENTED`，没有 `APPROVED`。GitHub Actions workflow-runs 与 commit statuses 为空；唯一 check-run 是 CodeRabbit `skipped`。`main` 分支保护读取因集成返回 403，正式审批/required-check 门槛未知；不可把 mergeable 当作审批或测试通过。
+- 代码/测试基线 `7135904` 之后，PR #58 的 Markdown 状态同步 head 为 `854bd861f532675cf293b844e90bd26cdbd677d2`。该 head 上新增两条尚未解决的 Codex review：chunked HTTP 响应 `IncompleteRead` 未转为可恢复暂停，以及相对 `pandoc_executable` 在切换 `cwd` 后失效。代码未在本次 Markdown-only 工作中修改。review submissions 仍只有 `COMMENTED`，没有 `APPROVED`；该 head 的唯一 check-run 是 CodeRabbit `skipped`。`main` 分支保护读取因集成返回 403，正式审批/required-check 门槛未知。详见[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-16-合并前状态复核-854bd86)。
 - 2026-11-16 本机 Provider 配置存在性预检只输出布尔状态：根目录 `.env` 不存在；`PROVIDER_DATA_POLICY`、`JOJO_BASE_URL`、`JOJO_API_KEY`、`JYQF_BASE_URL`、`JYQF_API_KEY` 和 `PROOFREAD_MODEL` 在 Process/User/Machine 环境均未设置。未读取或输出任何配置值或密钥；当前机器无法执行真实 Provider 单话翻译。
 - 真实 Provider/Notion、人工译文与来源格式验收、EPUBCheck/阅读器和部署仍未验证。
 
