@@ -225,3 +225,11 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 完整 mock E2E runner 运行 7 项、全部通过，242.450 秒，退出码 0。故障注入产生的内容过滤和段落错配输出属于负向 fixture。`compileall` 和 `pip check` 通过。
 - 真实 Provider 配置仍待本机安全配置和验证；真实翻译与人工质量/来源格式验收、Notion、EPUBCheck/阅读器、部署仍未完成。下一步可在配置好 JOJO/JYQF 端点、密钥和最小数据授权后，执行单话真实翻译并由用户验收；不要将 mock 结果视为真实模型质量证明。
 - 详细测试基线见[开发与验证](../development.md#2026-11-16-主线复核pr-63-后)；现状摘要见[项目现状](../project-status.md)。
+
+## 2026-11-16 PR #64 合并后续接
+
+- PR #64 已于 2026-11-15T22:52:31Z 合并，squash commit 为 `16899a1f55a798a440157b5c2265211c953ea0d9`；PR 只同步文档，代码/测试基线仍是 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`。此前过时的 CodeRabbit review thread 已解决，其摘要问题已由后续提交修正。
+- 使用 `--plan-only --plan-output` 将 88 话计划导出到试点生肉根的 `translation_plan_review_2026-11-16.json`。报告 88/88 来源有效、0 问题、0 网络/Provider 请求、0 正文内容、1 次写入（计划文件）；摘要 `36dae9c08069ce5c66eddc1e870a0aa4aa4d1724b00589ed9a5be62ce4bc22d4` 重算一致。
+- 计划包含位置 1–88；87 个编号话目为第 1–87 话且顺序连续，位置 48 是幕间。各 episode ID、来源路径/版本、目标译文路径和 TM key 均唯一；所有目标译文当前不存在。这些是元数据一致性检查，不表示原文正文和映射已被人审。
+- 下一步为用户审阅[试点映射审阅说明](2026-11-16-pilot-plan-review.md)和仓库外计划 JSON。未明确批准前，不创建审批回执、不执行真实 Provider 翻译。原文格式、译文路径/TM key、当前端点与运行时 allowlist 仍分别待验收/核验。
+- 用户报告的 `tests.test_security_path_traversal -q` 结果仍按独立快照记录为 9 项运行、3 项跳过；未提供 SHA 或逐项跳过原因。该数字不替代当前代码基线 11 项的普通权限/管理员 verbose 结果。

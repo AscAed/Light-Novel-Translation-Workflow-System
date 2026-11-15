@@ -1,5 +1,13 @@
 # 开发与验证
 
+## 2026-11-16 PR #64 合并与试点计划导出
+
+- 当前 `main` HEAD 为 `16899a1f55a798a440157b5c2265211c953ea0d9`；PR #64 文档状态同步已 squash 合并。代码与测试仍以 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da` 为基线；其完整测试证据见下方“PR #63 后主线复核”。
+- 对试点原文根执行 `scripts/run_kakuyomu_workflow.py --catalog source_catalog.discovered.json --manifest source_manifest.json --plan-only --plan-output translation_plan_review_2026-11-16.json`。退出码 0，`status=ready_for_review`，88/88 来源通过核验、0 问题；摘要 `36dae9c08069ce5c66eddc1e870a0aa4aa4d1724b00589ed9a5be62ce4bc22d4` 与独立重算一致。计划文件在仓库外的原文根目录，未纳入 Git。
+- 结构化核对确认 88 个位置中的 ID、位置、来源文件/版本、译文目标和 TM key 唯一；目录标题有 1–87 连续编号话目，位置 48 是一条幕间。88 个译文目标均不存在。该核对不代替人工确认正文格式、来源完整性或映射是否符合预期。
+- 本次报告记载 0 网络请求、0 Provider 调用、`source_text_included=false`、1 次文件写入（计划 JSON）。未创建审批回执，未执行 Provider 翻译；运行时配置仍需单独核验。
+- PR #64 的合并及计划的人工审阅边界见[审阅交接](handoffs/2026-11-16-pilot-plan-review.md)。本轮只修改 Markdown 文档；未因文档同步重复运行代码测试。
+
 ## 2026-11-16 主线复核（PR #63 后）
 
 - 基线：`main` HEAD `fe43ea3fb9ff6ac3a901e4c73641bcb9c6af38e6`；该提交只同步 Markdown，代码基线为 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`。本轮基于该主线创建 PR #64 文档分支，代码未变更。
