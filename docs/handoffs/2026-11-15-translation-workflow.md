@@ -71,8 +71,9 @@ TM 审核补充：本轮已完成可选审核快照原型；后续应先确定�
 
 I5 补充：合成输入可以验证 builder 和 Pandoc 调用，但真实原文/译文目录当前为空。待用户定位真实译文章节后，先人工确认映射并生成显式 catalog，再做 EPUBCheck 和目标阅读器验收；不得把 `candidate` 或有限 XML/ZIP 检查提升为成品验收。
 
-## 工作区保留清单
+## 工作区与提交记录
 
-开始时已有 7 份文档修改；本续接另改动/新增 `.env.example`、`README.md`、`docs/architecture.md`、`docs/decisions/README.md`、`docs/development.md`、`docs/knowledge-governance.md`、`docs/project-status.md`、`docs/roadmap.md`、`docs/source-ingestion-and-publication-plan.md`、`docs/translation-workflow.md`、本 handoff、`chapter_transaction.py`、`pipeline.py`、`rag_engine.py`、`source_ingestion.py`、`source_manifest.py`、`tm_review.py`、`utils.py`、`story_summary_review.py`、`scripts/apply_knowledge_review.py`、`scripts/apply_story_summary_review.py`、`scripts/apply_tm_review.py`、`scripts/align_chapters.py`、`scripts/auto_extract_knowledge.py`、`scripts/ingest_local_sources.py`、`scripts/materialize_source_markdown.py`、`scripts/merge_source_markdown.py`、`scripts/validate_tm_provenance.py`、`scripts/validate_knowledge_provenance.py`、`tests/test_align_chapters_unit.py`、`tests/test_knowledge_extraction_unit.py`、`tests/test_knowledge_provenance_audit.py`、`tests/test_knowledge_review.py`、`tests/test_story_summary_review.py`、`tests/test_tm_review.py`、`tests/test_local_source_ingestion_cli.py`、`tests/test_pipeline_contracts.py`、`tests/test_rag_engine_unit.py`、`tests/test_source_ingestion.py`、`tests/test_source_manifest.py`、`tests/test_source_markdown_materialization.py` 和 `tests/test_source_pipeline_linkage.py`。这些路径可能同时包含此前任务的有效用户改动；不要重置、清理或覆盖。当前未提交、未推送。
-
-本轮在上述保留范围内另新增 `epub_builder.py`、`scripts/build_epub_candidate.py`、`tests/test_epub_builder.py`，并更新 `README.md`、`docs/architecture.md`、`docs/development.md`、`docs/project-status.md`、`docs/roadmap.md` 与本 handoff 的 I5 状态。仍未提交、未推送。
+- 开始时分支为 `main`、HEAD 为 `d7e2afd`，已有 7 份 Markdown 修改。未重置、清理或覆盖这些修改；其后续实现和文档一并纳入明确的任务提交。
+- 2026-11-15 已创建分支 `codex/translation-workflow-20261115`，首个任务提交为 `c6f7176`（45 个文件，新增 8,513 行、删除 309 行）。提交范围限于本 handoff 前文列出的翻译工作流实现、对应测试和项目文档；未包含忽略的书籍数据或凭据文件。
+- `c6f7176` 完成后更新了 README、项目现状、路线图、决策索引、来源专题计划及本 handoff 的基线与目录事实；这些仅 Markdown 的同步正在形成后续提交。
+- 本 handoff 记录的是 PR 创建前的状态快照；推送、PR 审查与合并状态以任务结束时的 GitHub 查询和最终汇报为准。

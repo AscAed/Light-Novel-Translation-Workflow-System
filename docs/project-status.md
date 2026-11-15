@@ -1,6 +1,6 @@
 # 项目现状
 
-> 状态基准：2026-11-15，本地 `main` HEAD `d7e2afd` 加本轮未提交的 I2/I3/I4、阶段 2 知识治理、D-11、容量限制、TM 审核快照及源文快照校验工作树改动；开始前已有改动均予保留。最新单测和 mock E2E 结果见[开发与验证](development.md#2026-11-15-完整回归与源文快照校验)。未调用真实 Provider/Notion、未读取作品正文；Kakuyomu 只访问规则页面及 robots；验证边界见[开发与验证](development.md)。
+> 状态基准：2026-11-15，代码基线为 `codex/translation-workflow-20261115` 上的 `c6f7176`，父提交为 `d7e2afd`；本次实现与验证已记录在该提交及当前 Markdown 同步中。最新单测和 mock E2E 结果见[开发与验证](development.md#2026-11-15-完整回归与源文快照校验)。未调用真实 Provider/Notion、未读取作品正文；Kakuyomu 只访问规则页面及 robots；验证边界见[开发与验证](development.md)。
 > 引用会话范围：已读取两个引用会话当前可访问的分页；本轮 `read_thread` 均返回 `hasMore=false`。会话仅作目标/决策线索，当前能力以工作树、测试及文档记录为准。
 
 ## 已实现
@@ -64,7 +64,7 @@
 
 2026-11-14 最新代码验证：代码提交 `a71e8ee149f7d20858e8334d8456ade74c7fa7e7` 的来源/本地 CLI 两模块 28 项通过；连同路径安全模块共运行 39 项，35 项通过、4 项跳过。普通权限下 3 个符号链接用例因 `[WinError 1314]` 跳过、FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过；管理员 PowerShell 对同一代码提交运行路径安全模块 11 项，10 项通过、仅 FIFO 用例跳过，符号链接用例均通过。`compileall` 与 `git diff --check` 通过。用户提供的 `Ran 9 tests ... OK (skipped=3)` 没有 SHA 或逐项跳过信息，作为独立证据保留；该计数与旧版 9 用例模块相符，不替代当前 11 用例版本的管理员运行。验证只使用本地合成数据，不覆盖真实 Provider、站点或部署。更早的十模块 174 项与 mock E2E 4 项结果属于 `e5c3154` 基线工作树，不能替代当前代码提交验证。
 
-历史 GitHub 状态快照（2026-11-14 15:50 UTC，非当前 PR 状态）：PR #57 当时为 open，head 为 `5ada9462244375010c38a16a9198edd9c2fc76f5`，检查列表为空；读取分支保护设置返回 403。该快照不说明此后 PR 是否合并或检查是否变化。本地 `main` 现在为 `d7e2afd`；本次未查询 GitHub。Codex Security Standard 报告仅针对 `e5c3154`，覆盖为 partial，不覆盖本次基线。历史审查细节见[开发与验证](development.md)、[安全记录](security-notes.md)及[续接交接](handoffs/2026-11-14-translation-workflow.md)。
+历史 GitHub 状态快照（2026-11-14 15:50 UTC，非当前 PR 状态）：PR #57 当时为 open，head 为 `5ada9462244375010c38a16a9198edd9c2fc76f5`，检查列表为空；读取分支保护设置返回 403。该快照不说明此后 PR 是否合并或检查是否变化；当时本地 `main` 为 `d7e2afd`。Codex Security Standard 报告仅针对 `e5c3154`，覆盖为 partial，不覆盖本次基线。历史审查细节见[开发与验证](development.md)、[安全记录](security-notes.md)及[续接交接](handoffs/2026-11-14-translation-workflow.md)。
 
 2026-11-15 补充验证：在 HEAD `5ada9462244375010c38a16a9198edd9c2fc76f5` 普通权限运行路径安全模块，11 项中 7 项通过、4 项跳过、0 项失败；`-v` 输出明确显示 3 个符号链接用例因 `[WinError 1314]` 跳过、FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。该提交仅包含 Markdown 更新，相关测试/实现代码与 `a71e8ee` 相同。管理员 PowerShell 在 `a71e8ee` 上的 11 项结果为 10 项通过、仅 FIFO 跳过；因此三个符号链接行为已有管理员运行覆盖，但未在 `5ada946` 这一文档提交上再次提权运行。
 
