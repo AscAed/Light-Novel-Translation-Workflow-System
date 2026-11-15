@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -35,6 +36,14 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.raw_dir = self.root / "raw"
         self.output_dir = self.root / "Knowledge"
+        base_url_patch = patch.object(
+            Config, "DEEPSEEK_BASE_URL", "http://127.0.0.1:6006/v1"
+        )
+        base_url_patch.start()
+        self.addCleanup(base_url_patch.stop)
+        mock_port_patch = patch.dict(os.environ, {"MOCK_SERVER_PORT": ""})
+        mock_port_patch.start()
+        self.addCleanup(mock_port_patch.stop)
         self.raw_dir.mkdir()
         (self.raw_dir / "第1話.md").write_text(
             "サンプル語はテスト用語です。\n\n第二段落です。",
@@ -43,6 +52,121 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_knowledge_provenance_records_source_version_id(self):
+        content = "Synthetic source paragraph."
+        sample_text = f"\n\n--- source.md ---\n\n{content}"
+        content_start = sample_text.index(content)
+        provenance = auto_extract_knowledge._build_provenance_manifest(
+            [
+                {
+                    "filename": "source.md",
+                    "tm_key": "Volume1/source.md",
+                    "content": content,
+                    "content_start": content_start,
+                    "content_end": content_start + len(content),
+                    "source_version_id": "source-version-1",
+                }
+            ],
+            sample_text,
+            [],
+            "synthetic-model",
+        )
+
+        self.assertEqual(
+            provenance["source_files"][0]["source_version_id"],
+            "source-version-1",
+        )
+
+    def test_bounded_source_read_accepts_limit_and_normalizes_newlines(self):
+        source_path = self.raw_dir / "第1話.md"
+        source_path.write_bytes(b"a\r\nb")
+
+        with patch.object(
+            auto_extract_knowledge, "_MAX_SOURCE_FILE_BYTES", len(b"a\r\nb")
+        ):
+            content = auto_extract_knowledge._read_source_chapter(
+                str(self.raw_dir), "第1話.md", mapped=False
+            )
+
+        self.assertEqual(content, "a\nb")
+
+    def test_oversized_source_is_rejected_before_provider_creation(self):
+        (self.raw_dir / "第1話.md").write_bytes(b"12345")
+
+        with patch.object(auto_extract_knowledge, "_MAX_SOURCE_FILE_BYTES", 4):
+            with patch(
+                "scripts.auto_extract_knowledge.get_openai_client"
+            ) as client_factory:
+                with self.assertRaisesRegex(ValueError, "size limit"):
+                    asyncio.run(
+                        auto_extract_knowledge.extract_knowledge(
+                            str(self.raw_dir), str(self.output_dir)
+                        )
+                    )
+
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_unapproved_remote_provider_is_rejected_before_source_read(self):
+        with patch.object(
+            Config, "DEEPSEEK_BASE_URL", "https://provider.example/v1"
+        ):
+            with patch.object(Config, "PROVIDER_DATA_POLICY", {}):
+                with patch(
+                    "scripts.auto_extract_knowledge.get_api_key",
+                    return_value="test-key",
+                ):
+                    with patch(
+                        "scripts.auto_extract_knowledge._read_source_chapter"
+                    ) as source_reader:
+                        with patch(
+                            "scripts.auto_extract_knowledge.get_openai_client"
+                        ) as client_factory:
+                            with self.assertRaisesRegex(
+                                PermissionError, "not authorized"
+                            ):
+                                asyncio.run(
+                                    auto_extract_knowledge.extract_knowledge(
+                                        str(self.raw_dir), str(self.output_dir)
+                                    )
+                                )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_missing_remote_provider_key_is_rejected_before_source_read(self):
+        with patch.object(
+            Config, "DEEPSEEK_BASE_URL", "https://provider.example/v1"
+        ):
+            with patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {"deepseek": frozenset({"source_text"})},
+            ):
+                with patch(
+                    "scripts.auto_extract_knowledge.get_api_key",
+                    return_value=None,
+                ):
+                    with patch(
+                        "scripts.auto_extract_knowledge._read_source_chapter"
+                    ) as source_reader:
+                        with patch(
+                            "scripts.auto_extract_knowledge.get_openai_client"
+                        ) as client_factory:
+                            with self.assertRaisesRegex(
+                                RuntimeError, "API key is required"
+                            ):
+                                asyncio.run(
+                                    auto_extract_knowledge.extract_knowledge(
+                                        str(self.raw_dir), str(self.output_dir)
+                                    )
+                                )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
 
     def test_valid_response_creates_only_non_overwriting_drafts(self):
         response = {
@@ -356,3 +480,27 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("RuntimeError", stderr.getvalue())
         self.assertNotIn("SYNTHETIC_PRIVATE_ERROR", stderr.getvalue())
+
+    def test_cli_reports_source_limit_without_sensitive_error_text(self):
+        stderr = io.StringIO()
+        with patch("scripts.auto_extract_knowledge.Config.load_config"):
+            with patch.object(
+                Config, "WORKSPACE_DIR", str(self.root), create=True
+            ):
+                with patch.object(
+                    Config, "RAW_DIR", str(self.raw_dir), create=True
+                ):
+                    with patch(
+                        "scripts.auto_extract_knowledge.extract_knowledge",
+                        new_callable=AsyncMock,
+                        side_effect=auto_extract_knowledge._SourceChapterSizeLimitError(
+                            "SYNTHETIC_PRIVATE_CHAPTER_NAME"
+                        ),
+                    ):
+                        with redirect_stderr(stderr):
+                            with self.assertRaises(SystemExit) as raised:
+                                auto_extract_knowledge.main()
+
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("exceeds the configured source read limit", stderr.getvalue())
+        self.assertNotIn("SYNTHETIC_PRIVATE_CHAPTER_NAME", stderr.getvalue())

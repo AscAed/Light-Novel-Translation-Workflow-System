@@ -40,26 +40,39 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         output_root=None,
         manifest="source_manifest.json",
         checkpoint="source_checkpoint.json",
+        max_episode_bytes=None,
+        max_catalog_bytes=None,
+        max_catalog_file_bytes=None,
+        max_archive_bytes=None,
     ):
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            result = main(
-                [
-                    "--source-root",
-                    str(self.source_root),
-                    "--catalog",
-                    "catalog.json",
-                    "--output-root",
-                    str(output_root or self.output_root),
-                    "--page-size",
-                    "1",
-                    "--manifest",
-                    manifest,
-                    "--checkpoint",
-                    checkpoint,
-                ]
+        arguments = [
+            "--source-root",
+            str(self.source_root),
+            "--catalog",
+            "catalog.json",
+            "--output-root",
+            str(output_root or self.output_root),
+            "--page-size",
+            "1",
+            "--manifest",
+            manifest,
+            "--checkpoint",
+            checkpoint,
+        ]
+        if max_episode_bytes is not None:
+            arguments.extend(["--max-episode-bytes", str(max_episode_bytes)])
+        if max_catalog_bytes is not None:
+            arguments.extend(["--max-catalog-bytes", str(max_catalog_bytes)])
+        if max_catalog_file_bytes is not None:
+            arguments.extend(
+                ["--max-catalog-file-bytes", str(max_catalog_file_bytes)]
             )
+        if max_archive_bytes is not None:
+            arguments.extend(["--max-archive-bytes", str(max_archive_bytes)])
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = main(arguments)
         return result, stdout.getvalue(), stderr.getvalue()
 
     def test_cli_archives_only_explicit_files_without_modifying_or_echoing_them(self):
@@ -87,7 +100,9 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
             ]
         )
 
-        result, stdout, stderr = self._run_cli()
+        result, stdout, stderr = self._run_cli(
+            max_catalog_file_bytes=(self.source_root / "catalog.json").stat().st_size
+        )
 
         self.assertEqual(result, 0)
         report = json.loads(stdout)
@@ -238,6 +253,104 @@ class LocalSourceIngestionCLITests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "ERROR: ValueError\n")
+
+    def test_cli_rejects_empty_catalog_without_writing_outputs(self):
+        self._write_catalog([])
+
+        result, stdout, stderr = self._run_cli()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertFalse((self.output_root / "source_manifest.json").exists())
+        self.assertFalse((self.output_root / "source_checkpoint.json").exists())
+
+    def test_cli_rejects_catalog_over_byte_limit_before_writing_outputs(self):
+        source = self.source_root / "chapter.md"
+        source.write_bytes(b"synthetic source")
+        original = source.read_bytes()
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Chapter One",
+                    "position": 1,
+                    "relative_path": "chapter.md",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli(
+            max_episode_bytes=100,
+            max_catalog_bytes=8,
+        )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertFalse((self.output_root / "source_manifest.json").exists())
+        self.assertFalse((self.output_root / "source_checkpoint.json").exists())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_cli_rejects_oversized_catalog_file_before_writing_outputs(self):
+        source = self.source_root / "chapter.md"
+        source.write_bytes(b"synthetic source")
+        original = source.read_bytes()
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Chapter One",
+                    "position": 1,
+                    "relative_path": "chapter.md",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli(max_catalog_file_bytes=8)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: ValueError\n")
+        self.assertFalse((self.output_root / "source_manifest.json").exists())
+        self.assertFalse((self.output_root / "source_checkpoint.json").exists())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_cli_pauses_before_manifest_write_when_archive_budget_is_too_small(self):
+        source = self.source_root / "chapter.md"
+        source.write_bytes(b"synthetic source")
+        self._write_catalog(
+            [
+                {
+                    "episode_id": "episode-1",
+                    "title": "Chapter One",
+                    "position": 1,
+                    "relative_path": "chapter.md",
+                }
+            ]
+        )
+
+        result, stdout, stderr = self._run_cli(max_archive_bytes=1)
+
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            json.loads(stdout),
+            {
+                "completed_count": 0,
+                "discovered_count": 1,
+                "pending_count": 1,
+                "reason": "archive_limit",
+                "status": "paused",
+            },
+        )
+        self.assertEqual(stderr, "")
+        self.assertFalse((self.output_root / "source_manifest.json").exists())
+        checkpoint = json.loads(
+            (self.output_root / "source_checkpoint.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(checkpoint["pause_reason"], "archive_limit")
 
 
 if __name__ == "__main__":

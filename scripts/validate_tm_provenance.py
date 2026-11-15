@@ -8,9 +8,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from source_manifest import (
+    latest_artifacts_by_kind,
+    load_manifest,
+    verify_manifest_artifact,
+)
 from utils import (
     open_regular_file,
     read_relative_text,
+    resolve_relative_path,
     split_paragraphs,
     validate_tm_source_provenance,
 )
@@ -40,6 +46,8 @@ def _audit_chapter(
     provenance: dict,
     raw_dir: str,
     translation_dir: str,
+    source_manifest: dict | None = None,
+    latest_normalized_by_artifact_id: dict | None = None,
 ) -> list[dict[str, str]]:
     findings = []
     try:
@@ -70,6 +78,75 @@ def _audit_chapter(
         findings.append(
             _finding("stale", chapter, "Translation source hash differs.")
         )
+    if "source_version_id" in provenance:
+        if source_manifest is None:
+            findings.append(
+                _finding(
+                    "unverified",
+                    chapter,
+                    "Source version is recorded but SOURCE_MANIFEST_PATH is not configured.",
+                )
+            )
+        else:
+            try:
+                source_artifact = verify_manifest_artifact(
+                    raw_dir, source_manifest, provenance["source_version_id"]
+                )
+            except ValueError:
+                findings.append(
+                    _finding(
+                        "invalid",
+                        chapter,
+                        "Recorded source version is missing or its file hash does not verify.",
+                    )
+                )
+            else:
+                if (
+                    source_artifact["kind"] != "normalized_source"
+                    or source_artifact["relative_path"] != provenance["raw_file"]
+                ):
+                    findings.append(
+                        _finding(
+                            "mismatch",
+                            chapter,
+                            "Recorded source version does not match the raw file provenance.",
+                        )
+                    )
+                else:
+                    latest_source = (latest_normalized_by_artifact_id or {}).get(
+                        source_artifact["artifact_id"]
+                    )
+                    if latest_source is None:
+                        findings.append(
+                            _finding(
+                                "invalid",
+                                chapter,
+                                "Manifest has no current normalized source version.",
+                            )
+                        )
+                    elif latest_source["version_id"] != source_artifact["version_id"]:
+                        try:
+                            verify_manifest_artifact(
+                                raw_dir,
+                                source_manifest,
+                                latest_source["version_id"],
+                            )
+                        except ValueError:
+                            findings.append(
+                                _finding(
+                                    "invalid",
+                                    chapter,
+                                    "Latest normalized source version does not verify.",
+                                )
+                            )
+                        else:
+                            findings.append(
+                                _finding(
+                                    "stale",
+                                    chapter,
+                                    "A newer normalized source version exists than the one recorded.",
+                                )
+                            )
 
     source_paragraphs = {
         "raw": split_paragraphs(raw_text),
@@ -146,7 +223,10 @@ def _audit_chapter(
 
 
 def audit_translation_memory(
-    tm_data: dict, raw_dir: str, translation_dir: str
+    tm_data: dict,
+    raw_dir: str,
+    translation_dir: str,
+    source_manifest_path: str | None = None,
 ) -> list[dict[str, str]]:
     """Compare indexed TM pairs with their local source files without writing."""
     if not isinstance(tm_data, dict) or not isinstance(tm_data.get("chapters"), dict):
@@ -161,6 +241,18 @@ def audit_translation_memory(
         return [
             _finding("unverified", "-", "Translation memory contains no chapters.")
         ]
+
+    source_manifest = None
+    if source_manifest_path is not None:
+        source_manifest_file = resolve_relative_path(
+            raw_dir, source_manifest_path
+        )
+        source_manifest = load_manifest(source_manifest_file)
+    latest_normalized_by_artifact_id = (
+        latest_artifacts_by_kind(source_manifest, "normalized_source")
+        if source_manifest is not None
+        else {}
+    )
 
     findings = []
     for chapter in provenance_by_chapter.keys() - chapters.keys():
@@ -181,7 +273,15 @@ def audit_translation_memory(
             continue
         provenance = provenance_by_chapter[chapter]
         findings.extend(
-            _audit_chapter(chapter, pairs, provenance, raw_dir, translation_dir)
+            _audit_chapter(
+                chapter,
+                pairs,
+                provenance,
+                raw_dir,
+                translation_dir,
+                source_manifest,
+                latest_normalized_by_artifact_id,
+            )
         )
     return findings
 
@@ -213,7 +313,10 @@ def main(argv: list[str] | None = None) -> int:
         Config.load_config(project=args.project, config_file=args.config)
         tm_data = _load_tm(Config.TM_PATH)
         findings = audit_translation_memory(
-            tm_data, Config.RAW_DIR, Config.OUTPUT_DIR
+            tm_data,
+            Config.RAW_DIR,
+            Config.OUTPUT_DIR,
+            Config.SOURCE_MANIFEST_PATH,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"ERROR: {_escape_nonprintable(str(exc))}", file=sys.stderr)

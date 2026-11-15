@@ -12,13 +12,21 @@ from pipeline import (
     get_chapter_specs,
     get_chapters,
     get_openai_client,
+    resolve_openai_client_settings,
 )
 from utils import (
-    read_child_text,
-    read_relative_text,
+    open_regular_file,
+    resolve_child_path,
+    resolve_relative_path,
     split_paragraphs,
     write_new_child_text,
 )
+
+_MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
+
+
+class _SourceChapterSizeLimitError(ValueError):
+    pass
 
 
 def _validate_extraction_result(result_json):
@@ -69,6 +77,21 @@ def _sha256_text(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _read_source_chapter(raw_dir, raw_file, *, mapped):
+    path = (
+        resolve_relative_path(raw_dir, raw_file)
+        if mapped
+        else resolve_child_path(raw_dir, raw_file)
+    )
+    with open_regular_file(path, binary=True) as stream:
+        content = stream.read(_MAX_SOURCE_FILE_BYTES + 1)
+    if len(content) > _MAX_SOURCE_FILE_BYTES:
+        raise _SourceChapterSizeLimitError(
+            "Source chapter exceeds the knowledge extraction size limit."
+        )
+    return content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _build_provenance_manifest(chapter_inputs, sample_text, glossary_entries, model):
     source_files = []
     paragraphs_by_chapter = {}
@@ -81,16 +104,17 @@ def _build_provenance_manifest(chapter_inputs, sample_text, glossary_entries, mo
 
         paragraphs = split_paragraphs(sent_text)
         paragraphs_by_chapter[chapter["filename"]] = paragraphs
-        source_files.append(
-            {
-                "filename": chapter["filename"],
-                "tm_key": chapter.get("tm_key", chapter["filename"]),
-                "source_sha256": _sha256_text(chapter["content"]),
-                "included_characters": len(sent_text),
-                "included_sha256": _sha256_text(sent_text),
-                "included_paragraph_count": len(paragraphs),
-            }
-        )
+        source_file = {
+            "filename": chapter["filename"],
+            "tm_key": chapter.get("tm_key", chapter["filename"]),
+            "source_sha256": _sha256_text(chapter["content"]),
+            "included_characters": len(sent_text),
+            "included_sha256": _sha256_text(sent_text),
+            "included_paragraph_count": len(paragraphs),
+        }
+        if chapter.get("source_version_id") is not None:
+            source_file["source_version_id"] = chapter["source_version_id"]
+        source_files.append(source_file)
 
     glossary_evidence = []
     for source_term, _ in glossary_entries:
@@ -133,7 +157,10 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         chapters = get_chapters(raw_dir)
     else:
         chapters = get_chapter_specs(
-            raw_dir, Config.OUTPUT_DIR, Config.CHAPTER_MAP
+            raw_dir,
+            Config.OUTPUT_DIR,
+            Config.CHAPTER_MAP,
+            Config.SOURCE_MANIFEST_PATH,
         )
     if not chapters:
         print("No raw chapters found.")
@@ -148,7 +175,18 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         draft_path = Path(output_dir) / draft_name
         if draft_path.exists() or draft_path.is_symlink():
             raise FileExistsError(f"Draft already exists and will not be overwritten: {draft_path}")
-        
+
+    provider_base_url = Config.DEEPSEEK_BASE_URL
+    provider_api_key = get_api_key("DEEPSEEK_API_KEY")
+    provider_id = "deepseek"
+    data_categories = {"source_text"}
+    resolve_openai_client_settings(
+        provider_base_url,
+        provider_api_key,
+        provider_id=provider_id,
+        data_categories=data_categories,
+    )
+
     # Read first 3 chapters for context
     sample_text = ""
     chapter_inputs = []
@@ -156,23 +194,24 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
         if isinstance(chapter, str):
             raw_file = chapter
             tm_key = chapter
-            content = read_child_text(raw_dir, raw_file)
+            content = _read_source_chapter(raw_dir, raw_file, mapped=False)
         else:
             raw_file = chapter.raw_file
             tm_key = chapter.tm_key
-            content = read_relative_text(raw_dir, raw_file)
+            content = _read_source_chapter(raw_dir, raw_file, mapped=True)
         section_header = f"\n\n--- {raw_file} ---\n\n"
         content_start = len(sample_text) + len(section_header)
         sample_text += section_header + content
-        chapter_inputs.append(
-            {
-                "filename": raw_file,
-                "tm_key": tm_key,
-                "content": content,
-                "content_start": content_start,
-                "content_end": content_start + len(content),
-            }
-        )
+        chapter_input = {
+            "filename": raw_file,
+            "tm_key": tm_key,
+            "content": content,
+            "content_start": content_start,
+            "content_end": content_start + len(content),
+        }
+        if not isinstance(chapter, str) and chapter.source_version_id is not None:
+            chapter_input["source_version_id"] = chapter.source_version_id
+        chapter_inputs.append(chapter_input)
         
     # Limit sample size to avoid token overflow
     if len(sample_text) > 20000:
@@ -194,10 +233,10 @@ async def extract_knowledge(raw_dir: str, output_dir: str):
     )
 
     client = get_openai_client(
-        Config.DEEPSEEK_BASE_URL,
-        get_api_key("DEEPSEEK_API_KEY"),
-        provider_id="deepseek",
-        data_categories={"source_text"},
+        provider_base_url,
+        provider_api_key,
+        provider_id=provider_id,
+        data_categories=data_categories,
     )
 
     print("Calling LLM for analysis...")
@@ -255,6 +294,12 @@ def main():
         Config.load_config()
         knowledge_dir = os.path.join(Config.WORKSPACE_DIR, "Knowledge")
         asyncio.run(extract_knowledge(Config.RAW_DIR, knowledge_dir))
+    except _SourceChapterSizeLimitError:
+        print(
+            "Error during extraction: a selected chapter exceeds the configured source read limit.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from None
     except Exception as exc:
         print(
             f"Error during extraction ({type(exc).__name__}).",

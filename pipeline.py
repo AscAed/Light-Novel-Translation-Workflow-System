@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import os
 import json
 import re
@@ -8,14 +7,20 @@ import logging
 import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlsplit
+from chapter_transaction import (
+    commit_chapter_translation,
+    has_pending_chapter_transaction,
+    recover_chapter_translation,
+)
 from utils import (
     extract_chapter_num,
     parse_api_timeout,
     parse_provider_data_policy,
     read_child_text,
     read_relative_text,
+    reject_knowledge_draft_path,
     require_provider_data_authorized,
     require_aligned_annotations,
     require_aligned_paragraphs,
@@ -32,6 +37,8 @@ from openai import (
     DefaultAsyncHttpxClient,
 )
 from rag_engine import RAGEngine
+from source_manifest import load_manifest, verify_manifest_artifact
+from story_summary_review import load_reviewed_story_summary
 
 
 def _resolve_project_content_dir(
@@ -83,6 +90,8 @@ class Config:
     RAW_DIR = ""
     OUTPUT_DIR = ""
     CHAPTER_MAP = None
+    SOURCE_MANIFEST_PATH = None
+    TM_REVIEWED_PATH = None
     GLOSSARY_PATH = ""
     GUIDELINES_PATH = ""
     INFO_PATH = ""
@@ -128,6 +137,8 @@ class Config:
     @classmethod
     def load_config(cls, project: Optional[str] = None, config_file: Optional[str] = None):
         cls.CHAPTER_MAP = None
+        cls.SOURCE_MANIFEST_PATH = None
+        cls.TM_REVIEWED_PATH = None
         if config_file and not Path(config_file).is_file():
             raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
@@ -170,6 +181,7 @@ class Config:
                 "TEST_INFO_PATH": "INFO_PATH",
                 "TEST_STORY_SUMMARY_PATH": "STORY_SUMMARY_PATH",
                 "TEST_TM_PATH": "TM_PATH",
+                "TEST_TM_REVIEWED_PATH": "TM_REVIEWED_PATH",
             }
             for env_name, config_name in test_path_mapping.items():
                 value = os.environ.get(env_name)
@@ -303,6 +315,7 @@ class Config:
             "TEST_INFO_PATH": "INFO_PATH",
             "TEST_STORY_SUMMARY_PATH": "STORY_SUMMARY_PATH",
             "TEST_TM_PATH": "TM_PATH",
+            "TEST_TM_REVIEWED_PATH": "TM_REVIEWED_PATH",
         }
         for env_k, cfg_k in env_mapping.items():
             val = os.environ.get(env_k)
@@ -311,6 +324,10 @@ class Config:
 
         for k, v in cfg_data.items():
             setattr(cls, k, v)
+
+        cls.TM_REVIEWED_PATH = os.environ.get(
+            "TM_REVIEWED_PATH", cfg_data.get("TM_REVIEWED_PATH")
+        )
 
         cls.CODING_PLAN_API_KEY = os.environ.get("CODING_PLAN_API_KEY")
         cls.GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -362,14 +379,22 @@ class ChapterSpec:
     raw_file: str
     translation_file: str
     tm_key: str
+    source_version_id: Optional[str] = None
 
 
 def get_chapter_specs(
     raw_dir: str,
     output_dir: str,
     chapter_map: Optional[list] = None,
+    source_manifest_path: Optional[str] = None,
 ) -> List[ChapterSpec]:
     """Resolve a reviewed chapter map, or preserve the legacy flat-directory scan."""
+    if source_manifest_path is not None and (
+        not isinstance(source_manifest_path, str)
+        or not source_manifest_path
+        or source_manifest_path.strip() != source_manifest_path
+    ):
+        raise ValueError("SOURCE_MANIFEST_PATH must be a trimmed relative path string.")
     if chapter_map is None:
         return [
             ChapterSpec(filename, filename, filename)
@@ -383,15 +408,22 @@ def get_chapter_specs(
     translation_paths = set()
     tm_keys = set()
     expected_fields = {"raw_file", "translation_file", "tm_key"}
+    source_manifest = None
     for index, item in enumerate(chapter_map, start=1):
-        if not isinstance(item, dict) or set(item) != expected_fields:
+        if (
+            not isinstance(item, dict)
+            or not expected_fields <= set(item)
+            or not set(item) <= expected_fields | {"source_version_id"}
+        ):
             raise ValueError(
                 f"CHAPTER_MAP entry {index} must contain exactly "
-                "raw_file, translation_file, and tm_key."
+                "raw_file, translation_file, and tm_key, with optional "
+                "source_version_id."
             )
         raw_file = item["raw_file"]
         translation_file = item["translation_file"]
         tm_key = item["tm_key"]
+        source_version_id = item.get("source_version_id")
         if (
             not isinstance(raw_file, str)
             or not raw_file.lower().endswith(".md")
@@ -418,6 +450,37 @@ def get_chapter_specs(
         )
         if not raw_path.is_file():
             raise ValueError(f"CHAPTER_MAP entry {index} source must be a regular file.")
+        if "source_version_id" in item:
+            if (
+                not isinstance(source_version_id, str)
+                or not source_version_id
+                or source_version_id.strip() != source_version_id
+                or any(ord(character) < 32 for character in source_version_id)
+            ):
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} has an invalid source_version_id."
+                )
+            if not source_manifest_path:
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} requires SOURCE_MANIFEST_PATH "
+                    "when source_version_id is set."
+                )
+            if source_manifest is None:
+                source_manifest_file = resolve_relative_path(
+                    raw_dir, source_manifest_path
+                )
+                source_manifest = load_manifest(source_manifest_file)
+            source_artifact = verify_manifest_artifact(
+                raw_dir, source_manifest, source_version_id
+            )
+            if (
+                source_artifact["kind"] != "normalized_source"
+                or source_artifact["relative_path"] != raw_file
+            ):
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} source version does not match "
+                    "its normalized raw_file."
+                )
         if translation_path.exists() and not translation_path.is_file():
             raise ValueError(
                 f"CHAPTER_MAP entry {index} translation target must be a regular file."
@@ -435,7 +498,9 @@ def get_chapter_specs(
         raw_paths.add(raw_identity)
         translation_paths.add(translation_identity)
         tm_keys.add(tm_identity)
-        specs.append(ChapterSpec(raw_file, translation_file, tm_key))
+        specs.append(
+            ChapterSpec(raw_file, translation_file, tm_key, source_version_id)
+        )
     return specs
 
 
@@ -599,13 +664,13 @@ def validate_provider_base_url(base_url: str) -> str:
     return base_url
 
 
-def get_openai_client(
+def resolve_openai_client_settings(
     base_url: str,
     api_key: Optional[str],
     *,
     provider_id: Optional[str] = None,
     data_categories=None,
-) -> AsyncOpenAI:
+) -> Tuple[str, str]:
     resolved_base_url = validate_provider_base_url(get_base_url(base_url))
     require_provider_data_authorized(
         provider_id,
@@ -617,12 +682,28 @@ def get_openai_client(
         if not _is_loopback_url(resolved_base_url):
             raise RuntimeError("A provider-specific API key is required for this endpoint.")
         api_key = "local-no-auth"
+    return resolved_base_url, api_key
+
+
+def get_openai_client(
+    base_url: str,
+    api_key: Optional[str],
+    *,
+    provider_id: Optional[str] = None,
+    data_categories=None,
+) -> AsyncOpenAI:
+    resolved_base_url, resolved_api_key = resolve_openai_client_settings(
+        base_url,
+        api_key,
+        provider_id=provider_id,
+        data_categories=data_categories,
+    )
     http_client = DefaultAsyncHttpxClient(
         timeout=Config.API_TIMEOUT,
         follow_redirects=False,
     )
     return AsyncOpenAI(
-        api_key=api_key,
+        api_key=resolved_api_key,
         base_url=resolved_base_url,
         timeout=Config.API_TIMEOUT,
         http_client=http_client,
@@ -780,6 +861,22 @@ class TranslationPipeline:
     def __init__(self):
         if not Config.WORKSPACE_DIR:
             Config.load_config()
+        reject_knowledge_draft_path(Config.GLOSSARY_PATH, "glossary input")
+        reject_knowledge_draft_path(
+            Config.STORY_SUMMARY_PATH, "story summary input"
+        )
+        self.story_summary = ""
+        if os.path.exists(Config.STORY_SUMMARY_PATH):
+            if Path(Config.STORY_SUMMARY_PATH).suffix.lower() == ".json":
+                self.story_summary = load_reviewed_story_summary(
+                    Config.STORY_SUMMARY_PATH,
+                    Config.RAW_DIR,
+                    Config.SOURCE_MANIFEST_PATH,
+                )
+            else:
+                self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
+        else:
+            self.story_summary = "尚无手动配置的故事概要。"
         self.info = load_json(Config.INFO_PATH)
         self.rag = RAGEngine(
             Config.TM_PATH,
@@ -787,12 +884,11 @@ class TranslationPipeline:
             Config.GUIDELINES_PATH,
             api_timeout=Config.API_TIMEOUT,
             provider_data_policy=Config.PROVIDER_DATA_POLICY,
+            source_root=Config.RAW_DIR,
+            source_manifest_path=Config.SOURCE_MANIFEST_PATH,
+            reviewed_tm_path=Config.TM_REVIEWED_PATH,
+            translation_root=Config.OUTPUT_DIR,
         )
-        self.story_summary = ""
-        if os.path.exists(Config.STORY_SUMMARY_PATH):
-            self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
-        else:
-            self.story_summary = "尚无手动配置的故事概要。"
 
     def _get_agent_instruction(self, agent_dir: str) -> str:
         # 1. Custom or legacy lookup inside the project workspace directory
@@ -1219,6 +1315,25 @@ class TranslationPipeline:
                 Config.OUTPUT_DIR, spec.translation_file, allow_missing=True
             )
             raw_text = None
+
+        pending_transaction = has_pending_chapter_transaction(
+            Config.OUTPUT_DIR, spec.translation_file, spec.tm_key
+        )
+        if pending_transaction:
+            if raw_text is None:
+                raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+            recovered = recover_chapter_translation(
+                Config.OUTPUT_DIR,
+                raw_text,
+                spec,
+                self.rag,
+                self._validate_transaction_translation,
+            )
+            if recovered:
+                print(f"RECOVERED: {spec.translation_file}")
+                return
+
         if output_path.exists():
             tm_chapters = self.rag.tm_data.get("chapters", {})
             if (
@@ -1237,6 +1352,7 @@ class TranslationPipeline:
         if raw_text is None:
             raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
         if not raw_text.strip():
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
             print(f"Chapter {spec.raw_file} is empty. Writing empty output.")
             if mapped_paths:
                 write_new_relative_text(
@@ -1272,56 +1388,77 @@ class TranslationPipeline:
         
         if final_list:
             raw_paras = split_paragraphs(raw_text)
-            require_aligned_paragraphs(raw_paras, final_list, "Final translation")
-            for index, (raw_paragraph, translated_paragraph) in enumerate(
-                zip(raw_paras, final_list), start=1
-            ):
-                mismatch = self._check_quote_mismatch(
-                    raw_paragraph, translated_paragraph
-                )
-                if mismatch:
-                    raise ValueError(
-                        f"Final translation changed Japanese quote marks in "
-                        f"paragraph {index} (difference: {mismatch})."
-                    )
+            self._validate_final_paragraphs(raw_paras, final_list)
             final_text = "\n\n".join(final_list)
-            pairs = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, final_list)]
-            source_provenance = {
-                "schema_version": 1,
-                "producer": "pipeline",
-                "raw_file": spec.raw_file,
-                "raw_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
-                "translation_file": spec.translation_file,
-                "translation_sha256": hashlib.sha256(
-                    final_text.encode("utf-8")
-                ).hexdigest(),
-                "pair_mappings": [
-                    {
-                        "pair_index": index,
-                        "raw_paragraph_indices": [index],
-                        "translation_paragraph_indices": [index],
-                        "trace_status": "matched",
-                    }
-                    for index in range(1, len(pairs) + 1)
-                ],
-            }
-            if mapped_paths:
-                write_new_relative_text(
-                    Config.OUTPUT_DIR, spec.translation_file, final_text
-                )
-            else:
-                write_new_child_text(
-                    Config.OUTPUT_DIR, spec.translation_file, final_text
-                )
-            self.rag.update_translation_memory(
-                spec.tm_key,
-                pairs,
-                source_provenance=source_provenance,
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+            commit_chapter_translation(
+                Config.OUTPUT_DIR,
+                raw_text,
+                spec,
+                final_text,
+                self.rag,
+                self._validate_transaction_translation,
             )
             print(f"SUCCESS: {spec.translation_file}")
         else:
             raise RuntimeError(
                 f"FAILED: {spec.raw_file}: Refinement returned empty results."
+            )
+
+    def _validate_final_paragraphs(self, raw_paras, translated_paras):
+        require_aligned_paragraphs(raw_paras, translated_paras, "Final translation")
+        for index, (raw_paragraph, translated_paragraph) in enumerate(
+            zip(raw_paras, translated_paras), start=1
+        ):
+            mismatch = self._check_quote_mismatch(
+                raw_paragraph, translated_paragraph
+            )
+            if mismatch:
+                raise ValueError(
+                    f"Final translation changed Japanese quote marks in "
+                    f"paragraph {index} (difference: {mismatch})."
+                )
+
+    def _validate_transaction_translation(self, raw_text, translation_text):
+        raw_paras = split_paragraphs(raw_text)
+        translated_paras = split_paragraphs(translation_text)
+        self._validate_final_paragraphs(raw_paras, translated_paras)
+        if "\n\n".join(translated_paras) != translation_text:
+            raise ValueError("Chapter transaction translation is not normalized.")
+
+    def _verify_chapter_source_snapshot(self, spec, raw_text, mapped_paths):
+        current_text = (
+            read_relative_text(Config.RAW_DIR, spec.raw_file)
+            if mapped_paths
+            else read_child_text(Config.RAW_DIR, spec.raw_file)
+        )
+        if current_text != raw_text:
+            raise ValueError(
+                f"Source chapter {spec.raw_file} changed during processing."
+            )
+
+        if spec.source_version_id is None:
+            return
+        if not Config.SOURCE_MANIFEST_PATH:
+            raise ValueError(
+                "A source manifest is required to verify the chapter version."
+            )
+        manifest_path = resolve_relative_path(
+            Config.RAW_DIR,
+            Config.SOURCE_MANIFEST_PATH,
+        )
+        manifest = load_manifest(manifest_path)
+        artifact = verify_manifest_artifact(
+            Config.RAW_DIR,
+            manifest,
+            spec.source_version_id,
+        )
+        if (
+            artifact["kind"] != "normalized_source"
+            or artifact["relative_path"] != spec.raw_file
+        ):
+            raise ValueError(
+                "Source version no longer matches the configured chapter."
             )
 
     async def run_all(self):
@@ -1370,7 +1507,10 @@ class TranslationPipeline:
             raise RuntimeError(f"Missing required provider credentials: {', '.join(missing)}")
             
         chapters = get_chapter_specs(
-            Config.RAW_DIR, Config.OUTPUT_DIR, Config.CHAPTER_MAP
+            Config.RAW_DIR,
+            Config.OUTPUT_DIR,
+            Config.CHAPTER_MAP,
+            Config.SOURCE_MANIFEST_PATH,
         )
         if not chapters:
             raise RuntimeError(

@@ -11,7 +11,9 @@ from source_manifest import (
     load_manifest,
     new_manifest,
     validate_manifest,
+    verify_manifest_artifact,
     verify_manifest_files,
+    verified_manifest_content_bytes,
 )
 from scripts.validate_source_manifest import main as validate_source_manifest_main
 
@@ -84,6 +86,43 @@ class SourceManifestTests(unittest.TestCase):
 
         self.assertEqual(verify_manifest_files(root, manifest), 1)
 
+    def test_counts_all_manifested_file_versions_and_excludes_metadata_nodes(self):
+        root = Path(self.temp_dir.name) / "project"
+        (root / "raw").mkdir(parents=True)
+        (root / "normalized").mkdir()
+        first_content = b"old"
+        second_content = b"new version"
+        (root / "raw" / "episode-v1.bin").write_bytes(first_content)
+        (root / "normalized" / "episode.md").write_bytes(second_content)
+        manifest = new_manifest()
+        manifest["artifacts"] = [
+            self._artifact(
+                version_id="raw-v1",
+                content=first_content,
+                relative_path="raw/episode-v1.bin",
+            ),
+            self._artifact(
+                artifact_id="work-1/episode-1/normalized",
+                version_id="normalized-v2",
+                kind="normalized_source",
+                content=second_content,
+                relative_path="normalized/episode.md",
+                parent_version_ids=["raw-v1"],
+            ),
+            self._artifact(
+                artifact_id="work-1",
+                version_id="work-v1",
+                kind="work",
+                content=b"",
+                relative_path=None,
+            ),
+        ]
+
+        self.assertEqual(
+            verified_manifest_content_bytes(root, manifest),
+            len(first_content) + len(second_content),
+        )
+
     def test_rejects_file_hash_mismatch(self):
         root = Path(self.temp_dir.name) / "project"
         source_dir = root / "raw"
@@ -96,6 +135,32 @@ class SourceManifestTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "hash does not match"):
             verify_manifest_files(root, manifest)
+
+    def test_verifies_one_selected_artifact_version(self):
+        root = Path(self.temp_dir.name) / "project"
+        (root / "normalized").mkdir(parents=True)
+        content = b"synthetic normalized source"
+        (root / "normalized" / "episode-1.md").write_bytes(content)
+        manifest = new_manifest()
+        manifest["artifacts"] = [
+            self._artifact(
+                artifact_id="work-1/episode-1/normalized",
+                version_id="normalized-version-1",
+                kind="normalized_source",
+                content=content,
+                relative_path="normalized/episode-1.md",
+            )
+        ]
+
+        artifact = verify_manifest_artifact(
+            root, manifest, "normalized-version-1"
+        )
+
+        self.assertEqual(artifact["kind"], "normalized_source")
+        self.assertEqual(artifact["relative_path"], "normalized/episode-1.md")
+
+        with self.assertRaisesRegex(ValueError, "not in the manifest"):
+            verify_manifest_artifact(root, manifest, "missing-version")
 
     def test_skips_metadata_without_a_file_path(self):
         artifact = self._artifact(

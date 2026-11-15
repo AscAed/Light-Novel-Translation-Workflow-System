@@ -14,13 +14,13 @@
 | 1 | 初译 | 使用书籍上下文及词条翻译段落数组 | `prompts/translator_skill.md`；要求 1:1 JSON 数组 |
 | 2 | 逻辑校对 | 对照原文和初译，返回严重度、意见、修订段落 | `prompts/proofreader_skill.md`；源码用 `STRICT_REFLECTION_MODE` 控制反思重试 |
 | 3 | 文风润色 | 对校对译文进行中文风格调整 | `prompts/polisher_skill.md`；接受结构化段落响应 |
-| 4 | 保存与学习 | 校验段落映射、文本非空及每段日文引号序列，再保存输出并将段落对写入 TM | `pipeline.py::run_chapter`、`utils.py::require_aligned_paragraphs`；门禁失败时不写输出/TM；TM 写入失败时保留译文并报错，重跑仅在已有文件非空且缺少 TM 条目时警告，不自动恢复 |
+| 4 | 保存与学习 | 校验段落映射、文本非空及每段日文引号序列；提交前复读源文并在版本映射场景复核 manifest，再保存输出和 TM | `pipeline.py::run_chapter`、`chapter_transaction.py`、`utils.py::require_aligned_paragraphs`；源文变化或格式门禁失败时不写输出/TM；逐章恢复日志先记录预期结果，TM 更新采用候选状态并在原子写成功后切换进程内状态。重跑优先验证并恢复待处理日志；源文、输出或 TM 基线冲突时停止且不覆盖。源文复读与提交之间仍无并发写锁 |
 
 当前流程不是多 Agent 服务集群；各阶段在同一 Python 进程中顺序调用模型接口。
 
-未提供 `CHAPTER_MAP` 时，`pipeline.py::get_chapters` 与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描。项目名模式不会自动选取 `生肉/`、`熟肉/` 下的第一个子目录；发现嵌套目录时要求显式 `--config`，避免按文件系统枚举顺序选错卷或 EPUB。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。被忽略的本地书籍项目有两个原文卷目录和正文/EPUB 两个译文目录，根目录没有 Markdown。`CHAPTER_MAP` 通用映射契约已实现；该项目的真实章节配对、输出目标和 TM 键仍需逐项核验，见 D-12。核验前不要按文件名/章节号猜测对应关系或移动项目数据。
+未提供 `CHAPTER_MAP` 时，`pipeline.py::get_chapters` 与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描。项目名模式不会自动选取 `生肉/`、`熟肉/` 下的第一个子目录；发现嵌套目录时要求显式 `--config`，避免按文件系统枚举顺序选错卷或 EPUB。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。2026-11-15 复核的用户指定原文/译文根目录和仓库忽略项目下的 `生肉/`、`熟肉/` 均为空；7 个 EPUB 工具/配置文件位于旁边的 `projects/祝福のネトラレラ/EPUB/`。这只是当日文件库存快照，未读取书籍正文。`CHAPTER_MAP` 通用映射契约已实现；该项目的真实章节配对、输出目标和 TM 键仍需逐项核验，见 D-12。核验前不要按文件名/章节号猜测对应关系或移动项目数据。
 
-显式 JSON 配置现支持 `CHAPTER_MAP`：每项包含 `raw_file`、`translation_file` 和唯一 `tm_key`。清单顺序就是处理顺序；路径相对各自根目录，输出父目录需预先存在。流水线输出、TM 段落对、章节对齐、知识抽取和来源审计使用相同映射。D-12 的通用契约已实现；忽略书籍目录的具体条目、章节对应关系及缺译文策略仍待核验，故当前没有启用任何真实书籍清单。配置示例与约束见[开发与验证](development.md)。
+显式 JSON 配置现支持 `CHAPTER_MAP`：每项包含 `raw_file`、`translation_file` 和唯一 `tm_key`，并可选 `source_version_id`。使用版本 ID 时还须配置相对 `RAW_DIR` 的 `SOURCE_MANIFEST_PATH`；流水线/对齐/知识抽取会校验 manifest 中 artifact 类型、路径和字节哈希，TM/知识来源记录保留版本 ID，TM 只读审计可复核它。旧三字段映射保持兼容。清单顺序就是处理顺序；路径相对各自根目录，输出父目录需预先存在。具体作品条目和章节关系仍要人工核验，不会从章节编号推测；版本变化后的译文过期标记也尚未实现。配置示例与约束见[开发与验证](development.md)。
 
 ## 上下文来源
 
@@ -28,7 +28,7 @@
 - `Glossary.json`：按当前章节原文匹配的词条；解析器采用启发式切分。
 - `guidelines.txt`：全局及章节指导；缺失章节会尝试语义匹配/邻章回退。
 - `STORY_SUMMARY.md`：按当前章节裁剪的故事概要。
-- `translation_memory.json`：相似段落检索的译文示例。新流水线/对齐写入会附带可选顶层 `source_provenance`（文件哈希与段落序号）；覆盖章节时若未提供新索引，会清除该章旧索引，避免其指向新条目。旧条目仍可读取且不会自动补录。来源索引不是审核或批准状态。
+- `translation_memory.json`：相似段落检索的译文示例。新流水线/对齐写入会附带可选顶层 `source_provenance`（文件哈希与段落序号）；覆盖章节时若未提供新索引，会清除该章旧索引，避免其指向新条目。旧条目仍可读取且不会自动补录。来源索引不是审核或批准状态。可用 `scripts/apply_tm_review.py` 为来源完整核验的原译对生成回执并发布 approved-only 快照；只有显式设置 `TM_REVIEWED_PATH` 后 RAG 才使用该快照，默认仍检索完整可写 TM。快照详情与剩余限制见[知识库治理](knowledge-governance.md#tm-审核回执与显式检索快照局部实现)。
 
 检索结果是建议上下文，不是事实校验器。低置信度、冲突和缺失信息应标记出来，不得由 Agent 静默补全。
 
@@ -44,12 +44,12 @@
 1. 初译保留不确定点和源文依据，不自行批准新词条。
 2. 校对优先查漏译、误译、指代、因果和术语；对来源不足的判断标为待核查。
 3. 润色只优化中文表达；保留原文事实、角色声音、段落边界与已批准术语。
-4. `已实现` 最终保存前验证非空文本、段落映射及每段 `「」『』` 的种类/数量/顺序；`计划` 术语一致性和知识变更状态仍需治理闭环。
-5. `已实现` 当前硬门禁失败时，不写该章节的译文或 TM；`计划` 通过现有格式门禁仍不代表语义正确或 TM 已获审核，后续发布与恢复策略待设计。
+4. `已实现` 最终保存前验证非空文本、段落映射及每段 `「」『』` 的种类/数量/顺序；`部分实现` D-11 逐章恢复日志可以在重跑时恢复匹配的输出/TM 更新，但不保证多进程或断电一致性；`计划` 术语一致性和知识变更状态仍需治理闭环。
+5. `已实现` 当前硬门禁失败时，不写该章节的译文或 TM；`计划` 通过现有格式门禁仍不代表语义正确或 TM 已获审核。逐对审核快照是`部分实现`且默认关闭；默认检索门禁、身份可信度、风险分层、更正/废弃规则仍待设计。D-11 恢复边界见`部分实现`状态及[决策记录](decisions/README.md)。
 
 ## Agent 输出契约
 
 - 当前契约由 `pipeline.py` 的 response schema、inline 标注格式、`prompts/*.md` 及 `tests/test_pipeline_contracts.py` 共同表达；三种生产提示词输出字段须与调用端 schema 保持一致。
 - 新增/修改阶段时，必须同时检查输入字段、输出字段、失败响应、重试次数、日志敏感信息及调用方消费方式。
 - 提示词要求 JSON 不等于服务端强制 schema，也不代表响应内容经过语义验收。
-- 不在提示词中暴露密钥。外部模型调用声明 `source_text`、`translation_text`、`book_knowledge` 等数据类别；仅当 `PROVIDER_DATA_POLICY` 对目标 Provider 覆盖该调用的所有类别时才发送。默认空策略拒绝远端书籍数据；loopback OpenAI-compatible endpoint 与 RAG 的直接本地 HTTP mock 使用本地路径，Gemini SDK 调用始终要求授权。E2E runner 仅为合成 fixture 显式设置 Gemini 测试 grant；用户授权矩阵仍待确认。
+- 不在提示词中暴露密钥。外部模型调用声明 `source_text`、`translation_text`、`book_knowledge` 等数据类别；仅当 `PROVIDER_DATA_POLICY` 对目标 Provider 覆盖该调用的所有类别时才发送。默认空策略拒绝远端书籍数据；loopback OpenAI-compatible endpoint 与 RAG 的直接本地 HTTP mock 使用本地路径，Gemini SDK 调用始终要求授权。E2E runner 仅为合成 fixture 显式设置 Gemini 测试 grant；Provider 逐目标/数据类别授权矩阵仍待确认。指定作品授权已确认，二者分别处理。

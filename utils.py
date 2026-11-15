@@ -11,6 +11,19 @@ from typing import List, Optional
 PROVIDER_DATA_CATEGORIES = frozenset(
     {"source_text", "translation_text", "book_knowledge", "evaluation_samples"}
 )
+KNOWLEDGE_DRAFT_FILENAMES = frozenset(
+    {"glossary_draft.json", "story_summary_draft.md"}
+)
+
+
+def reject_knowledge_draft_path(path, role: str) -> None:
+    """Prevent generated candidate files from being used as reviewed inputs."""
+    if not path:
+        return
+    if Path(path).name.casefold() in KNOWLEDGE_DRAFT_FILENAMES:
+        raise ValueError(
+            f"Knowledge candidate draft cannot be configured as {role}."
+        )
 
 
 def parse_api_timeout(value) -> float:
@@ -278,6 +291,16 @@ def validate_tm_source_provenance(provenance: dict, pair_count: int) -> None:
         digest = provenance.get(field)
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"TM source provenance requires a valid {field}.")
+
+    if "source_version_id" in provenance:
+        source_version_id = provenance["source_version_id"]
+        if (
+            not isinstance(source_version_id, str)
+            or not source_version_id
+            or source_version_id.strip() != source_version_id
+            or any(ord(character) < 32 for character in source_version_id)
+        ):
+            raise ValueError("TM source provenance has an invalid source_version_id.")
 
     mappings = provenance.get("pair_mappings")
     if not isinstance(mappings, list) or len(mappings) != pair_count:

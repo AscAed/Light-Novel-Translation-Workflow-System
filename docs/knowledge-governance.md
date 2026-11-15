@@ -5,16 +5,18 @@
 | 数据 | 当前路径/格式 | 当前用途 | 状态 |
 | --- | --- | --- | --- |
 | 作品元信息 | `Knowledge/作品基本信息.json` | 角色/作品上下文 | 文件存在；字段规范未正式定义 |
-| 术语表 | `Knowledge/Glossary.json` | 原文命中后提供 src/dst/info | 文件存在；启发式解析；审核状态未建模 |
+| 术语表（兼容格式） | `Knowledge/Glossary.json` | 原文命中后提供 src/dst/info | 文件存在；启发式解析；条目内审核状态未建模 |
+| 已审核术语 bundle | 操作者显式设置的 `GLOSSARY_PATH` | RAG 仅消费 bundle 中批准术语 | 本地回执发布与来源新鲜度校验已局部实现；回执未签名/认证 |
 | 翻译指导 | `Knowledge/guidelines.txt` | 全局/章节风格与约束 | 文件存在；章节标记依赖约定文本 |
 | 故事概要 | `Knowledge/STORY_SUMMARY.md` | 按章节裁剪上下文 | 文件存在；来源和审核流程未定义 |
-| 翻译记忆 | `Knowledge/translation_memory.json` | 段落向量检索与 few-shot | 运行时自动写入并原子替换；新条目有可选文件哈希/段落映射，旧条目无回填；审核和版本未建模 |
+| 翻译记忆 | `Knowledge/translation_memory.json` | 段落向量检索与 few-shot | 运行时自动写入并原子替换；默认仍直接检索该文件；可选 `TM_REVIEWED_PATH` 快照仅供检索；新条目有可选文件哈希/段落映射，旧条目无回填 |
 | 自动提取草稿 | `Glossary_draft.json`、`STORY_SUMMARY_draft.md`、`KNOWLEDGE_PROVENANCE_draft.json` | 实验性候选与输入来源核查 | 脚本校验响应并记录输入哈希、范围和术语出现段落；不构成批准或正式写入流程 |
 
 ## 风险
 
 - 自动把译文写回 TM 会将未审校、错位或低质量段落传播到后续章节。
-- 译文文件先于 TM 持久化写入；若 TM 写入失败，章节命令报错但译文保留。重跑会因译文已存在而跳过；仅对非空译文且缺少 TM 记录的情况发出警告，不会自动修复。确认原译段落对齐后，可用 `scripts/align_chapters.py` 重建 TM。规划带恢复记录的跨文件提交或对账，并遵守审核边界；尚未实现。
+- 译文/TM 是两个文件，不能由单个文件系统原子操作共同提交。`chapter_transaction.py` 现先排他创建逐章恢复日志，再排他写译文并原子更新 TM；成功后删除日志。TM 写入失败或进程中断后，重跑会先验证日志绑定的章节映射、当前源文、译文哈希、格式门禁和 TM 基线，再幂等恢复；内容冲突时停止且不覆盖，日志保留供人工处理。TM 原子写失败时 `RAGEngine` 的磁盘及内存候选状态不变。该局部机制仅支持单写入者的进程中断重试，不提供多进程锁、断电持久性或通用对账；确认原译段落对齐后仍可用 `scripts/align_chapters.py` 手动重建 TM。
+- 恢复日志包含完整译文明文，保存在输出文件同目录，最大 64 MiB；完成后删除。SHA-256 仅用于内容一致性校验，不是签名或审核凭证。中断在日志发布前可能遗留临时文件；不支持硬链接的文件系统可能无法创建日志。异常输出、源文或 TM 基线冲突需人工检查，不应手动删除待处理日志后直接继续。
 - 知识抽取的三个草稿文件逐个排他写入，不构成文件组事务；来源清单最后写入并标记 `artifact_status: complete`。若异常导致清单缺失/无效，其他草稿可能残留，必须人工核对后再决定是否移走或重跑；脚本不会自动覆盖或清理。
 - `scripts/align_chapters.py` 使用启发式段落对齐；对齐失败/错位可能制造错误训练样例。
 - 术语表清洗规则以分隔符启发式识别词条和说明，可能错误拆分合法内容。
@@ -30,10 +32,12 @@
 - 流水线完成模型阶段并通过当前格式检查后会自动更新 TM；当前门禁拒绝空/非文本段落、段落数错配及逐段 `「」『』` 数量或顺序变化。未通过时不写译文或 TM。通过格式门禁仍不等同于人工批准，也不能证明译文语义正确；阶段 2 仍需确定何时允许进入正式检索集合。
 - 章节对齐使用启发式方法。对齐结果需要保留来源并可审查；仅仅成功生成向量或写入 JSON，不构成高质量双语样本的验收。
 - `auto_extract_knowledge.py` 生成的是实验性草稿：写入前校验响应结构、必填字段和同一原词的冲突译名，并拒绝覆盖既有草稿。`KNOWLEDGE_PROVENANCE_draft.json` 记录实际送入提示词的章节范围/哈希、样本哈希和可精确匹配的术语段落序号；未命中项保留为空命中。它不验证术语语义，也不为概要逐句归因；其他知识与历史 TM 条目仍缺来源、置信度或审核状态。不得因结构校验或来源命中就将模型建议提升为已批准知识。
-- 流水线与章节对齐器新写 TM 时在顶层可选 `source_provenance` 中按章节记录原文/译文文件哈希及每个 TM 对应的 1-based 段落序号；对齐无法精确映射时记录 `partial`/`unmatched`，不伪造引用。覆盖章节但未提供新索引时会移除该章旧索引，保留其他章节索引，避免元数据误指向新条目。旧 TM 不迁移，既有无来源条目仍不可追溯。
+- 2026-11-15 新增运行时 fail-closed 子项：`RAGEngine` 拒绝将精确命名为 `Glossary_draft.json` 的文件作为术语输入；翻译流水线启动时拒绝将 `Glossary_draft.json` 或 `STORY_SUMMARY_draft.md` 配置为正式输入，且在读取项目知识前失败。现有 `Glossary.json`、`STORY_SUMMARY.md` 和旧项目格式保持兼容。该检查仅基于抽取脚本的约定文件名；改名后的草稿仍可能被当作正式文件，不构成审核记录、批准 schema 或完整知识状态机。
+- 流水线与章节对齐器新写 TM 时在顶层可选 `source_provenance` 中按章节记录原文/译文文本哈希及每个 TM 对应的 1-based 段落序号；哈希针对读取后的 Unicode 文本重新编码为 UTF-8（文本 I/O 会统一换行），不是原始文件字节哈希。显式 `source_version_id` 的原始字节完整性由来源 manifest 的 `content_sha256` 独立验证。对齐无法精确映射时记录 `partial`/`unmatched`，不伪造引用。覆盖章节但未提供新索引时会移除该章旧索引，保留其他章节索引，避免元数据误指向新条目。旧 TM 不迁移，既有无来源条目仍不可追溯。
 - Mock 和单元测试可验证本地数据流、格式与失败行为，不能验证真实模型输出或知识正确性。任何知识发布标准都应分别说明自动测试证据与人工/真实样本验收证据。
 - 运行诊断不输出生成的校对意见；RAG embedding、知识抽取 CLI 和章节对齐 CLI 的失败信息不包含异常消息正文，以降低章节文本或上游响应被写入控制台/日志的风险。此约束不控制第三方 SDK 或外围调用工具自身的日志。
 - 用户选择由专门审核 AI 审核并制定升级规则；风险分层、效果验证和错误条目更正/废弃流程仍需设计。具体外部 API 数据授权仍需人类确认；不得假设审核闭环已实现。
+- 后续验收须覆盖候选隔离、审核决定和升级可追溯、冲突保留及更正/废弃；低风险 TM 的门禁与抽查也须有记录。审核 AI 的错误和升级效果需要获准样本评估，不能仅以模型输出或格式校验代替。
 
 ## 抽取来源清单 v1
 
@@ -42,6 +46,30 @@
 - `glossary_evidence` 仅按原词精确子串匹配，段落序号从 `1` 开始；未找到时 `occurrences` 为空。它是定位线索，不判断该译名或模型说明是否正确。
 - `summary_source_chapters` 仅说明概要生成时纳入的章节范围，不给概要中的单条事实提供逐句证据。
 - 三份草稿逐文件写入；来源清单最后写入并将 `artifact_status` 设为 `complete`。缺少清单、状态不为 `complete` 或 JSON 无法解析时，整组草稿视为不完整，先人工检查残留文件。
+- 2026-11-15 输入/外发前置检查：`scripts/auto_extract_knowledge.py` 在读取章节正文前检查 OpenAI-compatible base URL、Provider 的 `source_text` 授权及远端 API key；客户端创建时再次检查。授权失败或缺少远端 key 时不读取章节、不创建客户端或草稿。其后最多读取前 3 个所选章节，每个文件最多读取 16 MiB，超过上限即在创建 Provider 客户端前拒绝；CLI 只报告通用超限提示，不回显路径或异常正文。单次源文件读取总量因此最多为 48 MiB。随后仍把含章节标记的样本文本截到 20,000 个 Unicode 字符。字节上限控制本地读取量，字符截断不是 token 估算；全书上下文预算、分批抽取和可配置上限仍未实现。验证见[开发与验证](development.md#2026-11-15-知识抽取章节读取上限)。
+
+## 知识候选来源新鲜度核验
+
+- 执行 `python scripts/validate_knowledge_provenance.py --root <原文数据根目录> --manifest source_manifest.json --provenance <Knowledge目录/KNOWLEDGE_PROVENANCE_draft.json>`，只读核验完整的 provenance v1 草稿及每个 `source_files` 条目；源文本摘要流式计算，不将全文载入内存。
+- 记录 `source_version_id` 时，审计会验证所指 manifest artifact 的原始字节哈希、`normalized_source` 类型、相对路径及文本读取哈希，再对比同一 `artifact_id` 的最新追加版本。已有版本过旧时报告 `stale`，最新 artifact 无法校验时报告 `invalid`，来源字段不匹配时报告 `mismatch`。
+- provenance 没有 `source_version_id` 时，即使当前文本哈希一致也报告 `unverified`；文本哈希已变化时报告 `stale`。退出码 `0` 表示全部核验通过，`1` 表示发现 stale/mismatch/invalid 或输入无效，`2` 表示存在 unverified。
+- 工具不会输出来源正文，也不修改术语草稿、概要、provenance 或版本清单；报告是运行时观察，不是持久化批准/过期状态，不证明候选语义正确或已经审核。
+
+## 草稿输入保护（局部实现）
+
+- 自动抽取输出固定名为 `Glossary_draft.json`、`STORY_SUMMARY_draft.md` 和 `KNOWLEDGE_PROVENANCE_draft.json`。前两个若被显式设置为运行时 glossary 或 summary 路径，程序会在翻译流水线读取项目知识前拒绝启动；直接将 glossary 草稿传给 `RAGEngine` 也会失败。
+- 这仅防止直接误配生成的候选文件名，不检测文件内容或 provenance 状态，也无法阻止重命名/复制到正式路径。现有正式路径仍是兼容的旧数据格式，不能据其文件名推断每条内容已审核。
+- 2026-11-15 合成回归：草稿 glossary 被 RAG 拒绝；配置草稿 summary 时流水线在读取知识和构造 RAG 前拒绝。相关 12 模块和 mock E2E 结果见[开发与验证](development.md)。
+
+## 审核回执与已批准术语表（局部实现）
+
+- `scripts/apply_knowledge_review.py` 从固定的 `Glossary_draft.json`、`KNOWLEDGE_PROVENANCE_draft.json` 和显式 `--review` 回执创建一个新的术语表 bundle；输出必须是新文件，不会覆盖既有文件。它也可生成绑定候选哈希的未完成回执模板；不调用 Provider，也不替 reviewer 作决定。
+- 回执 schema v1 绑定候选术语表和 provenance 的原始字节 SHA-256；每个候选词条必须且只能有一个 `approved`、`rejected` 或 `escalated` 决定、非空理由，并记录 reviewer 的 Provider/model/review ID 和 UTC 时间。这些身份字段是调用者提供的声明，不签名、不认证，也不能证明某个 AI 实际审阅过内容。
+- 发布前要求 provenance 的来源审计全部为 `verified`；重新核对 manifest 中 `normalized_source` 版本、相对路径、原始字节和规范化文本哈希、样本前缀哈希、段落数及术语实际出现位置。输入 JSON 和每个源章节各限制为 16 MiB。审核结论只用于明确批准且有来源命中的术语；没有任何批准项时拒绝发布。输出保留决定、理由、证据位置和哈希，不复制原文正文。
+- `RAGEngine` 识别 `_knowledge_review_schema: 1` bundle，验证状态、批准集合、规范化术语摘要和来源新鲜度；加载这类 bundle 时必须提供 `source_root` 与 `source_manifest_path`。该术语摘要是格式/一致性检查，不是签名或防篡改证明。默认 `Glossary.json` 兼容路径不自动切换到审核版，须由操作者显式将 `GLOSSARY_PATH` 配置为新 bundle。
+- 先创建模板：`python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --create-template review_receipt.json`。模板为每个术语预填 `pending`，并绑定候选文件原始字节哈希；它不含批准结论，不能直接发布。完成 reviewer 信息、UTC 时间、每项决定和理由后，再执行：`python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --source-root <原文数据根目录> --manifest source_manifest.json --review review_receipt.json --output Glossary_reviewed.json`。模板和 bundle 都是排他新建，既有文件不会覆盖；候选文件在审阅期间变化时，原哈希绑定会使发布失败。回执 schema、完整合成测试与限制见[开发与验证](development.md)。
+- 概要候选可使用 `scripts/apply_story_summary_review.py --knowledge-root <Knowledge目录> --create-template summary_review.json` 创建 `pending` 回执；补全 reviewer、UTC 时间、`approved`/`rejected`/`escalated` 决定和理由后，运行 `python scripts/apply_story_summary_review.py --knowledge-root <Knowledge目录> --source-root <原文数据根目录> --manifest source_manifest.json --review summary_review.json --output STORY_SUMMARY_reviewed.json`。发布器绑定概要和 provenance 候选哈希，只接受明确批准，并要求 `summary_source_chapters` 与带 `source_version_id` 的 provenance 来源顺序一致、manifest 中均为最新 `normalized_source`。输出不复制原文正文；候选哈希在发布时核验，概要 bundle 与来源新鲜度会在翻译流水线初始化时再次检查。概要 JSON bundle 必须显式配置为 `STORY_SUMMARY_PATH`，且需要 `SOURCE_MANIFEST_PATH`；既有 Markdown 手工概要保持兼容，但不提供审核/来源新鲜度证明。回执和 bundle 都是本地可编辑、未签名 JSON，哈希只检测未同步修改，不认证审核者或证明语义正确。
+- 这是候选隔离与局部发布机制，不是端到端 AI 审核服务或完整知识状态机。它不验证回执的签名、审核者身份或模型质量，不审核人物设定，不实现风险分层、升级效果评估、冲突更正/废弃或历史迁移；TM 仅有需显式启用的局部检索快照，默认仍未设审核门禁，因此阶段 2 仍为`部分实现`。
 
 ## TM 来源索引 v1
 
@@ -53,14 +81,24 @@
 
 ## TM 来源核验
 
-- 执行 `python scripts/validate_tm_provenance.py --project <项目名>` 可只读核对来源文件哈希、段落序号与 TM 中保存的原译词对。
+- 执行 `python scripts/validate_tm_provenance.py --project <项目名>` 可只读核对来源文件哈希、段落序号与 TM 中保存的原译词对。配置 `SOURCE_MANIFEST_PATH` 时，还会验证记录的 `source_version_id`，并在同一 `artifact_id` 有更新的 `normalized_source` 版本时报告 `stale`；未配置 manifest 的版本关联报告为 `unverified`。
 - 工具通过 `read_child_text` 读取配置目录内的文件，拒绝路径穿越和符号链接；不修改或修复 TM。
 - 退出码 `0` 表示所有已索引章节核验一致，且没有未索引章节；`1` 表示索引结构、哈希、引用范围或词对内容不一致；`2` 表示旧 TM 无索引、来源映射为 partial/unmatched 或源文件不可读取。`2` 表示证据不完整，不代表通过。
-- 核验只证明记录与当前文件的结构和文本位置一致；不判断译文准确性、知识审核状态、原文授权或模型输出质量。
+- 核验只证明记录与当前文件的结构和文本位置一致，并可指出 manifest 中存在更新来源版本；它不自动改写或标记译文/知识状态，也不判断译文准确性、知识审核状态、原文授权或模型输出质量。
 
-## 建议的候选知识状态
+TM 与知识 provenance 的源文本摘要均针对文本模式读取后重新编码的 UTF-8，不等同于 manifest 对字节保真的 `.md` 文件计算的原始字节摘要。审计分层核验这两种摘要；尤其不能直接比较 CRLF 文件的字节哈希与换行统一后的文本哈希。
 
-以下是后续设计建议，不是现有 schema：
+## TM 审核回执与显式检索快照（局部实现）
+
+- 先为当前 TM 和已验证来源创建 `pending` 回执模板：`.venv\Scripts\python.exe scripts\apply_tm_review.py --tm <Knowledge\translation_memory.json> --source-root <原文数据根目录> --translation-root <译文数据根目录> --manifest source_manifest.json --chapter 第1話.md --create-template tm_review.json`。`--chapter` 可重复指定 TM 章节键；省略时选择全部章节。所选章节必须具有当前 manifest 版本、完整且新鲜的原/译文哈希与逐对映射，所有 pair embedding 维度必须一致。
+- 模板绑定完整 TM 文件和 manifest 原始字节 SHA-256，并为每个原译对生成内容哈希。填写 `reviewer.provider_id`、`model_id`、`review_id`、UTC `reviewed_at_utc`，并为每一对填写 `approved`、`rejected` 或 `escalated` 及非空理由后，发布：`.venv\Scripts\python.exe scripts\apply_tm_review.py --tm <Knowledge\translation_memory.json> --source-root <原文数据根目录> --translation-root <译文数据根目录> --manifest source_manifest.json --review tm_review.json --output translation_memory_reviewed.json`。发布前重新核对候选、回执、manifest 和原/译文件；只输出明确批准且 provenance 为 `matched` 的原译对，重排其段落映射。没有批准项或输出文件已存在时拒绝发布。
+- 回执模板和审核快照在 TM 所在目录排他新建，不覆盖文件。该工具不调用 Provider 或 AI；审核人、模型和审核时间是未认证声明。SHA-256 绑定用于发现不同步修改，不是签名或防篡改凭证，也不能证明内容已实际审核或译文正确。
+- 只有显式将 `TM_REVIEWED_PATH` 设置为已发布快照路径（环境变量或配置 JSON）时，`RAGEngine` 才在初始化时加载该快照，并按当前 manifest、原文和译文重新核验后用于检索。运行时新增 TM 仍写入 `TM_PATH` 的完整可写记忆，不会改写审核快照；TM 或来源变化后旧快照会因哈希/来源不匹配而拒绝加载，应重新审核并排他发布新文件。未设置 `TM_REVIEWED_PATH` 时保持原有行为，直接从完整可写 TM 检索；因此这不是全局默认门禁，旧 TM 也不会自动获得批准状态。
+- 该原型不实现审核 AI 调用、审核者认证、风险分层与升级规则、抽查策略、更正/废弃、审核历史迁移或候选冲突解决。完整合成验证与限制见[开发与验证](development.md#2026-11-15-tm-审核回执与显式检索快照)。
+
+## 后续候选知识状态建议
+
+以下是全局知识状态机的设计建议，不是现有 schema；术语审核回执的局部决定格式见上节：
 
 ```text
 candidate -> reviewed -> approved -> deprecated
@@ -80,7 +118,7 @@ candidate -> reviewed -> approved -> deprecated
 1. 翻译、对齐或抽取阶段只产生候选，不自动把新术语/剧情推断标为已批准。
 2. 依据来源区分原文明确事实、译者决策、模型推断和外部解释。
 3. 发生冲突时保留冲突及证据，不能以最近写入值静默覆盖。
-4. TM 只有经过格式/段落验收的原译对才可进入正式检索集合；规划对低风险 TM 追加门禁和抽查，审核闭环尚未实现。
+4. TM 只有经过格式/段落验收的原译对才可进入正式检索集合；当前可显式配置来源核验过的 approved-only 快照，但默认检索和 TM 写入仍不受其门禁保护。低风险 TM 的抽查与风险分层仍待设计、验证。
 5. 支持更正、废弃和回溯；不得通过删除历史证据掩盖知识污染。
 6. 不默认将一本书的私有术语/剧情知识跨书共享。
 

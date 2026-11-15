@@ -176,33 +176,81 @@ def load_manifest(path) -> dict:
     return manifest
 
 
+def _verify_artifact_file(root, artifact: dict) -> None:
+    relative_path = artifact["relative_path"]
+    if relative_path is None:
+        return 0
+    version_id = artifact["version_id"]
+    try:
+        source_path = resolve_relative_path(str(root), relative_path)
+        digest = hashlib.sha256()
+        size = 0
+        with open_regular_file(source_path, binary=True) as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                size += len(chunk)
+                digest.update(chunk)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"Artifact version {version_id!r} could not be verified."
+        ) from exc
+
+    if digest.hexdigest() != artifact["content_sha256"]:
+        raise ValueError(
+            f"Artifact version {version_id!r} content hash does not match."
+        )
+    return size
+
+
+def verify_manifest_artifact(root, manifest: dict, version_id: str) -> dict:
+    """Verify and return one explicitly selected artifact version."""
+    validate_manifest(manifest)
+    artifact = next(
+        (
+            item
+            for item in manifest["artifacts"]
+            if item["version_id"] == version_id
+        ),
+        None,
+    )
+    if artifact is None:
+        raise ValueError(f"Artifact version {version_id!r} is not in the manifest.")
+    if artifact["relative_path"] is None:
+        raise ValueError(f"Artifact version {version_id!r} has no content file.")
+    _verify_artifact_file(root, artifact)
+    return artifact
+
+
 def verify_manifest_files(root, manifest: dict) -> int:
     """Verify recorded hashes against files beneath an explicit root."""
     validate_manifest(manifest)
     verified_files = 0
     for artifact in manifest["artifacts"]:
-        relative_path = artifact["relative_path"]
-        if relative_path is None:
+        if artifact["relative_path"] is None:
             continue
-
-        version_id = artifact["version_id"]
-        try:
-            source_path = resolve_relative_path(str(root), relative_path)
-            digest = hashlib.sha256()
-            with open_regular_file(source_path, binary=True) as source_file:
-                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        except (OSError, ValueError) as exc:
-            raise ValueError(
-                f"Artifact version {version_id!r} could not be verified."
-            ) from exc
-
-        if digest.hexdigest() != artifact["content_sha256"]:
-            raise ValueError(
-                f"Artifact version {version_id!r} content hash does not match."
-            )
+        _verify_artifact_file(root, artifact)
         verified_files += 1
     return verified_files
+
+
+def verified_manifest_content_bytes(root, manifest: dict) -> int:
+    """Verify all file-backed versions and return their cumulative content bytes."""
+    validate_manifest(manifest)
+    return sum(
+        _verify_artifact_file(root, artifact)
+        for artifact in manifest["artifacts"]
+    )
+
+
+def latest_artifacts_by_kind(manifest: dict, kind: str) -> dict[str, dict]:
+    """Return the last appended version for each artifact of one kind."""
+    validate_manifest(manifest)
+    if kind not in ARTIFACT_KINDS:
+        raise ValueError("Artifact kind is not supported.")
+    latest = {}
+    for artifact in manifest["artifacts"]:
+        if artifact["kind"] == kind:
+            latest[artifact["artifact_id"]] = artifact
+    return latest
 
 
 def append_artifact(path, artifact: dict) -> dict:

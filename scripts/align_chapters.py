@@ -354,7 +354,10 @@ def main():
 
     try:
         chapter_specs = get_chapter_specs(
-            raw_dir, output_dir, Config.CHAPTER_MAP
+            raw_dir,
+            output_dir,
+            Config.CHAPTER_MAP,
+            Config.SOURCE_MANIFEST_PATH,
         )
     except (OSError, ValueError) as exc:
         print(
@@ -463,6 +466,10 @@ def main():
             ).hexdigest(),
             "pair_mappings": pair_mappings,
         }
+        if spec.source_version_id is not None:
+            provenance_by_chapter[spec.tm_key]["source_version_id"] = (
+                spec.source_version_id
+            )
         aligned_count += 1
         print(
             f"Successfully aligned chapter {spec.raw_file} "

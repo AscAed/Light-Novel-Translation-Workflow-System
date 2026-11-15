@@ -6,6 +6,7 @@ import os
 import io
 import unittest
 import json
+import hashlib
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -357,6 +358,27 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             (raw_dir / "第一卷" / "第1話.md").write_text(
                 "「synthetic source」", encoding="utf-8"
             )
+            source_version_id = "source-version-1"
+            (raw_dir / "source_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "artifacts": [
+                            {
+                                "artifact_id": "synthetic-normalized",
+                                "version_id": source_version_id,
+                                "kind": "normalized_source",
+                                "content_sha256": hashlib.sha256(
+                                    (raw_dir / "第一卷" / "第1話.md").read_bytes()
+                                ).hexdigest(),
+                                "relative_path": "第一卷/第1話.md",
+                                "parent_version_ids": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             (output_dir / "Ntera" / "第一話.md").write_text(
                 "「synthetic translation」", encoding="utf-8"
             )
@@ -365,6 +387,7 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                     "raw_file": "第一卷/第1話.md",
                     "translation_file": "Ntera/第一話.md",
                     "tm_key": "Volume1/第1話.md",
+                    "source_version_id": source_version_id,
                 }
             ]
             stdout = io.StringIO()
@@ -375,25 +398,30 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                             with patch.object(Config, "CHAPTER_MAP", chapter_map):
                                 with patch.object(
                                     Config,
-                                    "TM_PATH",
-                                    str(root / "translation_memory.json"),
+                                    "SOURCE_MANIFEST_PATH",
+                                    "source_manifest.json",
                                 ):
-                                    with patch(
-                                        "scripts.align_chapters.load_existing_tm",
-                                        return_value={"chapters": {}},
+                                    with patch.object(
+                                        Config,
+                                        "TM_PATH",
+                                        str(root / "translation_memory.json"),
                                     ):
                                         with patch(
-                                            "scripts.align_chapters.generate_embeddings_batched",
-                                            return_value=[[0.5]],
+                                            "scripts.align_chapters.load_existing_tm",
+                                            return_value={"chapters": {}},
                                         ):
                                             with patch(
-                                                "scripts.align_chapters.save_tm"
-                                            ) as save_tm:
-                                                with redirect_stdout(stdout):
-                                                    with self.assertRaises(
-                                                        SystemExit
-                                                    ) as raised:
-                                                        align_main()
+                                                "scripts.align_chapters.generate_embeddings_batched",
+                                                return_value=[[0.5]],
+                                            ):
+                                                with patch(
+                                                    "scripts.align_chapters.save_tm"
+                                                ) as save_tm:
+                                                    with redirect_stdout(stdout):
+                                                        with self.assertRaises(
+                                                            SystemExit
+                                                        ) as raised:
+                                                            align_main()
 
             self.assertEqual(raised.exception.code, 0)
             tm_data = save_tm.call_args.args[1]
@@ -404,6 +432,9 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             )
             self.assertEqual(
                 provenance["translation_file"], "Ntera/第一話.md"
+            )
+            self.assertEqual(
+                provenance["source_version_id"], source_version_id
             )
             self.assertIn("Successfully aligned chapter", stdout.getvalue())
 
