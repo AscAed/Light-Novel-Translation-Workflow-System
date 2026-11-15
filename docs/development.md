@@ -11,6 +11,7 @@
 - 当前完整 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、全部通过，242.450 秒，退出码 0。输出中的内容过滤和段落错配异常来自预期负向 fixture；请求只发往本机 mock server。
 - `.venv\Scripts\python.exe -m compileall -q pipeline.py rag_engine.py utils.py source_manifest.py source_ingestion.py chapter_transaction.py story_summary_review.py tm_review.py epub_builder.py scripts tests` 与 `.venv\Scripts\python.exe -m pip check` 通过；后者输出 `No broken requirements found.`。
 - 本次只检查配置是否存在，没有读取任何密钥值：仓库根 `.env` 不存在，当前进程未设置 `PROVIDER_DATA_POLICY`、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`。本次没有调用真实 Provider、Notion 或部署环境。
+- 试点本地数据只读复核：`scripts/validate_source_manifest.py --root <试点生肉目录> --manifest source_manifest.json` 返回 `schema_version=1 artifacts=267 files_verified=267`。同一原文根和译文根运行 `scripts/run_kakuyomu_workflow.py --catalog source_catalog.discovered.json --manifest source_manifest.json --plan-only` 返回 `ready_for_review`，88/88 来源通过核验、0 问题；报告记录 0 网络请求、0 Provider 调用、0 文件写入，且 `source_text_included=false`。当前译文根文件数为 0。映射摘要 `36dae9c08069ce5c66eddc1e870a0aa4aa4d1724b00589ed9a5be62ce4bc22d4` 尚未人工批准，不等于翻译执行许可。
 
 ## 2026-11-16 翻译计划审批门禁（PR #62 已合并）
 
