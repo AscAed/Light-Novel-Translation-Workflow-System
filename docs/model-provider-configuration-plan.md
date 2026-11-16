@@ -13,7 +13,7 @@
 
 ## 试点渠道与数据边界
 
-用户指定 JOJO Code（`https://max2.jojocode.com/v1`）的 `gpt-6-Luna` 为主、JYQF AI（`https://jyqf.me/v1`）的渠道模型 `deepseek-v4.1-flash` 为备用，两者均为中转站；试点为《祝福のネトラレラ》第 1 话，该书已由用户明确确认获得授权。代码提供显式的 `gpt-6-luna*` → `JOJO_BASE_URL`/`JOJO_API_KEY` 和精确别名 `deepseek-v4.1-flash` → `JYQF_BASE_URL`/`JYQF_API_KEY`；通用 `deepseek-flash` 仍路由到原有 DeepSeek Provider。默认模型不变，路由不代表端点已接通。用户授权主备模型接收各自职责所需的最小数据类别；当前代码已按实际调用阶段声明并预检：标注/初译为 `source_text` + `book_knowledge`，校对/润色为三类全集，启用严格反思时初译模型也需三类全集。备用渠道只有在实际被选择或显式回退时才会收到请求数据；通用自动主备回退仍未实现，超出最小职责类别的用途需另行确认。模型调用 ID、端点、协议兼容性及真实可用性未验证。作品授权已确认，不是待办或阻塞；平台规则、Provider/Notion 数据接收边界分别处理。
+用户指定 JOJO Code（`https://max2.jojocode.com/v1`）的 `gpt-6-Luna` 为主、JYQF AI（`https://jyqf.me/v1`）的渠道模型 `deepseek-v4.1-flash` 为备用，两者均为中转站；试点为《祝福のネトラレラ》第 1 话，该书已由用户明确确认获得授权。代码提供显式的 `gpt-6-luna*` → `JOJO_BASE_URL`/`JOJO_API_KEY` 和精确别名 `deepseek-v4.1-flash` → `JYQF_BASE_URL`/`JYQF_API_KEY`；通用 `deepseek-flash` 仍路由到原有 DeepSeek Provider。默认模型不变，路由不代表端点已接通。用户授权主备模型接收各自职责所需的最小数据类别；当前代码已按实际调用阶段声明并预检：标注/初译为 `source_text` + `book_knowledge`，校对/润色为三类全集，启用严格反思时初译模型也需三类全集。`ENABLE_JYQF_FALLBACK=true` 可显式启用 JOJO 阶段到固定 JYQF 模型的有限回退；默认关闭，只有连接错误、HTTP 408/429/5xx 会触发，且回退前及请求时均验证 JYQF 对同一阶段类别的授权。鉴权、请求/schema 错误和内容拦截不回退，备用失败后停止，不再调用 Gemini。回退可能产生重复费用。模型调用 ID、端点、协议兼容性及真实可用性未验证。作品授权已确认，不是待办或阻塞；平台规则、Provider/Notion 数据接收边界分别处理。
 
 | 调用范围 | 当前代码声明的类别或待核事项 | 试点约束 |
 | --- | --- | --- |
@@ -127,14 +127,15 @@
 
 ## 分阶段开发计划
 
-下表使用模型配置工作包 `M0–M6`，与[路线图](roadmap.md)的项目阶段编号不同。它们是后续代码实施的建议任务，不是本次已完成工作；项目路线图状态仍以路线图为准。须先解决项目阶段 0 的端点、数据授权和账户可用性门槛；否则可完成 schema/mock 范围，但不能宣称真实 Provider 或成本/质量验收完成。
+下表使用模型配置工作包 `M0–M6`，与[路线图](roadmap.md)的项目阶段编号不同。它们是模型配置的细化工作包；已完成子项以当前代码和[开发与验证](development.md)中的日期记录为准，剩余任务仍是建议而非实施承诺。须先解决项目阶段 0 的端点、数据授权和账户可用性门槛；否则可完成 schema/mock 范围，但不能宣称真实 Provider 或成本/质量验收完成。
 
 ### 当前配置与路由基线
 
-- `pipeline.py::get_primary_provider_route` 集中依据模型名前缀把 `sakura`/`sakura-`/`qwen3.6-plus` 路由到 `SAKURA_BASE_URL` 与 `SAKURA_API_KEY`，把 `deepseek-` 路由到 `DEEPSEEK_BASE_URL` 与 `DEEPSEEK_API_KEY`；空白、首尾带空格和不受支持的名称会在章节扫描/客户端创建前拒绝。调用请求与启动 Key 检查共用此映射。该防误路由校验不构成通用 Provider/模型目录或阶段能力配置。
+- `pipeline.py::get_primary_provider_route` 集中依据模型名把 `sakura`/`sakura-`/`qwen3.6-plus` 路由到 `SAKURA_BASE_URL` 与 `SAKURA_API_KEY`，把 `gpt-6-luna*` 路由到 JOJO，把精确的 `deepseek-v4.1-flash` 路由到 JYQF，其余 `deepseek-` 路由到 DeepSeek；空白、首尾带空格和不受支持的名称会在章节扫描/客户端创建前拒绝。调用请求与启动 Key 检查共用此映射。该防误路由校验不构成通用 Provider/模型目录或阶段能力配置。
 - OpenAI-compatible base URL 在流水线预检和客户端创建处校验：只接受有主机名和有效端口语法的 HTTP(S) URL；公网必须 HTTPS，HTTP 仅限 loopback；拒绝 URL 内认证信息、查询和片段。API Key 继续通过 Provider 专属配置读取。SDK 自动重定向关闭，端点必须提供规范 URL。
 - 已修复 `get_base_url` 曾在通用 `CODING_PLAN_BASE_URL` 配置为 loopback 地址或带显式端口 URL 时覆盖上述已选择端点的问题。仓库声明的默认 DashScope URL 没有显式端口；回归测试使用带显式端口的配置复现旧覆盖行为。当前仅测试环境显式设置 `MOCK_SERVER_PORT` 时覆盖为本地 mock URL。
 - 当前显式 Gemini 回退仅允许 SDK 连接/超时异常及 HTTP 408/429/5xx；鉴权、请求/schema 错误和内容拦截不触发回退。该本地错误边界由单测和 mock E2E 验证，不构成 Provider 配置、逐阶段绑定、逐数据类别授权或真实服务兼容性验收。
+- JOJO→JYQF 回退由 `ENABLE_JYQF_FALLBACK` 显式启用，默认关闭，只覆盖 JOJO 主路由；使用 `deepseek-v4.1-flash`，复用同一请求提示词与响应 schema，最多执行一次备用调用。阶段启动预检会校验 JYQF URL、数据类别授权和远端 Key；`UnifiedAgent` 创建 JYQF 客户端前再次检查类别，本地 loopback 按本地端点规则处理。回退失败会直接传播，不级联 Gemini。仅有合成测试证据，真实中转站兼容性、费用与模型表现未验证。
 - `API_TIMEOUT` 默认 10 秒且必须是有限正数；当前传入 OpenAI-compatible 聊天和 Gemini 生成、RAG embedding、章节对齐 embedding 调用。Gemini SDK `HttpOptions.timeout` 使用毫秒，由秒值换算；默认值对慢速模型可能过短，须按获准端点实测后由操作者配置。
 - `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别，预检与实际 Agent 调用保持一致；类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别，但当前 allowlist 默认仍为空，真实端点和实际请求尚未验收。
 - 知识抽取脚本使用 `Config.PROOFREAD_MODEL` 发起请求，并复用 `get_primary_provider_route` 选择对应 Provider ID、base URL 与专属 Key；未知模型名在读取来源前失败，避免模型 ID 与实际接收 Provider 不一致。该共用路由不自动授权知识抽取用途，仍须该 Provider 的 `source_text` 在本地 allowlist 中获准；全书预算/分批与 tokenizer 适配未实现。
@@ -146,7 +147,7 @@
 | M0. 需求、权限与基线 | 盘点现有 Config/Provider 调用；记录已确认的 JOJO/JYQF 最小职责数据类别，确认用户配置入口（先 CLI/JSON 或 UI）、端点和账户；把模型报价、配额、时区、来源、未知字段建档。 | JOJO/JYQF 已授权类别无须重复询问；仍须验证服务账户、实际渠道条款和端点。其他 Provider、Gemini、评测样本及 Notion 范围须分别处理。 | 有字段/职责清单；所有价格注明 CNY/1M tokens 与“用户渠道报价”；配额标为参考；无端点时明确记录未部署/未验证。 | 价格、配额或渠道路由变化；保留来源、日期、可更新字段，禁止固化未经验证的前提。 |
 | M1. 配置契约与 Provider 适配边界 | 定义 Provider、模型能力、阶段绑定、凭据引用、错误分类、配置版本和迁移规则；识别 OpenAI-compatible、Gemini generate、Gemini Embedding、Gemini Decisions 等独立协议。 | M0 的场景/数据权限；不依赖真实模型质量。 | schema/接口文档可映射现有 Sakura/DeepSeek/Gemini 配置；无效类型组合在静态校验或 mock 测试中拒绝。 | 过早抽象所有供应商；首版仅支持当前实际协议，新增协议按需纳入。 |
 | M2. Provider 管理与凭据安全 | CLI/配置文件支持自定义 URL、Key 凭据引用、模型列表和本地配置诊断；先接入当前已有协议。 | M1；Windows 凭据存储访问方案。 | Key 不出现在配置导出/日志；支持新增、更新、验证和移除凭据引用；公网 HTTP 被拒绝或显式警告；兼容现有配置或提供迁移。 | 系统密钥库在不同 Windows 用户/权限下行为差异；以当前用户标准权限测试，提供不泄密的修复提示。 |
-| M3. 阶段分配、能力校验与回退 | 为每阶段配置首选/备用模型；校验任务能力与协议；实现错误分类、有限重试、显式跨 Provider 回退及切换记录。 | M2；阶段输入输出契约稳定。 | 测试覆盖首选成功、首选超时/429/5xx、备用失败、鉴权/schema/内容拦截不回退、未知模型类型、无循环重试；回退不会静默发生。 | 备用调用导致重复计费或跨服务商泄露数据；执行前授权，记录原因、限次并可关闭。 |
+| M3. 阶段分配、能力校验与回退 | 已有 JOJO 阶段到 JYQF 的显式 opt-in 回退；剩余工作为按阶段选择多个模型、能力/协议校验、有限速率重试与统一切换记录。 | M2；阶段输入输出契约稳定。 | JOJO→JYQF 当前错误范围、数据授权和默认关闭行为由合成测试覆盖；后续测试还需覆盖备用失败、模型能力/协议不匹配及用量记录。 | 备用调用导致重复计费或跨服务商披露数据；预检授权、限一次调用、保留切换原因且允许关闭。 |
 | M4. 配额、用量与成本估算 | 汇总请求量、token 用量、缓存读写、限流提示与估算费用；支持 DeepSeek 峰谷价格和用户维护的报价版本。 | M3；Provider 返回 token 使用/限流字段，渠道价可确认。 | 用量缺失时显示未知；参考配额与实时观测区分；价格/时段/缓存假设可追溯；和渠道账单样本核对后才标注“已验证”。 | 不同 Provider 计量口径、缓存和时区差异造成误算；展示公式、数据源及估算置信边界。 |
 | M5. 配置交互与本地体验 | 在确认 CLI 用户体验边界后，先补完整 CLI 配置/诊断；仅当明确需要交互式界面时再做 Windows 桌面/Web UI 原型。 | M1–M4 核心配置稳定；明确使用者、存储位置、隐私和运维责任。 | 用户能配置端点/凭据引用/阶段模型、验证连通性、查看错误与回退状态；重启后配置稳定；已有 CLI 翻译入口保持可用。 | UI 先于配置模型导致双重事实源；配置和验证逻辑保持独立于 UI，首个交付以现有 CLI 路径为准。 |
 | M6. 代表性样本对照与默认值决策 | 以同一批获准日译中样本比较候选阶段配置；进行盲评，度量忠实度、漏译/误译、术语一致、可读性、人工修改量、延迟、失败率和总费用。 | 获批原文/译文样本、可用账户、质量评分标准、M0–M4 完成。 | 对照集、提示词、配置、模型 ID、日期、人工评分和账单/用量可复现；根据预先定义的质量下限和预算选默认值；未达到条件时保留人工指定而非宣称胜出。 | 样本偏差、模型/渠道静默升级、主观评分；样本覆盖不同叙述/对话/歧义，记录版本并双人复核关键争议。 |

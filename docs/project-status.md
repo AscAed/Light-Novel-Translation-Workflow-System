@@ -1,6 +1,6 @@
 # 项目现状
 
-> 代码与测试验证基线：`c988c4b749a9972a89edffe9bc2c4bc867ebb3da`，包含 Kakuyomu 翻译计划审批门禁；后续 PR #63、#64、#65 均为 Markdown 同步，不改变代码基线。该基线非 E2E unittest 最近复核为 368 项、0 失败、4 项平台能力跳过（21 个测试模块）；本地 mock E2E 最近复核为 7 项通过（242.450 秒）。2026-11-16 管理员安全路径复验为 11 项中 10 项通过、1 项因 Windows FIFO 能力跳过，3 个符号链接用例均通过；普通权限运行则有 3 个符号链接用例因 `WinError 1314` 跳过。PR #56、#58、#62、#63、#64、#65 均已合并。验证记录见[开发与验证](development.md)。Kakuyomu source-only 采集完成主页声明的 88/88 话；manifest 的 267/267 文件通过校验。最新计划导出为 `ready_for_review`、88/88 来源有效、0 问题；映射摘要与人工审阅要求见[试点映射人工审阅](handoffs/2026-11-16-pilot-plan-review.md)。译文文件仍无。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。
+> 本次实施工作树基于 `main` HEAD `a8576349e3bd5fee86da42e8e4fffd4297bb96b0`，在既有 Kakuyomu 审批门禁代码之上增加 JOJO→JYQF 显式回退；完整非 E2E unittest 为 378 项通过、4 项能力限制跳过（21 个模块），本地 mock E2E 为 7 项通过（199.795 秒）。安全路径当前普通权限运行 11 项中 7 项通过、4 项跳过；3 个符号链接用例因 `WinError 1314`、FIFO 用例因 Windows 不支持 `os.mkfifo` 未执行。之前管理员上下文的 3 个符号链接用例通过结果来自基线 `c988c4b`，不是本次分支代码验证。PR #56、#58、#62–#66 均已合并。验证记录见[开发与验证](development.md)。Kakuyomu source-only 采集完成主页声明的 88/88 话；manifest 的 267/267 文件通过校验。最新计划导出为 `ready_for_review`、88/88 来源有效、0 问题；映射摘要与人工审阅要求见[试点映射人工审阅](handoffs/2026-11-16-pilot-plan-review.md)。译文文件仍无。未调用真实 Provider/Notion；最近一次本机存在性预检未发现 `.env`、Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`，不能执行真实 Provider 翻译。88/88 不包含草稿/私有话，也不等于平台背书或公开分发许可。详细边界见[当前交接](handoffs/2026-11-15-translation-workflow.md)。
 
 ## 2026-11-16 试点计划导出
 
@@ -28,7 +28,7 @@
 
 - `pipeline.py`：Python CLI；按章节读取 Markdown，构建上下文，依次执行上下文标注、初译、校对、润色，并写入译文和翻译记忆。
 - `已实现` 响应契约：标注对象与源段落保真校验；初译必需字段/段落数组检查；校对 schema 不合格时保留上一版；反思重译和润色响应异常时回退；三种生产提示词的输出字段与调用端 schema 对齐。
-- `部分实现` Provider 路由与数据类别预检：`get_primary_provider_route` 集中管理 Sakura/Qwen、DeepSeek，以及显式 JOJO (`gpt-6-luna*`) / JYQF (`deepseek-v4.1-flash`) 别名；通用 `deepseek-flash` 仍走 DeepSeek。未知模型名会在流水线读取章节及创建客户端前拒绝。标注/初译仅声明 `source_text`、`book_knowledge`，校对/润色声明三类全集；启用严格反思时初译模型也须获准三类。启动预检和显式 Gemini 回退预检使用相同阶段矩阵。用户已授权 JOJO/JYQF 各自职责所需最小类别；allowlist 默认拒绝，需本地显式配置。端点、模型 ID、当前凭据和协议兼容性仍未验证；通用 Provider 抽象、自动 JOJO→JYQF 回退、`CODING_PLAN_*` 支持和真实端点验收仍未实现。
+- `部分实现` Provider 路由与数据类别预检：`get_primary_provider_route` 集中管理 Sakura/Qwen、DeepSeek，以及显式 JOJO (`gpt-6-luna*`) / JYQF (`deepseek-v4.1-flash`) 别名；通用 `deepseek-flash` 仍走 DeepSeek。未知模型名会在流水线读取章节及创建客户端前拒绝。标注/初译仅声明 `source_text`、`book_knowledge`，校对/润色声明三类全集；启用严格反思时初译模型也须获准三类。启动预检会验证启用的 Gemini 或 JOJO→JYQF 回退所需数据类别与凭据；JYQF 回退还在每次请求前再次检查其授权。回退默认为关闭，只适用于 JOJO 主路由的连接错误、HTTP 408/429/5xx；鉴权、请求/schema 错误和内容拦截不回退，JYQF 失败后不级联。用户已授权 JOJO/JYQF 各自职责所需最小类别；allowlist 默认拒绝，需本地显式配置。端点、模型 ID、当前凭据和协议兼容性仍未验证；通用 Provider 抽象、阶段独立模型分配、`CODING_PLAN_*` 支持和真实端点验收仍未实现。
 - `rag_engine.py`：翻译记忆向量检索、术语匹配、分章指导检索及记忆写入。
 - `scripts/align_chapters.py`：双语章节段落对齐、对齐结果向量化并写入翻译记忆。
 - `scripts/validate_tm_provenance.py`：只读核对 TM 来源索引的文件哈希、段落引用和词对内容；配置 manifest 时还可检测同一来源 artifact 的更新版本。不修改 TM，也不判断译文质量或审核状态。

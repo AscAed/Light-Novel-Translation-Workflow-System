@@ -102,6 +102,7 @@ class Config:
     INITIAL_MODEL = "sakura-14b"
     PROOFREAD_MODEL = "deepseek-v4-flash"
     STYLE_MODEL = "deepseek-v4-pro"
+    JYQF_FALLBACK_ENABLED = False
     
     # Sampling Parameters
     TRANSLATOR_PARAMS = {"temperature": 0.2, "top_p": 0.8}
@@ -162,6 +163,9 @@ class Config:
         cls.GEMINI_FALLBACK_ENABLED = os.environ.get("ENABLE_GEMINI_FALLBACK", "").lower() in {
             "1", "true", "yes", "on"
         }
+        cls.JYQF_FALLBACK_ENABLED = os.environ.get(
+            "ENABLE_JYQF_FALLBACK", ""
+        ).lower() in {"1", "true", "yes", "on"}
                         
         # Override Config paths if test workspace is provided
         if "TEST_WORKSPACE_DIR" in os.environ:
@@ -335,6 +339,13 @@ class Config:
 
         cls.TM_REVIEWED_PATH = os.environ.get(
             "TM_REVIEWED_PATH", cfg_data.get("TM_REVIEWED_PATH")
+        )
+        jyqf_fallback_enabled = os.environ.get(
+            "ENABLE_JYQF_FALLBACK",
+            cfg_data.get("ENABLE_JYQF_FALLBACK", False),
+        )
+        cls.JYQF_FALLBACK_ENABLED = (
+            str(jyqf_fallback_enabled).lower() in {"1", "true", "yes", "on"}
         )
 
         cls.CODING_PLAN_API_KEY = os.environ.get("CODING_PLAN_API_KEY")
@@ -702,6 +713,7 @@ def _is_loopback_url(base_url: str) -> bool:
 def validate_provider_configuration() -> None:
     """Validate every configured pipeline stage before reading source chapters."""
     required_keys = set()
+    has_jojo_stage = False
     stage_requests = [
         (Config.INITIAL_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
         (Config.PROOFREAD_MODEL, SOURCE_AND_KNOWLEDGE_CATEGORIES),
@@ -724,6 +736,24 @@ def validate_provider_configuration() -> None:
         )
         if not endpoint_is_local:
             required_keys.add(route.api_key_env)
+        if route.provider_id == "jojo":
+            has_jojo_stage = True
+            if Config.JYQF_FALLBACK_ENABLED:
+                fallback_route = get_primary_provider_route(
+                    "deepseek-v4.1-flash"
+                )
+                fallback_url = validate_provider_base_url(
+                    get_base_url(fallback_route.base_url)
+                )
+                fallback_is_local = _is_loopback_url(fallback_url)
+                require_provider_data_authorized(
+                    fallback_route.provider_id,
+                    data_categories,
+                    Config.PROVIDER_DATA_POLICY,
+                    endpoint_is_local=fallback_is_local,
+                )
+                if not fallback_is_local:
+                    required_keys.add(fallback_route.api_key_env)
         if Config.GEMINI_FALLBACK_ENABLED:
             require_provider_data_authorized(
                 "gemini",
@@ -731,6 +761,10 @@ def validate_provider_configuration() -> None:
                 Config.PROVIDER_DATA_POLICY,
             )
             required_keys.add("GEMINI_API_KEY")
+    if Config.JYQF_FALLBACK_ENABLED and not has_jojo_stage:
+        raise ValueError(
+            "JYQF fallback is enabled, but no pipeline stage uses the JOJO provider."
+        )
     if "source_text" in Config.PROVIDER_DATA_POLICY.get(
         "gemini", frozenset()
     ):
@@ -831,8 +865,16 @@ class UnifiedAgent:
         self.top_p = top_p
         self.data_categories = data_categories
 
-    async def _call_primary(self, prompt: str, system_instr: str) -> Any:
-        route = get_primary_provider_route(self.model_name)
+    async def _call_primary(
+        self,
+        prompt: str,
+        system_instr: str,
+        *,
+        route: Optional[PrimaryProviderRoute] = None,
+        model_name: Optional[str] = None,
+    ) -> Any:
+        route = route or get_primary_provider_route(self.model_name)
+        request_model = model_name or self.model_name
         api_key = get_api_key(route.api_key_env)
         
         client = get_openai_client(
@@ -849,7 +891,7 @@ class UnifiedAgent:
         response_format = {"type": "json_object"} if self.response_schema else None
         
         response = await client.chat.completions.create(
-            model=self.model_name,
+            model=request_model,
             messages=messages,
             temperature=self.temperature,
             top_p=self.top_p,
@@ -859,11 +901,16 @@ class UnifiedAgent:
         
         choice = response.choices[0]
         if choice.finish_reason == "content_filter":
-            raise ContentBlockedError("Content blocked by primary safety filter (finish_reason=content_filter)")
+            raise ContentBlockedError(
+                "Content blocked by provider safety filter "
+                "(finish_reason=content_filter)"
+            )
             
         text = choice.message.content or ""
         if "Content blocked" in text:
-            raise ContentBlockedError("Content blocked by primary safety filter (Content blocked in text)")
+            raise ContentBlockedError(
+                "Content blocked by provider safety filter (Content blocked in text)"
+            )
             
         if self.response_schema:
             res_dict = extract_json(text)
@@ -872,11 +919,27 @@ class UnifiedAgent:
                     return json.loads(text)
                 except (json.JSONDecodeError, TypeError) as exc:
                     raise ResponseContractError(
-                        "Failed to extract JSON from primary response"
+                        "Failed to extract JSON from provider response"
                     ) from exc
             return res_dict
             
         return text
+
+    async def _call_jyqf(self, prompt: str, system_instr: str) -> Any:
+        route = get_primary_provider_route("deepseek-v4.1-flash")
+        base_url = validate_provider_base_url(get_base_url(route.base_url))
+        require_provider_data_authorized(
+            route.provider_id,
+            self.data_categories,
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=_is_loopback_url(base_url),
+        )
+        return await self._call_primary(
+            prompt,
+            system_instr,
+            route=route,
+            model_name="deepseek-v4.1-flash",
+        )
 
     async def _call_gemini(self, prompt: str, system_instr: str) -> Any:
         require_provider_data_authorized(
@@ -935,11 +998,22 @@ class UnifiedAgent:
         try:
             return await self._call_primary(user_prompt, full_sys)
         except Exception as primary_error:
-            if (
-                not Config.GEMINI_FALLBACK_ENABLED
-                or isinstance(primary_error, ContentBlockedError)
-                or not _is_retryable_provider_error(primary_error)
+            if isinstance(primary_error, ContentBlockedError) or not _is_retryable_provider_error(
+                primary_error
             ):
+                raise
+            primary_route = get_primary_provider_route(self.model_name)
+            if (
+                Config.JYQF_FALLBACK_ENABLED
+                and primary_route.provider_id == "jojo"
+            ):
+                logger.warning(
+                    "JOJO invocation failed with retryable provider error (%s); "
+                    "explicit JYQF fallback is enabled.",
+                    type(primary_error).__name__,
+                )
+                return await self._call_jyqf(user_prompt, full_sys)
+            if not Config.GEMINI_FALLBACK_ENABLED:
                 raise
             if not get_api_key("GEMINI_API_KEY"):
                 raise RuntimeError(
