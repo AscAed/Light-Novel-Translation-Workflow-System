@@ -832,6 +832,7 @@ def get_openai_client(
     *,
     provider_id: Optional[str] = None,
     data_categories=None,
+    max_retries: Optional[int] = None,
 ) -> AsyncOpenAI:
     resolved_base_url, resolved_api_key = resolve_openai_client_settings(
         base_url,
@@ -843,11 +844,15 @@ def get_openai_client(
         timeout=Config.API_TIMEOUT,
         follow_redirects=False,
     )
+    client_options = {}
+    if max_retries is not None:
+        client_options["max_retries"] = max_retries
     return AsyncOpenAI(
         api_key=resolved_api_key,
         base_url=resolved_base_url,
         timeout=Config.API_TIMEOUT,
         http_client=http_client,
+        **client_options,
     )
 
 class UnifiedAgent:
@@ -876,16 +881,21 @@ class UnifiedAgent:
         *,
         route: Optional[PrimaryProviderRoute] = None,
         model_name: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> Any:
         route = route or get_primary_provider_route(self.model_name)
         request_model = model_name or self.model_name
         api_key = get_api_key(route.api_key_env)
         
+        client_options = {}
+        if max_retries is not None:
+            client_options["max_retries"] = max_retries
         client = get_openai_client(
             route.base_url,
             api_key,
             provider_id=route.provider_id,
             data_categories=self.data_categories,
+            **client_options,
         )
         messages = [
             {"role": "system", "content": system_instr},
@@ -943,6 +953,7 @@ class UnifiedAgent:
             system_instr,
             route=route,
             model_name="deepseek-v4.1-flash",
+            max_retries=0,
         )
 
     async def _call_gemini(self, prompt: str, system_instr: str) -> Any:

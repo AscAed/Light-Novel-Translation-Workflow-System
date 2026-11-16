@@ -70,6 +70,19 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertFalse(client_kwargs["http_client"].follow_redirects)
+        self.assertNotIn("max_retries", client_kwargs)
+        await client_kwargs["http_client"].aclose()
+
+    async def test_openai_client_can_disable_sdk_retries(self):
+        with patch("pipeline.AsyncOpenAI") as client_factory:
+            get_openai_client(
+                "http://127.0.0.1:6006/v1",
+                None,
+                max_retries=0,
+            )
+
+        client_kwargs = client_factory.call_args.kwargs
+        self.assertEqual(client_kwargs["max_retries"], 0)
         await client_kwargs["http_client"].aclose()
 
     def test_pipeline_rejects_draft_summary_before_loading_knowledge(self):
@@ -532,6 +545,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             "synthetic-jyqf-key",
             provider_id="jyqf",
             data_categories=categories,
+            max_retries=0,
         )
         create_completion.assert_awaited_once()
         self.assertEqual(
@@ -578,6 +592,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             None,
             provider_id="jyqf",
             data_categories=["source_text"],
+            max_retries=0,
         )
 
     async def test_jyqf_fallback_requires_provider_data_authorization(self):

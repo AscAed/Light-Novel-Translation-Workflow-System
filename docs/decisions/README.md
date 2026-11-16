@@ -27,7 +27,7 @@
 | D-06 | Provider 拦截或章节失败的恢复 | 计划 | 增加显式续跑/恢复并保留失败状态，不绕过内容拦截；当前 CLI 仍在错误处停止 | 失败状态与任务恢复 |
 | D-07 | Gemini embedding 模型 ID 是否应使用 `gemini-embedding-2` 或历史需求中的 `text-embedding-004` | 未验证 | 当前代码使用 `gemini-embedding-2`；真实端点验收前需要核实账号与模型兼容性 | 向量兼容性与既有 TM |
 | D-08 | 模型配置产品入口 | 计划 | 先稳定配置契约和 CLI/JSON 诊断；后续 UI 视需求决定，见[模型与 API 配置方案](../model-provider-configuration-plan.md) | 配置体验与维护成本 |
-| D-09 | JOJO 到 JYQF 的跨 Provider 回退 | 部分实现 | 默认关闭；显式设置 `ENABLE_JYQF_FALLBACK=true` 后，仅 JOJO 路由的阶段可在连接错误、HTTP 408/429/5xx 时调用固定模型 `deepseek-v4.1-flash`。回退前及请求时均检查 JYQF 对同一阶段数据类别的授权；鉴权、请求/schema 错误和内容拦截不回退。JYQF 失败后停止，不级联到 Gemini。每个主请求最多触发一次备用请求；可能产生重复计费，真实渠道行为仍未验证 | 数据外发与计费 |
+| D-09 | JOJO 到 JYQF 的跨 Provider 回退 | 部分实现 | 默认关闭；显式设置 `ENABLE_JYQF_FALLBACK=true` 后，仅 JOJO 路由的阶段可在连接错误、HTTP 408/429/5xx 时调用固定模型 `deepseek-v4.1-flash`。备用客户端关闭 SDK 自动重试（`max_retries=0`）。回退前及请求时均检查 JYQF 对同一阶段数据类别的授权；Gemini 预检只覆盖运行时可达 Gemini 的阶段。鉴权、请求/schema 错误和内容拦截不回退。JYQF 失败后停止，不级联到 Gemini。每个主请求最多触发一次备用请求；可能产生重复计费，真实渠道行为仍未验证 | 数据外发与计费 |
 | D-10 | `CODING_PLAN_BASE_URL`/`CODING_PLAN_API_KEY` | 计划 | 暂不作为独立 Provider 支持，保留现有未接入配置；不改变当前路由 | 配置兼容性 |
 | D-11 | 译文已落盘但 TM 写入失败时的恢复 | 部分实现 | `chapter_transaction.py` 先排他创建逐章日志，再写输出和原子更新 TM；重跑时核验映射、哈希、门禁、输出及 TM 基线后恢复。冲突时停止且保留日志供人工处理。日志含本地明文译文（上限 64 MiB）；支持单写入者的进程中断恢复，不保证多进程并发、断电持久性、日志认证或自动冲突合并 | 一致性与恢复责任 |
 | D-12 | 真实书籍章节映射 | 部分实现 | 用户提供第 1 话 URL，表示本地没有原文和译文，期望系统先采集后翻译；获取后人工核定路径与新 TM 键，再扩展完整清单，同名旧文件计划归档后人工判定 | 漏译、覆盖和来源路径 |
