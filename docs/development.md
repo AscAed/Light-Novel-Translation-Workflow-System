@@ -1,5 +1,24 @@
 # 开发与验证
 
+## 2026-11-16 JOJO→JYQF 显式回退与当前验证
+
+- 基线：从 `main` HEAD `a8576349e3bd5fee86da42e8e4fffd4297bb96b0` 开始；本记录验证该基线加本工作区回退增量。根目录 `.env` 不存在，当前进程未发现 Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`；未调用真实 Provider、Notion 或部署服务。
+- 新增 `ENABLE_JYQF_FALLBACK`，默认关闭，可由环境变量或 JSON 配置显式打开。只有主模型路由到 JOJO 的阶段才可回退到固定 `deepseek-v4.1-flash`；仅连接错误、HTTP 408/429/5xx 触发。鉴权、400/403/404、响应契约错误和内容拦截不回退，JYQF 请求失败后直接返回错误，不级联到 Gemini。
+- 开始章节扫描前，启动预检会逐 JOJO 阶段核验 JYQF URL、同阶段数据类别授权和远端凭据；本地 loopback 依项目的本地端点规则处理。若同时启用 Gemini 回退，只有运行时仍会回退到 Gemini 的阶段才检查该阶段的 Gemini 数据授权；JYQF 已接管的 JOJO 阶段不要求 Gemini 授权。实际创建备用 Provider 客户端前再次核验类别授权。备用调用可能产生额外费用；每次仅调用一次备用，不自动重试。真实模型 ID、端点协议与费用仍未验证。
+- PR #67 自动审查发现三项问题：JOJO 已由 JYQF 接管时仍要求 Gemini 阶段授权、JYQF SDK 客户端会自动重试、README 将未覆盖回退路径的 mock E2E 写成该回退的验证证据。现已修正预检、只对 JYQF 备用客户端设置 `max_retries=0`，并将 README 限定为契约单测覆盖。回归覆盖“樱花初译、JOJO 校对/润色、JYQF 接管 JOJO 失败、Gemini 仅获初译所需类别”及备用 SDK 重试参数。`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestProviderRouting -q`：38 项通过；`tests.test_pipeline_contracts`：91 项通过。
+- 全部非 E2E：21 个 `tests.test_*.py` 模块，共运行 380 项、376 项通过、4 项跳过、0 项失败。普通权限下 3 项 symlink 用例因 `WinError 1314` 跳过，1 项 FIFO 用例因 Windows 不提供 `os.mkfifo` 跳过；获准的管理员 PowerShell 复跑 `tests.test_security_path_traversal -v` 为 11 项运行、10 项通过、仅 FIFO 用例跳过，3 项 symlink 用例通过。用户此前提供的 `-q` 汇总为 9 项、3 项跳过，未列测试名；该结果与当前 checkout 的 11 项模块不同，保留为独立报告。
+- 完整 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、全部通过，199.765 秒，退出码 0；请求只发送给本地 mock server。该 E2E 未启用或断言 JOJO→JYQF 回退；回退配置与请求行为由合成契约单测覆盖。当前 OpenAI SDK loopback 客户端检查确认显式参数生效为 `max_retries=0`，未发起网络请求。`.venv\Scripts\python.exe -m compileall -q .` 与 `.venv\Scripts\python.exe -m pip check` 均通过。
+- 首次、改动前的非 E2E 回归曾有一项 `test_cli_escapes_nonprintable_chapter_key_characters` 得到退出码 1 而非 2；该测试单独运行、整个模块运行及随后完整重跑均通过。未复现原因，作为一次性异常记录，不计入本次改动后的失败数。
+- 用户另行提供的安全路径 `-q` 输出为 9 项、3 项跳过，未包含具体测试名或跳过原因；当前 checkout 对应模块含 11 个测试方法，普通权限运行 11 项、4 项跳过，管理员 PowerShell 复跑 11 项、10 项通过、1 项 FIFO 用例因 Windows 能力限制跳过，三个 symlink 用例均执行并通过。管理员复跑命令：
+
+  ```powershell
+  Set-Location -LiteralPath 'D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System'
+  .\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v
+  ```
+
+  若管理员终端仍报告 `WinError 1314`，可在 Windows 设置中开启“开发者模式”后重开终端，或让管理员在本机安全策略中为该账户授予“创建符号链接”用户权限并重新登录。管理员复跑由用户授权，仅用于本地测试；未更改 Windows 系统策略。
+- `.venv\Scripts\python.exe -m pip list --outdated`（2026-11-16，只读查询）报告 `numpy 2.5.4→2.5.5`、`openai 3.50.0→3.51.0`、`tenacity 9.1.4→9.2.1` 和工具 `pip 26.2.1→26.3`。`requirements.txt` 未锁定版本；更新提示本身不足以证明兼容性或安全收益，因此本次未安装/升级依赖。`pip check` 仅确认当前环境依赖约束无冲突，不是漏洞审计。
+
 ## 2026-11-16 PR #64/#65 合并与试点计划导出
 
 - 沿革：PR #64 文档同步合并提交为 `16899a1f55a798a440157b5c2265211c953ea0d9`；后续 PR #65 也只修改 Markdown，并于 2026-11-16 合并为 `fe74916662843fca79bd09915b98b89c96377a5f`。代码与测试基线仍为 `c988c4b749a9972a89edffe9bc2c4bc867ebb3da`；此处记录合并沿革，不作为持续更新的 `main` HEAD 指针。

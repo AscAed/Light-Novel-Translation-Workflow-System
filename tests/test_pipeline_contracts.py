@@ -22,6 +22,7 @@ from pipeline import (
     get_chapter_specs,
     get_openai_client,
     get_primary_provider_route,
+    validate_provider_configuration,
     validate_provider_base_url,
     _resolve_project_content_dir,
 )
@@ -69,6 +70,19 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertFalse(client_kwargs["http_client"].follow_redirects)
+        self.assertNotIn("max_retries", client_kwargs)
+        await client_kwargs["http_client"].aclose()
+
+    async def test_openai_client_can_disable_sdk_retries(self):
+        with patch("pipeline.AsyncOpenAI") as client_factory:
+            get_openai_client(
+                "http://127.0.0.1:6006/v1",
+                None,
+                max_retries=0,
+            )
+
+        client_kwargs = client_factory.call_args.kwargs
+        self.assertEqual(client_kwargs["max_retries"], 0)
         await client_kwargs["http_client"].aclose()
 
     def test_pipeline_rejects_draft_summary_before_loading_knowledge(self):
@@ -461,6 +475,306 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await agent.call("source text"), "fallback")
         agent._call_gemini.assert_awaited_once()
 
+    @patch.dict(os.environ, {"JYQF_API_KEY": "test-key"}, clear=True)
+    async def test_jojo_primary_uses_jyqf_for_retryable_provider_errors(self):
+        errors = [
+            APIConnectionError(request=object()),
+            *(make_api_status_error(code) for code in (408, 429, 500, 599)),
+        ]
+        categories = frozenset({"source_text", "book_knowledge"})
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                agent = UnifiedAgent(
+                    "gpt-6-luna",
+                    "instruction",
+                    data_categories=list(categories),
+                )
+                agent._call_primary = AsyncMock(side_effect=error)
+                agent._call_jyqf = AsyncMock(return_value="fallback")
+
+                with (
+                    patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+                    patch.object(
+                        Config, "PROVIDER_DATA_POLICY", {"jyqf": categories}
+                    ),
+                ):
+                    self.assertEqual(
+                        await agent.call("source text"),
+                        "fallback",
+                    )
+
+                agent._call_jyqf.assert_awaited_once()
+
+    async def test_jyqf_fallback_uses_the_selected_route_and_model(self):
+        categories = ["source_text", "book_knowledge"]
+        agent = UnifiedAgent(
+            "gpt-6-luna",
+            "instruction",
+            data_categories=categories,
+        )
+        create_completion = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="fallback response"),
+                    )
+                ]
+            )
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create_completion)
+            )
+        )
+
+        with (
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {"jyqf": frozenset(categories)},
+            ),
+            patch("pipeline.get_api_key", return_value="synthetic-jyqf-key"),
+            patch("pipeline.get_openai_client", return_value=client) as client_factory,
+        ):
+            result = await agent._call_jyqf("source prompt", "system prompt")
+
+        self.assertEqual(result, "fallback response")
+        client_factory.assert_called_once_with(
+            Config.JYQF_BASE_URL,
+            "synthetic-jyqf-key",
+            provider_id="jyqf",
+            data_categories=categories,
+            max_retries=0,
+        )
+        create_completion.assert_awaited_once()
+        self.assertEqual(
+            create_completion.call_args.kwargs["model"],
+            "deepseek-v4.1-flash",
+        )
+
+    async def test_local_jyqf_fallback_does_not_require_remote_data_grant(self):
+        agent = UnifiedAgent(
+            "gpt-6-luna",
+            "instruction",
+            data_categories=["source_text"],
+        )
+        create_completion = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="local response"),
+                    )
+                ]
+            )
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create_completion)
+            )
+        )
+
+        with (
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+            patch("pipeline.get_api_key", return_value=None),
+            patch(
+                "pipeline.get_base_url",
+                return_value="http://127.0.0.1:12345/v1",
+            ),
+            patch("pipeline.get_openai_client", return_value=client) as client_factory,
+        ):
+            result = await agent._call_jyqf("source prompt", "system prompt")
+
+        self.assertEqual(result, "local response")
+        client_factory.assert_called_once_with(
+            Config.JYQF_BASE_URL,
+            None,
+            provider_id="jyqf",
+            data_categories=["source_text"],
+            max_retries=0,
+        )
+
+    async def test_jyqf_fallback_requires_provider_data_authorization(self):
+        categories = ["source_text", "book_knowledge"]
+        agent = UnifiedAgent(
+            "gpt-6-luna",
+            "instruction",
+            data_categories=categories,
+        )
+        agent._call_primary = AsyncMock(
+            side_effect=APIConnectionError(request=object())
+        )
+
+        with (
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            with self.assertRaisesRegex(PermissionError, "not authorized"):
+                await agent.call("source text")
+
+        agent._call_primary.assert_awaited_once()
+
+    @patch.dict(os.environ, {"JYQF_API_KEY": "test-key"}, clear=True)
+    async def test_jojo_auth_contract_and_content_errors_do_not_fall_back(self):
+        errors = [
+            *(make_api_status_error(code) for code in (400, 401, 403, 404)),
+            ResponseContractError("invalid response"),
+            ContentBlockedError("blocked"),
+        ]
+        categories = frozenset({"source_text"})
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                agent = UnifiedAgent(
+                    "gpt-6-luna",
+                    "instruction",
+                    data_categories=list(categories),
+                )
+                agent._call_primary = AsyncMock(side_effect=error)
+                agent._call_jyqf = AsyncMock(return_value="fallback")
+
+                with (
+                    patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+                    patch.object(
+                        Config, "PROVIDER_DATA_POLICY", {"jyqf": categories}
+                    ),
+                ):
+                    with self.assertRaises(type(error)):
+                        await agent.call("source text")
+
+                agent._call_jyqf.assert_not_awaited()
+
+    async def test_jyqf_failure_does_not_cascade_to_gemini(self):
+        fallback_error = make_api_status_error(500)
+        categories = ["source_text"]
+        agent = UnifiedAgent(
+            "gpt-6-luna",
+            "instruction",
+            data_categories=categories,
+        )
+        agent._call_primary = AsyncMock(
+            side_effect=[
+                APIConnectionError(request=object()),
+                fallback_error,
+            ]
+        )
+        agent._call_gemini = AsyncMock(return_value="unexpected Gemini response")
+
+        with (
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", True),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {"jyqf": frozenset(categories)},
+            ),
+        ):
+            with self.assertRaises(APIStatusError) as raised:
+                await agent.call("source text")
+
+        self.assertIs(raised.exception, fallback_error)
+        self.assertEqual(agent._call_primary.await_count, 2)
+        agent._call_gemini.assert_not_awaited()
+
+    def test_jyqf_fallback_preflight_checks_the_fallback_scope(self):
+        all_categories = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        models = (
+            patch.object(Config, "INITIAL_MODEL", "gpt-6-luna"),
+            patch.object(Config, "PROOFREAD_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STYLE_MODEL", "gpt-6-luna"),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", False),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {
+                    "jojo": all_categories,
+                    "jyqf": frozenset({"source_text", "book_knowledge"}),
+                },
+            ),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+        )
+        with (
+            models[0],
+            models[1],
+            models[2],
+            models[3],
+            models[4],
+            models[5],
+            models[6],
+            models[7],
+        ):
+            with self.assertRaisesRegex(PermissionError, "translation_text"):
+                validate_provider_configuration()
+
+    def test_jyqf_fallback_preflight_requires_remote_credentials(self):
+        all_categories = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        models = (
+            patch.object(Config, "INITIAL_MODEL", "gpt-6-luna"),
+            patch.object(Config, "PROOFREAD_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STYLE_MODEL", "gpt-6-luna"),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", False),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {"jojo": all_categories, "jyqf": all_categories},
+            ),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch(
+                "pipeline.get_api_key",
+                side_effect=lambda name: (
+                    None if name == "JYQF_API_KEY" else "synthetic-key"
+                ),
+            ),
+        )
+        with (
+            models[0],
+            models[1],
+            models[2],
+            models[3],
+            models[4],
+            models[5],
+            models[6],
+            models[7],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "JYQF_API_KEY"):
+                validate_provider_configuration()
+
+    def test_jyqf_fallback_preflight_only_requires_reachable_gemini_scope(self):
+        source_and_knowledge = frozenset(
+            {"source_text", "book_knowledge"}
+        )
+        full_translation = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        with (
+            patch.object(Config, "INITIAL_MODEL", "sakura-test"),
+            patch.object(Config, "PROOFREAD_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STYLE_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", True),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {
+                    "sakura": source_and_knowledge,
+                    "jojo": full_translation,
+                    "jyqf": full_translation,
+                    "gemini": source_and_knowledge,
+                },
+            ),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+        ):
+            validate_provider_configuration()
+
     @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
     async def test_timeout_rate_limit_and_server_errors_allow_fallback(self):
         for status_code in (408, 429, 500, 599):
@@ -789,6 +1103,50 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             )
             self.assertEqual(Config.RAW_DIR, str(workspace / "input"))
             self.assertEqual(Config.OUTPUT_DIR, str(workspace / "output"))
+
+    def test_jyqf_fallback_requires_explicit_enablement(self):
+        self.addCleanup(setattr, Config, "JYQF_FALLBACK_ENABLED", False)
+        with patch.dict(
+            os.environ,
+            {
+                "TEST_WORKSPACE_DIR": "isolated-test-workspace",
+                "ENABLE_JYQF_FALLBACK": "true",
+            },
+            clear=True,
+        ):
+            Config.load_config()
+        self.assertTrue(Config.JYQF_FALLBACK_ENABLED)
+
+        with patch.dict(
+            os.environ,
+            {"TEST_WORKSPACE_DIR": "isolated-test-workspace"},
+            clear=True,
+        ):
+            Config.load_config()
+        self.assertFalse(Config.JYQF_FALLBACK_ENABLED)
+
+    def test_jyqf_fallback_uses_json_config_unless_environment_overrides(self):
+        self.addCleanup(setattr, Config, "JYQF_FALLBACK_ENABLED", False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({"ENABLE_JYQF_FALLBACK": True}),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    Config.load_config(config_file=str(config_path))
+            self.assertTrue(Config.JYQF_FALLBACK_ENABLED)
+
+            with patch.dict(
+                os.environ,
+                {"ENABLE_JYQF_FALLBACK": "false"},
+                clear=True,
+            ):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    Config.load_config(config_file=str(config_path))
+            self.assertFalse(Config.JYQF_FALLBACK_ENABLED)
 
     def test_api_timeout_rejects_non_positive_and_non_finite_values(self):
         for value in ("0", "-1", "nan", "inf", "not-a-number"):
