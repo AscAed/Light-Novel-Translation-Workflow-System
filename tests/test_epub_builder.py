@@ -22,7 +22,7 @@ from epub_builder import (
 )
 from scripts.build_epub_candidate import main as build_epub_cli
 from source_ingestion import source_artifact_id
-from source_manifest import verify_manifest_artifact
+from source_manifest import verify_current_normalized_source
 
 
 class PandocExecutableResolutionTests(unittest.TestCase):
@@ -45,7 +45,21 @@ class PandocExecutableResolutionTests(unittest.TestCase):
             executable_path.write_bytes(b"synthetic executable placeholder")
             (input_root / "chapter.md").write_bytes(translation_content)
             (source_root / "episode.md").write_bytes(source_content)
+            raw_source_path = source_root / "raw-episode.txt"
+            raw_source_path.write_bytes(source_content)
 
+            raw_artifact = {
+                "artifact_id": source_artifact_id(
+                    work_id,
+                    "raw_source",
+                    "episode-1",
+                ),
+                "version_id": "raw-source-v1",
+                "kind": "raw_source",
+                "content_sha256": hashlib.sha256(source_content).hexdigest(),
+                "relative_path": "raw-episode.txt",
+                "parent_version_ids": [],
+            }
             artifact = {
                 "artifact_id": source_artifact_id(
                     work_id,
@@ -56,11 +70,16 @@ class PandocExecutableResolutionTests(unittest.TestCase):
                 "kind": "normalized_source",
                 "content_sha256": hashlib.sha256(source_content).hexdigest(),
                 "relative_path": "episode.md",
-                "parent_version_ids": [],
+                "parent_version_ids": ["raw-source-v1"],
             }
             manifest_path = source_root / "source_manifest.json"
             manifest_path.write_text(
-                json.dumps({"schema_version": 1, "artifacts": [artifact]}),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "artifacts": [raw_artifact, artifact],
+                    }
+                ),
                 encoding="utf-8",
             )
             catalog = {
@@ -196,6 +215,25 @@ class EpubCandidateTests(unittest.TestCase):
     def _add_source_version(self, episode_id, version_id, content):
         relative_path = f"{episode_id}-{version_id}.md"
         (self.source_root / relative_path).write_bytes(content)
+        raw_relative_path = f"raw/{episode_id}-{version_id}.txt"
+        raw_source_path = self.source_root / raw_relative_path
+        raw_source_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_source_path.write_bytes(content)
+        raw_version_id = f"raw-{version_id}"
+        self.source_manifest["artifacts"].append(
+            {
+                "artifact_id": source_artifact_id(
+                    "synthetic-work",
+                    "raw_source",
+                    episode_id,
+                ),
+                "version_id": raw_version_id,
+                "kind": "raw_source",
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "relative_path": raw_relative_path,
+                "parent_version_ids": [],
+            }
+        )
         self.source_manifest["artifacts"].append(
             {
                 "artifact_id": source_artifact_id(
@@ -207,7 +245,7 @@ class EpubCandidateTests(unittest.TestCase):
                 "kind": "normalized_source",
                 "content_sha256": hashlib.sha256(content).hexdigest(),
                 "relative_path": relative_path,
-                "parent_version_ids": [],
+                "parent_version_ids": [raw_version_id],
             }
         )
 
@@ -354,7 +392,7 @@ class EpubCandidateTests(unittest.TestCase):
         manifest_path = self.source_root / "source_manifest.json"
         original_bytes = manifest_path.read_bytes()
         changed = {"done": False}
-        original_verify = verify_manifest_artifact
+        original_verify = verify_current_normalized_source
 
         def mutate_manifest_after_snapshot(root, manifest, version_id):
             if not changed["done"]:
@@ -363,7 +401,7 @@ class EpubCandidateTests(unittest.TestCase):
             return original_verify(root, manifest, version_id)
 
         with patch(
-            "epub_builder.verify_manifest_artifact",
+            "epub_builder.verify_current_normalized_source",
             side_effect=mutate_manifest_after_snapshot,
         ):
             self._build()
@@ -591,6 +629,33 @@ class EpubCandidateTests(unittest.TestCase):
         self._write_source_manifest()
 
         with self.assertRaisesRegex(ValueError, "stale"):
+            self._build()
+
+        self.assertFalse(self.output_root.exists())
+
+    def test_rejects_current_normalized_source_with_stale_raw_parent(self):
+        raw_content = b"Updated raw source without normalized materialization.\n"
+        raw_relative_path = "raw/episode-1-raw-latest.txt"
+        raw_path = self.source_root / raw_relative_path
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_bytes(raw_content)
+        self.source_manifest["artifacts"].append(
+            {
+                "artifact_id": source_artifact_id(
+                    "synthetic-work",
+                    "raw_source",
+                    "episode-1",
+                ),
+                "version_id": "raw-version-latest",
+                "kind": "raw_source",
+                "content_sha256": hashlib.sha256(raw_content).hexdigest(),
+                "relative_path": raw_relative_path,
+                "parent_version_ids": ["raw-version-001"],
+            }
+        )
+        self._write_source_manifest()
+
+        with self.assertRaisesRegex(ValueError, "Normalized source is stale"):
             self._build()
 
         self.assertFalse(self.output_root.exists())

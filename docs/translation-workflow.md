@@ -5,6 +5,7 @@
 - `当前场景`：日语轻小说 -> 简体中文。
 - `通用目标`：多源语言、多目标语言和多文本类型；尚未实现，不得反向限制为固定日轻工作流。
 - `质量顺序`：信（不增删误译）优先于达（清晰自然），达优先于雅（风格润色）。下游润色不得覆盖源文证据。
+- `计划`：AI 专用／人类阅读原文分支、章节式目标路径和概要单独翻译的需求与阶段依赖见[搜索与双版本需求复核](source-ingestion-and-publication-plan.md#搜索与双版本需求复核2026-11-16)；它们尚未成为当前流水线默认能力。
 
 ## 当前流水线
 
@@ -55,7 +56,7 @@ python scripts/run_kakuyomu_workflow.py `
 
 审批 CLI 展示每条映射并要求操作者输入计划的完整 SHA-256。摘要绑定作品 ID、解析后的原文/译文根目录、catalog/manifest 路径，以及逐话 ID、位置、标题、来源文件与版本、译文目标和 TM 键。审核者标签与时间一并写入新回执。回执是本地普通 JSON 文件，未签名、未认证审核者身份；它记录人工声明，不证明审核者身份或判断质量。计划或来源身份变化会使旧摘要/回执失效。
 
-`main` 经 Kakuyomu 编排入口执行翻译时要求 `--approval-receipt`。无回执时工作流在创建 `TranslationPipeline` 和调用 Provider 前返回 `approval_required`。同一映射因已存在译文目标而重新计划时，可继续使用匹配的旧回执；该例外仅适用于计划没有其他问题且全部来源仍通过核验的情况。执行前还会检查既有译文和 TM 是否与本次来源及事务状态一致，不一致则停止。此门禁由 PR #62 合并；验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁-pr-62-已合并)。
+`main` 经 Kakuyomu 编排入口执行翻译时要求 `--approval-receipt`。无回执时工作流在创建 `TranslationPipeline` 和调用 Provider 前返回 `approval_required`。同一映射因已存在译文目标而重新计划时，可继续使用匹配的旧回执；该例外仅适用于计划没有其他问题且全部来源仍通过核验的情况。执行前还会检查既有译文和 TM 是否与本次来源及事务状态一致，不一致则停止。此门禁由 PR #62 合并；验证记录见[开发与验证](development.md#2026-11-16-翻译计划审批门禁pr-62-已合并)。
 
 ## 上下文来源
 
@@ -69,7 +70,7 @@ python scripts/run_kakuyomu_workflow.py `
 
 ## 原文来源与发布衔接
 
-- 当前翻译输入仍可由项目配置或显式 `CHAPTER_MAP` 指定。Kakuyomu adapter 可从作品主页发现按 `tableOfContentsV2` 分组排列的公开 episode ID/title，校验唯一条目数等于 `publicEpisodeCount` 后生成普通 episode URL，再逐话请求目录页面；也支持显式 catalog。用户是普通读者，主页发现是本试点要求的路径，不依赖作者 ZIP。`scripts/ingest_kakuyomu_pages.py --work-url` 可在无 Provider 配置时发现并归档原文；本次已 source-only 获取 88/88 个主页公开话目，生成 88 个单话 Markdown 和一份有序全书 export。`scripts/run_kakuyomu_workflow.py --work-url` 可进一步生成确定性译文路径、TM 键和 `source_version_id` 映射，并运行现有翻译流水线。运行时检查 `robots.txt`，不登录、不跟随重定向、不访问 `/read`；站点目录/count 结构不符时停止。parser v4 保留段落、ruby、旁点及 U+3000；实际人工格式/ruby/旁点验收和真实 Provider 翻译尚未完成。用户明确不要求官方澄清；平台规则风险另行记录，不代表平台背书或公开分发授权。采集范围不包括草稿/私有话，也不证明主页声明以外的完整性。详见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。
+- 当前翻译输入仍可由项目配置或显式 `CHAPTER_MAP` 指定。Kakuyomu adapter 可从作品主页发现按 `tableOfContentsV2` 分组排列的公开 episode ID/title，并读取 `Chapter` ID、标题和层级；discovered catalog schema v2 还保存每组 episode ID 和连续目录位置范围，schema v1 显式 catalog 继续兼容。发现时校验唯一条目数等于 `publicEpisodeCount` 后生成普通 episode URL，再逐话请求目录页面。用户是普通读者，主页发现是本试点要求的路径，不依赖作者 ZIP。`scripts/ingest_kakuyomu_pages.py --work-url` 可在无 Provider 配置时发现并归档原文；历史 source-only 运行已获取 88/88 个主页公开话目，生成 88 个单话 Markdown 和一份有序全书 export。`scripts/run_kakuyomu_workflow.py --work-url` 可进一步生成确定性译文路径、TM 键和 `source_version_id` 映射，并运行现有翻译流水线。运行时检查 `robots.txt`，不登录、不跟随重定向、不访问 `/read`；站点目录/count 结构不符时停止。parser v4 保留段落、ruby、旁点及 U+3000；本地离线 catalog diff 可报告快照变化并排他导出新增/元数据更新子集。作品元数据可保存为带记录时间和父版本的 manifest `kind=work` artifact。Kakuyomu 来源 CLI 还支持绑定完整基线 catalog/checkpoint 的显式正文全量刷新：仅接受目录完全一致的快照，未变正文复用、变化正文追加 raw 版本并报告新旧哈希；需显式使用新 checkpoint。下游过期状态传播、作品元数据对概要/知识的失效传播、原始 HTML、人工格式/ruby/旁点验收和真实 Provider 翻译仍未实现。用户明确不要求官方澄清；平台规则风险另行记录，不代表平台背书或公开分发授权。采集范围不包括草稿/私有话，也不证明主页声明以外的完整性。详见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。
 - 计划中的每话 Markdown 将按稳定章节 ID 显式映射到现有流程；清洗版、原始采集版、译文和 TM 需通过版本 ID/哈希关联，不以文件名推测对应关系。
 - 全书预读和知识抽取是可选候选生成步骤；上下文超限时需分批并标明未整书输入，候选未审核前不得进入批准知识库。
 - Notion 备份与 EPUB 均为派生/副本路径，不替代本地权威内容。详细状态与依赖见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。

@@ -378,11 +378,25 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                 "「synthetic source」", encoding="utf-8"
             )
             source_version_id = "source-version-1"
+            raw_source = "「synthetic source」".encode("utf-8")
+            raw_source_path = raw_dir / "raw" / "episode-1.txt"
+            raw_source_path.parent.mkdir()
+            raw_source_path.write_bytes(raw_source)
             (raw_dir / "source_manifest.json").write_text(
                 json.dumps(
                     {
                         "schema_version": 1,
                         "artifacts": [
+                            {
+                                "artifact_id": "synthetic-raw",
+                                "version_id": "raw-source-version-1",
+                                "kind": "raw_source",
+                                "content_sha256": hashlib.sha256(
+                                    raw_source
+                                ).hexdigest(),
+                                "relative_path": "raw/episode-1.txt",
+                                "parent_version_ids": [],
+                            },
                             {
                                 "artifact_id": "synthetic-normalized",
                                 "version_id": source_version_id,
@@ -391,7 +405,9 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                                     (raw_dir / "第一卷" / "第1話.md").read_bytes()
                                 ).hexdigest(),
                                 "relative_path": "第一卷/第1話.md",
-                                "parent_version_ids": [],
+                                "parent_version_ids": [
+                                    "raw-source-version-1"
+                                ],
                             }
                         ],
                     }
@@ -473,9 +489,21 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                 "synthetic translation", encoding="utf-8"
             )
             source_version_id = "source-version-1"
+            raw_source_path = raw_dir / "raw-source.txt"
+            raw_source_path.write_text("synthetic source", encoding="utf-8")
             manifest = {
                 "schema_version": 1,
                 "artifacts": [
+                    {
+                        "artifact_id": "synthetic-raw",
+                        "version_id": "raw-source-version-1",
+                        "kind": "raw_source",
+                        "content_sha256": hashlib.sha256(
+                            b"synthetic source"
+                        ).hexdigest(),
+                        "relative_path": "raw-source.txt",
+                        "parent_version_ids": [],
+                    },
                     {
                         "artifact_id": "synthetic-normalized",
                         "version_id": source_version_id,
@@ -484,7 +512,7 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                             raw_path.read_bytes()
                         ).hexdigest(),
                         "relative_path": "chapter.md",
-                        "parent_version_ids": [],
+                        "parent_version_ids": ["raw-source-version-1"],
                     }
                 ],
             }

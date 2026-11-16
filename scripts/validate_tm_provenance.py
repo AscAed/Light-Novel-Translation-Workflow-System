@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_manifest import (
     latest_artifacts_by_kind,
+    latest_raw_parent_for_normalized,
     load_manifest,
     verify_manifest_artifact,
 )
@@ -147,6 +148,36 @@ def _audit_chapter(
                                     "A newer normalized source version exists than the one recorded.",
                                 )
                             )
+                    else:
+                        try:
+                            latest_raw = latest_raw_parent_for_normalized(
+                                source_manifest, latest_source
+                            )
+                            verify_manifest_artifact(
+                                raw_dir,
+                                source_manifest,
+                                latest_raw["version_id"],
+                            )
+                        except ValueError:
+                            findings.append(
+                                _finding(
+                                    "invalid",
+                                    chapter,
+                                    "Latest normalized source raw parent does not verify.",
+                                )
+                            )
+                        else:
+                            if (
+                                latest_raw["version_id"]
+                                not in latest_source["parent_version_ids"]
+                            ):
+                                findings.append(
+                                    _finding(
+                                        "stale",
+                                        chapter,
+                                        "Latest normalized source was derived from an older raw source version.",
+                                    )
+                                )
 
     source_paragraphs = {
         "raw": split_paragraphs(raw_text),

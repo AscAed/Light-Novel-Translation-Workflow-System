@@ -17,7 +17,7 @@ from utils import (
     split_paragraphs,
     write_new_child_text,
 )
-from source_manifest import load_manifest, verify_manifest_artifact
+from source_manifest import load_manifest, verify_current_normalized_source
 
 
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -190,7 +190,7 @@ def _verify_source_evidence(
     paragraphs_by_filename = {}
     for source in provenance["source_files"]:
         filename = source["filename"]
-        version = verify_manifest_artifact(
+        version = verify_current_normalized_source(
             source_root,
             manifest,
             source["source_version_id"],

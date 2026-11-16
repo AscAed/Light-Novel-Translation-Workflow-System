@@ -242,6 +242,33 @@ class StorySummaryReviewTests(unittest.TestCase):
             self._publish()
         self.assertFalse(self.output_path.exists())
 
+    def test_raw_update_before_materialization_is_rejected_during_publication(self):
+        self._create_template()
+        self._complete_receipt()
+        self.source_file.write_text(
+            "Changed raw source before normalization.\n",
+            encoding="utf-8",
+        )
+        adapter = LocalFileAdapter(
+            self.source_root,
+            [
+                LocalEpisodeFile(
+                    EpisodeMetadata("episode-1", "Synthetic episode", 1),
+                    "chapter.txt",
+                )
+            ],
+        )
+        collect_source(
+            adapter,
+            root=self.archive_root,
+            work_id="synthetic-work",
+            checkpoint_relative_path="raw-only-checkpoint.json",
+        )
+
+        with self.assertRaisesRegex(ValueError, "not current"):
+            self._publish()
+        self.assertFalse(self.output_path.exists())
+
     def test_stale_source_is_rejected_when_runtime_loads_bundle(self):
         self._create_template()
         self._complete_receipt()

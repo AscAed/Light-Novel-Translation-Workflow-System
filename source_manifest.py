@@ -261,6 +261,58 @@ def latest_artifacts_by_kind(manifest: dict, kind: str) -> dict[str, dict]:
     return latest
 
 
+def latest_raw_parent_for_normalized(manifest: dict, normalized_artifact: dict) -> dict:
+    """Return the latest raw version for a normalized artifact's raw parent."""
+    validate_manifest(manifest)
+    if (
+        not isinstance(normalized_artifact, dict)
+        or normalized_artifact.get("kind") != "normalized_source"
+    ):
+        raise ValueError("Artifact is not a normalized source.")
+
+    versions = {
+        artifact["version_id"]: artifact
+        for artifact in manifest["artifacts"]
+    }
+    raw_parents = [
+        versions[parent_id]
+        for parent_id in normalized_artifact["parent_version_ids"]
+        if versions[parent_id]["kind"] == "raw_source"
+    ]
+    if len(raw_parents) != 1:
+        raise ValueError(
+            "Normalized source must have exactly one raw source parent."
+        )
+
+    latest_raw = latest_artifacts_by_kind(manifest, "raw_source").get(
+        raw_parents[0]["artifact_id"]
+    )
+    if latest_raw is None:
+        raise ValueError("Normalized source raw parent has no current version.")
+    return latest_raw
+
+
+def verify_current_normalized_source(root, manifest: dict, version_id: str) -> dict:
+    """Verify a normalized version and require its raw parent to be current."""
+    artifact = verify_manifest_artifact(root, manifest, version_id)
+    if artifact["kind"] != "normalized_source":
+        raise ValueError("Source version is not a normalized source.")
+
+    latest = latest_artifacts_by_kind(manifest, "normalized_source").get(
+        artifact["artifact_id"]
+    )
+    if latest is None or latest["version_id"] != version_id:
+        raise ValueError("Normalized source version is stale.")
+
+    latest_raw = latest_raw_parent_for_normalized(manifest, latest)
+    verify_manifest_artifact(root, manifest, latest_raw["version_id"])
+    if latest_raw["version_id"] not in latest["parent_version_ids"]:
+        raise ValueError(
+            "Normalized source is stale because its raw parent is not current."
+        )
+    return artifact
+
+
 def append_artifact(path, artifact: dict) -> dict:
     manifest_path = Path(path)
     if manifest_path.is_symlink():

@@ -107,6 +107,33 @@ class KnowledgeProvenanceAuditTests(unittest.TestCase):
 
         self.assertEqual([item["status"] for item in findings], ["stale"])
 
+    def test_reports_raw_update_before_materialization_as_stale(self):
+        self.source_file.write_bytes(b"Updated source before normalization.\r\n")
+        adapter = LocalFileAdapter(
+            self.source_root,
+            [
+                LocalEpisodeFile(
+                    EpisodeMetadata("episode-1", "Synthetic episode", 1),
+                    "chapter.txt",
+                )
+            ],
+        )
+        collect_source(
+            adapter,
+            root=self.archive_root,
+            work_id="synthetic-work",
+            checkpoint_relative_path="raw-only-checkpoint.json",
+        )
+
+        findings = audit_knowledge_provenance(
+            self.provenance,
+            str(self.archive_root),
+            "source_manifest.json",
+        )
+
+        self.assertEqual([item["status"] for item in findings], ["stale"])
+        self.assertIn("older raw source", findings[0]["detail"])
+
     def test_reports_tampered_latest_source_as_invalid(self):
         (self.archive_root / self.artifact["relative_path"]).write_bytes(b"tampered")
 

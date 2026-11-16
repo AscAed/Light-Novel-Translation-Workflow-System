@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +23,7 @@ CHECKPOINT_SCHEMA_VERSION = 5
 DEFAULT_MAX_EPISODE_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_CATALOG_BYTES = 1024 * 1024 * 1024
 _MAX_EPISODE_METADATA_BYTES = 1024 * 1024
+_MAX_WORK_METADATA_BYTES = 4 * 1024 * 1024
 _LEGACY_CHECKPOINT_FIELDS = frozenset(
     {
         "schema_version",
@@ -90,6 +92,23 @@ class SourceAdapter(Protocol):
     def list_episodes(self, cursor: str | None) -> CatalogPage: ...
 
     def fetch_episode(self, episode_id: str) -> bytes | FetchedEpisode: ...
+
+
+class _FingerprintBoundAdapter:
+    def __init__(self, adapter: SourceAdapter, source_fingerprint: str):
+        self._adapter = adapter
+        self.source_fingerprint = source_fingerprint
+
+    def list_episodes(self, cursor: str | None) -> CatalogPage:
+        return self._adapter.list_episodes(cursor)
+
+    def fetch_episode(self, episode_id: str) -> bytes | FetchedEpisode:
+        return self._adapter.fetch_episode(episode_id)
+
+    def set_completed_catalog_bytes(self, value: int) -> None:
+        setter = getattr(self._adapter, "set_completed_catalog_bytes", None)
+        if callable(setter):
+            setter(value)
 
 
 class LocalFileAdapter:
@@ -672,6 +691,618 @@ def _checkpoint_fingerprint(
     return hashlib.sha256(fingerprint_data).hexdigest()
 
 
+def prepare_append_only_checkpoint(
+    adapter: SourceAdapter,
+    *,
+    root,
+    work_id: str,
+    current_episodes: tuple[EpisodeMetadata, ...],
+    baseline_episode_ids: list[str],
+    baseline_checkpoint_relative_path: str,
+    checkpoint_relative_path: str,
+    manifest_relative_path: str = "source_manifest.json",
+    max_archive_bytes: int | None = None,
+) -> dict:
+    """Create or validate a new full-snapshot checkpoint reusing a verified prefix."""
+    if not _valid_identifier(work_id):
+        raise ValueError("Incremental source collection requires a valid work_id.")
+    source_fingerprint = getattr(adapter, "source_fingerprint", None)
+    if not _valid_identifier(source_fingerprint):
+        raise ValueError("Source adapter must provide a stable source_fingerprint.")
+    if max_archive_bytes is not None and (
+        isinstance(max_archive_bytes, bool)
+        or not isinstance(max_archive_bytes, int)
+        or max_archive_bytes < 1
+    ):
+        raise ValueError("Archive byte limit must be a positive integer.")
+    if not isinstance(baseline_episode_ids, list) or any(
+        not _valid_identifier(episode_id) for episode_id in baseline_episode_ids
+    ):
+        raise ValueError("Incremental baseline episode IDs are invalid.")
+    if len(baseline_episode_ids) != len(set(baseline_episode_ids)):
+        raise ValueError("Incremental baseline repeats an episode ID.")
+    if not isinstance(current_episodes, tuple) or not current_episodes:
+        raise ValueError("Incremental current catalog must contain episodes.")
+
+    current_ids = []
+    last_position = 0
+    for episode in current_episodes:
+        _validate_episode_metadata(episode)
+        if episode.position <= last_position:
+            raise ValueError("Incremental catalog positions must increase.")
+        last_position = episode.position
+        current_ids.append(episode.episode_id)
+    if current_ids[: len(baseline_episode_ids)] != baseline_episode_ids:
+        raise ValueError("Current catalog is not an append-only extension.")
+
+    root_path = Path(root).resolve(strict=True)
+    if not root_path.is_dir():
+        raise ValueError("Source collection root must be a directory.")
+    manifest_path = resolve_relative_path(
+        str(root_path), manifest_relative_path, allow_missing=True
+    )
+    baseline_path = resolve_relative_path(
+        str(root_path), baseline_checkpoint_relative_path
+    )
+    checkpoint_path = resolve_relative_path(
+        str(root_path), checkpoint_relative_path, allow_missing=True
+    )
+    manifest_identity = manifest_path.relative_to(root_path).as_posix()
+    baseline_identity = baseline_path.relative_to(root_path).as_posix()
+    checkpoint_identity = checkpoint_path.relative_to(root_path).as_posix()
+    if (
+        manifest_identity.casefold() == checkpoint_identity.casefold()
+        or baseline_identity.casefold() == checkpoint_identity.casefold()
+    ):
+        raise ValueError(
+            "Incremental checkpoint must use a new path distinct from its inputs."
+        )
+    try:
+        same_baseline = checkpoint_path.exists() and os.path.samefile(
+            baseline_path, checkpoint_path
+        )
+        same_manifest = (
+            manifest_path.exists()
+            and checkpoint_path.exists()
+            and os.path.samefile(manifest_path, checkpoint_path)
+        )
+    except OSError as exc:
+        raise ValueError("Could not verify incremental checkpoint paths.") from exc
+    if same_baseline or same_manifest:
+        raise ValueError(
+            "Incremental checkpoint must use a new path distinct from its inputs."
+        )
+
+    baseline = _read_checkpoint(baseline_path)
+    if (
+        baseline["schema_version"] != CHECKPOINT_SCHEMA_VERSION
+        or baseline["work_id"] != work_id
+        or baseline["manifest_relative_path"] != manifest_identity
+        or baseline["status"] != "complete"
+        or baseline["discovered_episode_ids"] != baseline_episode_ids
+        or baseline["completed_episode_ids"] != baseline_episode_ids
+    ):
+        raise ValueError(
+            "Incremental baseline must be a complete checkpoint for the "
+            "specified catalog and manifest."
+        )
+    if not manifest_path.is_file():
+        raise ValueError("Incremental baseline source manifest is missing.")
+    manifest = load_manifest(manifest_path)
+
+    current_by_id = {episode.episode_id: episode for episode in current_episodes}
+    for episode_id in baseline_episode_ids:
+        episode = current_by_id[episode_id]
+        metadata_artifact, metadata = _load_episode_metadata(
+            root_path,
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+        )
+        if (
+            metadata["title"] != episode.title
+            or metadata["position"] != episode.position
+            or metadata["source_ref"] != episode.source_ref
+        ):
+            raise ValueError(
+                "An existing episode's metadata changed; append-only reuse is unsafe."
+            )
+        version_id = baseline["completed_raw_versions"][episode_id]
+        raw_artifact = verify_manifest_artifact(root_path, manifest, version_id)
+        latest_raw = _latest_raw_for_metadata(
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+            metadata_artifact=metadata_artifact,
+        )
+        if (
+            raw_artifact["kind"] != "raw_source"
+            or raw_artifact["artifact_id"]
+            != source_artifact_id(work_id, "raw_source", episode_id)
+            or raw_artifact["version_id"] != latest_raw["version_id"]
+        ):
+            raise ValueError(
+                "Incremental baseline raw binding is stale or unrelated."
+            )
+
+    checkpoint_fingerprint = _checkpoint_fingerprint(
+        source_fingerprint, max_archive_bytes
+    )
+    if checkpoint_path.exists():
+        checkpoint = _read_checkpoint(checkpoint_path)
+        discovered = checkpoint["discovered_episode_ids"]
+        completed = checkpoint["completed_episode_ids"]
+        if (
+            checkpoint["schema_version"] != CHECKPOINT_SCHEMA_VERSION
+            or checkpoint["work_id"] != work_id
+            or checkpoint["source_fingerprint"] != checkpoint_fingerprint
+            or checkpoint["manifest_relative_path"] != manifest_identity
+            or discovered[: len(baseline_episode_ids)] != baseline_episode_ids
+            or current_ids[: len(discovered)] != discovered
+            or completed[: len(baseline_episode_ids)] != baseline_episode_ids
+            or completed != discovered[: len(completed)]
+            or (
+                checkpoint["page_loaded"]
+                and discovered
+                != completed
+                + [
+                    episode["episode_id"]
+                    for episode in checkpoint["pending_episodes"]
+                ]
+            )
+            or (
+                not checkpoint["page_loaded"]
+                and discovered != completed
+            )
+            or any(
+                checkpoint["completed_raw_versions"].get(episode_id)
+                != baseline["completed_raw_versions"][episode_id]
+                for episode_id in baseline_episode_ids
+            )
+            or (
+                checkpoint["status"] == "complete"
+                and discovered != current_ids
+            )
+        ):
+            raise ValueError(
+                "Existing incremental checkpoint does not match this update."
+            )
+        for episode in checkpoint["pending_episodes"]:
+            current = current_by_id.get(episode["episode_id"])
+            if current is None or (
+                episode["title"],
+                episode["position"],
+                episode["source_ref"],
+            ) != (current.title, current.position, current.source_ref):
+                raise ValueError(
+                    "Existing incremental checkpoint has stale pending metadata."
+                )
+        for episode_id in completed:
+            episode = current_by_id[episode_id]
+            metadata_artifact, metadata = _load_episode_metadata(
+                root_path,
+                manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+            )
+            if (
+                metadata["title"] != episode.title
+                or metadata["position"] != episode.position
+                or metadata["source_ref"] != episode.source_ref
+            ):
+                raise ValueError(
+                    "Existing incremental checkpoint metadata is stale."
+                )
+            version_id = checkpoint["completed_raw_versions"][episode_id]
+            raw_artifact = verify_manifest_artifact(root_path, manifest, version_id)
+            latest_raw = _latest_raw_for_metadata(
+                manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+                metadata_artifact=metadata_artifact,
+            )
+            if (
+                raw_artifact["kind"] != "raw_source"
+                or raw_artifact["artifact_id"]
+                != source_artifact_id(work_id, "raw_source", episode_id)
+                or raw_artifact["version_id"] != latest_raw["version_id"]
+            ):
+                raise ValueError(
+                    "Existing incremental checkpoint has a stale raw binding."
+                )
+        return checkpoint
+
+    checkpoint = new_checkpoint(
+        work_id,
+        checkpoint_fingerprint,
+        manifest_identity,
+    )
+    checkpoint["discovered_episode_ids"] = baseline_episode_ids.copy()
+    checkpoint["completed_episode_ids"] = baseline_episode_ids.copy()
+    checkpoint["completed_raw_versions"] = baseline["completed_raw_versions"].copy()
+    if len(current_ids) == len(baseline_episode_ids):
+        checkpoint["status"] = "complete"
+    else:
+        checkpoint["cursor"] = str(len(baseline_episode_ids))
+    validate_checkpoint(checkpoint)
+    _write_json(root_path, checkpoint_relative_path, checkpoint)
+    return checkpoint
+
+
+def prepare_full_refresh_checkpoint(
+    adapter: SourceAdapter,
+    *,
+    root,
+    work_id: str,
+    current_episodes: tuple[EpisodeMetadata, ...],
+    baseline_episode_ids: list[str],
+    baseline_catalog_sha256: str,
+    baseline_checkpoint_relative_path: str,
+    checkpoint_relative_path: str,
+    manifest_relative_path: str = "source_manifest.json",
+    max_archive_bytes: int | None = None,
+) -> dict:
+    """Start or validate a full refresh bound to immutable baseline files."""
+    if not _valid_identifier(work_id):
+        raise ValueError("Full source refresh requires a valid work_id.")
+    source_fingerprint = getattr(adapter, "source_fingerprint", None)
+    if not _valid_identifier(source_fingerprint):
+        raise ValueError("Source adapter must provide a stable source_fingerprint.")
+    if (
+        not isinstance(baseline_catalog_sha256, str)
+        or len(baseline_catalog_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in baseline_catalog_sha256)
+    ):
+        raise ValueError("Full refresh requires a valid baseline catalog hash.")
+    if max_archive_bytes is not None and (
+        isinstance(max_archive_bytes, bool)
+        or not isinstance(max_archive_bytes, int)
+        or max_archive_bytes < 1
+    ):
+        raise ValueError("Archive byte limit must be a positive integer.")
+    if not isinstance(baseline_episode_ids, list) or not baseline_episode_ids or any(
+        not _valid_identifier(episode_id) for episode_id in baseline_episode_ids
+    ):
+        raise ValueError("Full refresh baseline episode IDs are invalid.")
+    if len(baseline_episode_ids) != len(set(baseline_episode_ids)):
+        raise ValueError("Full refresh baseline repeats an episode ID.")
+    if not isinstance(current_episodes, tuple) or not current_episodes:
+        raise ValueError("Full refresh current catalog must contain episodes.")
+
+    current_ids = []
+    current_by_id = {}
+    last_position = 0
+    for episode in current_episodes:
+        _validate_episode_metadata(episode)
+        if episode.position <= last_position or episode.episode_id in current_by_id:
+            raise ValueError("Full refresh catalog order or IDs are invalid.")
+        last_position = episode.position
+        current_ids.append(episode.episode_id)
+        current_by_id[episode.episode_id] = episode
+    if current_ids != baseline_episode_ids:
+        raise ValueError("Full refresh requires the exact baseline episode sequence.")
+
+    root_path = Path(root).resolve(strict=True)
+    if not root_path.is_dir():
+        raise ValueError("Source collection root must be a directory.")
+    manifest_path = resolve_relative_path(
+        str(root_path), manifest_relative_path, allow_missing=True
+    )
+    baseline_path = resolve_relative_path(
+        str(root_path), baseline_checkpoint_relative_path
+    )
+    checkpoint_path = resolve_relative_path(
+        str(root_path), checkpoint_relative_path, allow_missing=True
+    )
+    manifest_identity = manifest_path.relative_to(root_path).as_posix()
+    baseline_identity = baseline_path.relative_to(root_path).as_posix()
+    checkpoint_identity = checkpoint_path.relative_to(root_path).as_posix()
+    if checkpoint_identity.casefold() in {
+        manifest_identity.casefold(),
+        baseline_identity.casefold(),
+    }:
+        raise ValueError(
+            "Full refresh requires a new checkpoint path distinct from its inputs."
+        )
+    try:
+        aliases_input = checkpoint_path.exists() and (
+            os.path.samefile(baseline_path, checkpoint_path)
+            or (
+                manifest_path.exists()
+                and os.path.samefile(manifest_path, checkpoint_path)
+            )
+        )
+    except OSError as exc:
+        raise ValueError("Could not verify full refresh checkpoint paths.") from exc
+    if aliases_input:
+        raise ValueError(
+            "Full refresh requires a new checkpoint path distinct from its inputs."
+        )
+
+    baseline = _read_checkpoint(baseline_path)
+    if (
+        baseline["schema_version"] != CHECKPOINT_SCHEMA_VERSION
+        or baseline["work_id"] != work_id
+        or baseline["manifest_relative_path"] != manifest_identity
+        or baseline["status"] != "complete"
+        or baseline["discovered_episode_ids"] != baseline_episode_ids
+        or baseline["completed_episode_ids"] != baseline_episode_ids
+    ):
+        raise ValueError(
+            "Full refresh baseline must be a complete checkpoint for the "
+            "specified catalog and manifest."
+        )
+    if not manifest_path.is_file():
+        raise ValueError("Full refresh baseline source manifest is missing.")
+    manifest = load_manifest(manifest_path)
+    manifest_versions = {
+        artifact["version_id"]: artifact for artifact in manifest["artifacts"]
+    }
+    baseline_raw_versions = {}
+    for episode_id in baseline_episode_ids:
+        episode = current_by_id[episode_id]
+        metadata_artifact, metadata = _load_episode_metadata(
+            root_path,
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+        )
+        if (
+            metadata["title"] != episode.title
+            or metadata["position"] != episode.position
+            or metadata["source_ref"] != episode.source_ref
+        ):
+            raise ValueError(
+                "Full refresh baseline metadata does not match the current catalog."
+            )
+        del metadata_artifact
+        version_id = baseline["completed_raw_versions"][episode_id]
+        raw_artifact = verify_manifest_artifact(root_path, manifest, version_id)
+        if (
+            raw_artifact["kind"] != "raw_source"
+            or raw_artifact["artifact_id"]
+            != source_artifact_id(work_id, "raw_source", episode_id)
+            or not any(
+                parent in manifest_versions
+                and manifest_versions[parent]["kind"] == "episode"
+                and manifest_versions[parent]["artifact_id"]
+                == source_artifact_id(work_id, "episode", episode_id)
+                for parent in raw_artifact["parent_version_ids"]
+            )
+        ):
+            raise ValueError(
+                "Full refresh baseline points to an unrelated raw artifact."
+            )
+        baseline_raw_versions[episode_id] = {
+            "version_id": version_id,
+            "content_sha256": raw_artifact["content_sha256"],
+        }
+
+    baseline_checkpoint_sha256 = _hash_file(
+        root_path, baseline_checkpoint_relative_path
+    )
+    refresh_source_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "mode": "full-refresh-v1",
+                "adapter_source_fingerprint": source_fingerprint,
+                "baseline_catalog_sha256": baseline_catalog_sha256,
+                "baseline_checkpoint_sha256": baseline_checkpoint_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    bound_adapter = _FingerprintBoundAdapter(
+        adapter,
+        refresh_source_fingerprint,
+    )
+    checkpoint_fingerprint = _checkpoint_fingerprint(
+        refresh_source_fingerprint,
+        max_archive_bytes,
+    )
+
+    if checkpoint_path.exists():
+        checkpoint = _read_checkpoint(checkpoint_path)
+        discovered = checkpoint["discovered_episode_ids"]
+        completed = checkpoint["completed_episode_ids"]
+        if (
+            checkpoint["schema_version"] != CHECKPOINT_SCHEMA_VERSION
+            or checkpoint["work_id"] != work_id
+            or checkpoint["source_fingerprint"] != checkpoint_fingerprint
+            or checkpoint["manifest_relative_path"] != manifest_identity
+            or current_ids[: len(discovered)] != discovered
+            or completed != discovered[: len(completed)]
+            or (
+                checkpoint["page_loaded"]
+                and discovered
+                != completed
+                + [
+                    episode["episode_id"]
+                    for episode in checkpoint["pending_episodes"]
+                ]
+            )
+            or (
+                not checkpoint["page_loaded"]
+                and discovered != completed
+            )
+            or (
+                checkpoint["status"] == "complete"
+                and discovered != current_ids
+            )
+        ):
+            raise ValueError("Existing full refresh checkpoint does not match.")
+        for pending in checkpoint["pending_episodes"]:
+            current = current_by_id.get(pending["episode_id"])
+            if current is None or (
+                pending["title"],
+                pending["position"],
+                pending["source_ref"],
+            ) != (current.title, current.position, current.source_ref):
+                raise ValueError(
+                    "Existing full refresh checkpoint has stale pending metadata."
+                )
+        for episode_id in completed:
+            episode = current_by_id[episode_id]
+            metadata_artifact, metadata = _load_episode_metadata(
+                root_path,
+                manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+            )
+            if (
+                metadata["title"] != episode.title
+                or metadata["position"] != episode.position
+                or metadata["source_ref"] != episode.source_ref
+            ):
+                raise ValueError(
+                    "Existing full refresh checkpoint metadata is stale."
+                )
+            raw_version_id = checkpoint["completed_raw_versions"][episode_id]
+            raw_artifact = verify_manifest_artifact(
+                root_path, manifest, raw_version_id
+            )
+            latest_raw = _latest_raw_for_metadata(
+                manifest,
+                work_id=work_id,
+                episode_id=episode_id,
+                metadata_artifact=metadata_artifact,
+            )
+            if (
+                raw_artifact["kind"] != "raw_source"
+                or raw_artifact["artifact_id"]
+                != source_artifact_id(work_id, "raw_source", episode_id)
+                or raw_artifact["version_id"] != latest_raw["version_id"]
+            ):
+                raise ValueError(
+                    "Existing full refresh checkpoint has a stale raw binding."
+                )
+        return {
+            "adapter": bound_adapter,
+            "checkpoint": checkpoint,
+            "baseline_raw_versions": baseline_raw_versions,
+        }
+
+    checkpoint = new_checkpoint(
+        work_id,
+        checkpoint_fingerprint,
+        manifest_identity,
+    )
+    validate_checkpoint(checkpoint)
+    _write_json(root_path, checkpoint_relative_path, checkpoint)
+    return {
+        "adapter": bound_adapter,
+        "checkpoint": checkpoint,
+        "baseline_raw_versions": baseline_raw_versions,
+    }
+
+
+def compare_full_refresh_versions(
+    *,
+    root,
+    work_id: str,
+    episode_ids: list[str],
+    baseline_checkpoint_relative_path: str,
+    checkpoint_relative_path: str,
+    manifest_relative_path: str = "source_manifest.json",
+) -> dict:
+    """Compare two complete checkpoints by verified raw content hashes."""
+    if not _valid_identifier(work_id):
+        raise ValueError("Refresh comparison requires a valid work_id.")
+    if not isinstance(episode_ids, list) or not episode_ids or any(
+        not _valid_identifier(episode_id) for episode_id in episode_ids
+    ):
+        raise ValueError("Refresh comparison episode IDs are invalid.")
+    if len(episode_ids) != len(set(episode_ids)):
+        raise ValueError("Refresh comparison repeats an episode ID.")
+
+    root_path = Path(root).resolve(strict=True)
+    baseline = _read_checkpoint(
+        resolve_relative_path(str(root_path), baseline_checkpoint_relative_path)
+    )
+    refreshed = _read_checkpoint(
+        resolve_relative_path(str(root_path), checkpoint_relative_path)
+    )
+    manifest_identity = resolve_relative_path(
+        str(root_path), manifest_relative_path, allow_missing=True
+    ).relative_to(root_path).as_posix()
+    if any(
+        checkpoint["schema_version"] != CHECKPOINT_SCHEMA_VERSION
+        or checkpoint["work_id"] != work_id
+        or checkpoint["manifest_relative_path"] != manifest_identity
+        or checkpoint["status"] != "complete"
+        or checkpoint["discovered_episode_ids"] != episode_ids
+        or checkpoint["completed_episode_ids"] != episode_ids
+        for checkpoint in (baseline, refreshed)
+    ):
+        raise ValueError(
+            "Refresh comparison requires complete checkpoints for the same catalog."
+        )
+    manifest_path = resolve_relative_path(str(root_path), manifest_relative_path)
+    manifest = load_manifest(manifest_path)
+    changed = []
+    unchanged_count = 0
+    for episode_id in episode_ids:
+        previous = verify_manifest_artifact(
+            root_path,
+            manifest,
+            baseline["completed_raw_versions"][episode_id],
+        )
+        current = verify_manifest_artifact(
+            root_path,
+            manifest,
+            refreshed["completed_raw_versions"][episode_id],
+        )
+        expected_artifact_id = source_artifact_id(
+            work_id, "raw_source", episode_id
+        )
+        if any(
+            artifact["kind"] != "raw_source"
+            or artifact["artifact_id"] != expected_artifact_id
+            for artifact in (previous, current)
+        ):
+            raise ValueError(
+                "Refresh comparison checkpoint references an unrelated artifact."
+            )
+        metadata_artifact, _ = _load_episode_metadata(
+            root_path,
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+        )
+        latest_raw = _latest_raw_for_metadata(
+            manifest,
+            work_id=work_id,
+            episode_id=episode_id,
+            metadata_artifact=metadata_artifact,
+        )
+        if current["version_id"] != latest_raw["version_id"]:
+            raise ValueError(
+                "Refreshed checkpoint does not reference the latest raw version."
+            )
+        if previous["content_sha256"] == current["content_sha256"]:
+            unchanged_count += 1
+            continue
+        changed.append(
+            {
+                "episode_id": episode_id,
+                "previous_version_id": previous["version_id"],
+                "current_version_id": current["version_id"],
+                "previous_sha256": previous["content_sha256"],
+                "current_sha256": current["content_sha256"],
+            }
+        )
+
+    return {
+        "status": "complete",
+        "episode_count": len(episode_ids),
+        "unchanged_count": unchanged_count,
+        "changed_count": len(changed),
+        "changed_episodes": changed,
+        "downstream_review_required": bool(changed),
+    }
+
+
 def source_artifact_id(work_id: str, kind: str, episode_id: str) -> str:
     if not all(_valid_identifier(value) for value in (work_id, kind, episode_id)):
         raise ValueError("Source artifact identity fields must be valid identifiers.")
@@ -865,6 +1496,123 @@ def _persist_episode(
         manifest_path,
         manifest,
         raw_artifact,
+        content,
+    )
+    if current_archive_bytes is not None:
+        return current_archive_bytes + additions
+    return None
+
+
+def _persist_work_metadata(
+    root: Path,
+    manifest_path: Path,
+    work_id: str,
+    metadata: dict,
+    *,
+    max_archive_bytes: int | None = None,
+    current_archive_bytes: int | None = None,
+) -> int | None:
+    if not _valid_identifier(work_id):
+        raise ValueError("Work metadata requires a valid work_id.")
+    if not isinstance(metadata, dict) or not metadata or any(
+        not isinstance(key, str) for key in metadata
+    ):
+        raise ValueError("Work metadata must be a non-empty JSON object.")
+    try:
+        normalized_metadata = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        normalized_metadata_bytes = normalized_metadata.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError("Work metadata is not serializable as UTF-8 JSON.") from exc
+    if len(normalized_metadata_bytes) > _MAX_WORK_METADATA_BYTES:
+        raise ValueError("Serialized work metadata exceeds the size limit.")
+
+    manifest = (
+        load_manifest(manifest_path)
+        if manifest_path.exists()
+        else new_manifest()
+    )
+    artifact_id = _source_artifact_id(work_id, "work", "metadata")
+    latest = _latest_artifact(manifest, artifact_id)
+    if latest is not None:
+        latest_bytes = _read_manifested_artifact_bytes(
+            root,
+            latest,
+            max_bytes=_MAX_WORK_METADATA_BYTES,
+        )
+        try:
+            latest_record = json.loads(latest_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("Existing work metadata is not valid UTF-8 JSON.") from exc
+        if (
+            isinstance(latest_record, dict)
+            and latest_record.get("schema_version") == 1
+            and latest_record.get("work_id") == work_id
+            and latest_record.get("metadata") == metadata
+        ):
+            return current_archive_bytes
+
+    parent_version_ids = [latest["version_id"]] if latest is not None else []
+    recorded_at_utc = (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+    content = json.dumps(
+        {
+            "schema_version": 1,
+            "work_id": work_id,
+            "recorded_at_utc": recorded_at_utc,
+            "metadata": metadata,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(content) > _MAX_WORK_METADATA_BYTES:
+        raise ValueError("Serialized work metadata artifact exceeds the size limit.")
+    content_hash = hashlib.sha256(content).hexdigest()
+    version_id = _artifact_version_id(
+        artifact_id,
+        content_hash,
+        parent_version_ids,
+    )
+    work_key = hashlib.sha256(work_id.encode("utf-8")).hexdigest()
+    artifact = {
+        "artifact_id": artifact_id,
+        "version_id": version_id,
+        "kind": "work",
+        "content_sha256": content_hash,
+        "relative_path": f"work/{work_key}/{version_id[2:]}.json",
+        "parent_version_ids": parent_version_ids,
+    }
+
+    additions = len(content)
+    if max_archive_bytes is not None:
+        if (
+            isinstance(current_archive_bytes, bool)
+            or not isinstance(current_archive_bytes, int)
+            or current_archive_bytes < 0
+        ):
+            raise ValueError("Current archive byte count is required for a byte limit.")
+        if any(item["version_id"] == version_id for item in manifest["artifacts"]):
+            additions = 0
+        if current_archive_bytes + additions > max_archive_bytes:
+            raise ArchiveLimitExceeded(
+                "Work metadata would exceed the configured manifest content byte limit."
+            )
+
+    _append_immutable_artifact(
+        root,
+        manifest_path,
+        manifest,
+        artifact,
         content,
     )
     if current_archive_bytes is not None:
@@ -1323,6 +2071,7 @@ def collect_source(
     manifest_relative_path: str = "source_manifest.json",
     checkpoint_relative_path: str = "source_checkpoint.json",
     max_archive_bytes: int | None = None,
+    work_metadata: dict | None = None,
 ) -> dict:
     """Persist adapter catalog entries and fetched raw bytes with resumable state."""
     if not _valid_identifier(work_id):
@@ -1407,6 +2156,34 @@ def collect_source(
             raise ValueError(
                 "Source checkpoint does not match the destination manifest."
             )
+    archive_bytes = None
+    if work_metadata is not None:
+        existing_manifest = (
+            load_manifest(manifest_path)
+            if manifest_path.exists()
+            else new_manifest()
+        )
+        if max_archive_bytes is not None:
+            archive_bytes = verified_manifest_content_bytes(
+                root_path,
+                existing_manifest,
+            )
+        try:
+            archive_bytes = _persist_work_metadata(
+                root_path,
+                manifest_path,
+                work_id,
+                work_metadata,
+                max_archive_bytes=max_archive_bytes,
+                current_archive_bytes=archive_bytes,
+            )
+        except ArchiveLimitExceeded:
+            return _pause(
+                checkpoint,
+                "archive_limit",
+                root_path,
+                checkpoint_relative_path,
+            )
     if checkpoint["status"] == "complete":
         return _report(checkpoint)
     if (
@@ -1426,17 +2203,17 @@ def collect_source(
                 checkpoint,
             )
         )
-    archive_bytes = None
     if max_archive_bytes is not None:
-        existing_manifest = (
-            load_manifest(manifest_path)
-            if manifest_path.exists()
-            else new_manifest()
-        )
-        archive_bytes = verified_manifest_content_bytes(
-            root_path,
-            existing_manifest,
-        )
+        if archive_bytes is None:
+            existing_manifest = (
+                load_manifest(manifest_path)
+                if manifest_path.exists()
+                else new_manifest()
+            )
+            archive_bytes = verified_manifest_content_bytes(
+                root_path,
+                existing_manifest,
+            )
     if checkpoint["status"] == "paused":
         checkpoint["status"] = "in_progress"
         checkpoint["pause_reason"] = None

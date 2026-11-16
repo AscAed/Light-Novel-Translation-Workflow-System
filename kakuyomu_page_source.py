@@ -36,7 +36,8 @@ MAX_REQUEST_DELAY_SECONDS = 3.0
 DEFAULT_HTTP_TIMEOUT_SECONDS = 20.0
 DEFAULT_MAX_ROBOTS_BYTES = 512 * 1024
 PARSER_VERSION = "kakuyomu-visible-text-v4"
-WORK_CATALOG_PARSER_VERSION = "kakuyomu-apollo-toc-v1"
+WORK_CATALOG_PARSER_VERSION = "kakuyomu-apollo-toc-v2"
+WORK_METADATA_PARSER_VERSION = "kakuyomu-apollo-metadata-v1"
 USER_AGENT = "LightNovelTranslationWorkflowSystem/0.1"
 _EPISODE_PATH = re.compile(r"/works/([0-9]+)/episodes/([0-9]+)\Z")
 _WORK_PATH = re.compile(r"/works/([0-9]+)\Z")
@@ -54,6 +55,49 @@ _SUPPRESSED_TAGS = frozenset({"noscript", "script", "style", "svg"})
 class KakuyomuEpisodePage:
     metadata: EpisodeMetadata
     page_url: str
+
+
+@dataclass(frozen=True)
+class KakuyomuChapterGroup:
+    group_id: str
+    chapter_id: str | None
+    title: str | None
+    level: int | None
+    position_start: int | None
+    position_end: int | None
+    episode_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class KakuyomuWorkMetadata:
+    source_url: str
+    title: str
+    author_name: str | None
+    author_screen_name: str | None
+    catchphrase: str | None
+    introduction: str | None
+    genre: str | None
+    tags: tuple[str, ...]
+    serial_status: str | None
+    published_at: str | None
+    last_episode_published_at: str | None
+    public_episode_count: int
+
+    def to_catalog_record(self) -> dict:
+        return {
+            "source_url": self.source_url,
+            "title": self.title,
+            "author_name": self.author_name,
+            "author_screen_name": self.author_screen_name,
+            "catchphrase": self.catchphrase,
+            "introduction": self.introduction,
+            "genre": self.genre,
+            "tags": list(self.tags),
+            "serial_status": self.serial_status,
+            "published_at": self.published_at,
+            "last_episode_published_at": self.last_episode_published_at,
+            "public_episode_count": self.public_episode_count,
+        }
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -350,19 +394,113 @@ def _resolve_apollo_reference(state, value, expected_type: str) -> dict:
     return entity
 
 
+def _metadata_text(value, field_name: str, *, allow_none: bool = False) -> str | None:
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str) or any(
+        ord(character) < 32 and character not in "\t\n\r" for character in value
+    ):
+        raise ValueError(f"Kakuyomu work metadata has an invalid {field_name}.")
+    return value
+
+
+def _extract_work_metadata(
+    work: dict,
+    apollo_state: dict,
+    *,
+    work_id: str,
+    public_episode_count: int,
+) -> KakuyomuWorkMetadata:
+    required_fields = {
+        "title",
+        "author",
+        "catchphrase",
+        "introduction",
+        "genre",
+        "tagLabels",
+        "serialStatus",
+        "publishedAt",
+        "lastEpisodePublishedAt",
+    }
+    if not required_fields <= set(work):
+        raise ValueError("Kakuyomu work page is missing metadata fields.")
+
+    title = _metadata_text(work["title"], "title")
+    if not title.strip():
+        raise ValueError("Kakuyomu work metadata has an empty title.")
+
+    author_name = None
+    author_screen_name = None
+    author_reference = work["author"]
+    if author_reference is not None:
+        author = _resolve_apollo_reference(
+            apollo_state, author_reference, "UserAccount"
+        )
+        author_name = _metadata_text(author.get("name"), "author name")
+        author_screen_name = _metadata_text(
+            author.get("screenName"), "author screen name"
+        )
+        if not author_name.strip() or not author_screen_name.strip():
+            raise ValueError("Kakuyomu work metadata has an empty author name.")
+
+    tags = work["tagLabels"]
+    if not isinstance(tags, list):
+        raise ValueError("Kakuyomu work metadata has invalid tags.")
+    normalized_tags = tuple(
+        _metadata_text(tag, "tag") for tag in tags
+    )
+    if any(not tag.strip() for tag in normalized_tags):
+        raise ValueError("Kakuyomu work metadata has an empty tag.")
+
+    genre = _metadata_text(work["genre"], "genre", allow_none=True)
+    if genre is not None and not genre.strip():
+        genre = None
+
+    return KakuyomuWorkMetadata(
+        source_url=f"https://kakuyomu.jp/works/{work_id}",
+        title=title,
+        author_name=author_name,
+        author_screen_name=author_screen_name,
+        catchphrase=_metadata_text(
+            work["catchphrase"], "catchphrase", allow_none=True
+        ),
+        introduction=_metadata_text(
+            work["introduction"], "introduction", allow_none=True
+        ),
+        genre=genre,
+        tags=normalized_tags,
+        serial_status=_metadata_text(
+            work["serialStatus"], "serial status", allow_none=True
+        ),
+        published_at=_metadata_text(
+            work["publishedAt"], "published date", allow_none=True
+        ),
+        last_episode_published_at=_metadata_text(
+            work["lastEpisodePublishedAt"],
+            "last episode date",
+            allow_none=True,
+        ),
+        public_episode_count=public_episode_count,
+    )
+
+
 class KakuyomuWorkCatalog:
     def __init__(
         self,
         work_id: str,
         work_url: str,
+        work_metadata: KakuyomuWorkMetadata,
         episodes: tuple[KakuyomuEpisodePage, ...],
+        chapters: tuple[KakuyomuChapterGroup, ...],
         source_fingerprint: str,
         robots_bytes: bytes,
         http_client: _KakuyomuRequestClient,
     ):
         self.work_id = work_id
         self.work_url = work_url
+        self.work_metadata = work_metadata
         self.episodes = episodes
+        self.chapters = chapters
         self.source_fingerprint = source_fingerprint
         self._robots_bytes = robots_bytes
         self._http_client = http_client
@@ -467,19 +605,70 @@ def discover_kakuyomu_work_catalog(
         raise ValueError("Kakuyomu work page has an invalid public episode count.")
     if public_episode_count > max_episodes:
         raise ValueError("Kakuyomu work exceeds the configured episode limit.")
+    work_metadata = _extract_work_metadata(
+        work,
+        apollo_state,
+        work_id=work_id,
+        public_episode_count=public_episode_count,
+    )
     toc_groups = work.get("tableOfContentsV2")
     if not isinstance(toc_groups, list) or not toc_groups:
         raise ValueError("Kakuyomu work page has no table of contents.")
 
     episodes = []
+    chapters = []
     seen_ids = set()
+    seen_group_ids = set()
     for group_reference in toc_groups:
         group = _resolve_apollo_reference(
             apollo_state, group_reference, "TableOfContentsChapter"
         )
+        group_id = group.get("id")
+        if (
+            not isinstance(group_id, str)
+            or not group_id
+            or any(ord(character) < 32 for character in group_id)
+            or group_id in seen_group_ids
+        ):
+            raise ValueError("Kakuyomu table of contents has an invalid group ID.")
+        seen_group_ids.add(group_id)
+        chapter_id = None
+        chapter_title = None
+        chapter_level = None
+        chapter_reference = group.get("chapter")
+        if chapter_reference is not None:
+            chapter = _resolve_apollo_reference(
+                apollo_state, chapter_reference, "Chapter"
+            )
+            chapter_id = chapter.get("id")
+            chapter_title = chapter.get("title")
+            chapter_level = chapter.get("level")
+            if (
+                not isinstance(chapter_id, str)
+                or not chapter_id
+                or any(ord(character) < 32 for character in chapter_id)
+                or (chapter_title is not None and not isinstance(chapter_title, str))
+                or (
+                    chapter_title is not None
+                    and any(ord(character) < 32 for character in chapter_title)
+                )
+                or (
+                    chapter_level is not None
+                    and (
+                        isinstance(chapter_level, bool)
+                        or not isinstance(chapter_level, int)
+                        or chapter_level < 0
+                    )
+                )
+            ):
+                raise ValueError(
+                    "Kakuyomu work page has invalid chapter metadata."
+                )
         episode_references = group.get("episodeUnions")
         if not isinstance(episode_references, list):
             raise ValueError("Kakuyomu table of contents is invalid.")
+        group_episode_ids = []
+        group_position_start = len(episodes) + 1 if episode_references else None
         for episode_reference in episode_references:
             episode = _resolve_apollo_reference(
                 apollo_state, episode_reference, "Episode"
@@ -498,6 +687,7 @@ def discover_kakuyomu_work_catalog(
             if episode_id in seen_ids:
                 raise ValueError("Kakuyomu table of contents repeats an episode.")
             seen_ids.add(episode_id)
+            group_episode_ids.append(episode_id)
             page_url = (
                 f"https://kakuyomu.jp/works/{work_id}/episodes/{episode_id}"
             )
@@ -512,6 +702,17 @@ def discover_kakuyomu_work_catalog(
                     page_url,
                 )
             )
+        chapters.append(
+            KakuyomuChapterGroup(
+                group_id=group_id,
+                chapter_id=chapter_id,
+                title=chapter_title,
+                level=chapter_level,
+                position_start=group_position_start,
+                position_end=len(episodes) if group_episode_ids else None,
+                episode_ids=tuple(group_episode_ids),
+            )
+        )
     if len(episodes) != public_episode_count:
         raise ValueError(
             "Kakuyomu table of contents does not match the public episode count."
@@ -529,6 +730,18 @@ def discover_kakuyomu_work_catalog(
                 "work_id": work_id,
                 "robots_sha256": hashlib.sha256(robots_bytes).hexdigest(),
                 "public_episode_count": public_episode_count,
+                "chapters": [
+                    {
+                        "group_id": chapter.group_id,
+                        "chapter_id": chapter.chapter_id,
+                        "title": chapter.title,
+                        "level": chapter.level,
+                        "position_start": chapter.position_start,
+                        "position_end": chapter.position_end,
+                        "episode_ids": list(chapter.episode_ids),
+                    }
+                    for chapter in chapters
+                ],
                 "episodes": [
                     {
                         "episode_id": episode.metadata.episode_id,
@@ -547,7 +760,9 @@ def discover_kakuyomu_work_catalog(
     return KakuyomuWorkCatalog(
         work_id,
         work_url,
+        work_metadata,
         tuple(episodes),
+        tuple(chapters),
         catalog_fingerprint,
         robots_bytes,
         http_client,
@@ -559,6 +774,9 @@ def save_discovered_work_catalog(
     relative_path: str,
     work_id: str,
     episodes,
+    *,
+    chapters,
+    work_metadata: KakuyomuWorkMetadata,
 ) -> Path:
     from utils import open_regular_file, resolve_relative_path
 
@@ -571,8 +789,21 @@ def save_discovered_work_catalog(
         allow_missing=True,
     )
     catalog = {
-        "schema_version": 1,
+        "schema_version": 3,
         "work_id": work_id,
+        "work_metadata": work_metadata.to_catalog_record(),
+        "chapters": [
+            {
+                "group_id": chapter.group_id,
+                "chapter_id": chapter.chapter_id,
+                "title": chapter.title,
+                "level": chapter.level,
+                "position_start": chapter.position_start,
+                "position_end": chapter.position_end,
+                "episode_ids": list(chapter.episode_ids),
+            }
+            for chapter in chapters
+        ],
         "episodes": [
             {
                 "episode_id": episode.metadata.episode_id,

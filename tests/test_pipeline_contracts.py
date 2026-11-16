@@ -1403,6 +1403,22 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             (raw_dir / "Volume 2" / "chapter10.md").write_text(
                 "synthetic source", encoding="utf-8"
             )
+            raw_source_path = raw_dir / "raw_sources" / "chapter10.txt"
+            raw_source_path.parent.mkdir()
+            raw_source_path.write_bytes(b"synthetic source")
+            append_artifact(
+                raw_dir / "source_manifest.json",
+                {
+                    "artifact_id": "raw-chapter10",
+                    "version_id": "raw-source-version-1",
+                    "kind": "raw_source",
+                    "content_sha256": hashlib.sha256(
+                        b"synthetic source"
+                    ).hexdigest(),
+                    "relative_path": "raw_sources/chapter10.txt",
+                    "parent_version_ids": [],
+                },
+            )
             append_artifact(
                 raw_dir / "source_manifest.json",
                 {
@@ -1413,7 +1429,7 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                         b"synthetic source"
                     ).hexdigest(),
                     "relative_path": "Volume 2/chapter10.md",
-                    "parent_version_ids": [],
+                    "parent_version_ids": ["raw-source-version-1"],
                 },
             )
             spec = ChapterSpec(

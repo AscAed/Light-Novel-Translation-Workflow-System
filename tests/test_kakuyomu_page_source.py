@@ -62,16 +62,42 @@ EXPECTED_TEXT = (
 WORK_URL = f"https://kakuyomu.jp/works/{WORK_ID}"
 
 
-def make_work_page_html(work_id, episodes, *, group_sizes=None, public_count=None):
+def make_work_page_html(
+    work_id,
+    episodes,
+    *,
+    group_sizes=None,
+    public_count=None,
+    chapterless_groups=(),
+    metadata_overrides=None,
+):
     group_sizes = group_sizes or [len(episodes)]
+    chapterless_groups = set(chapterless_groups)
+    work = {
+        "__typename": "Work",
+        "id": work_id,
+        "title": "Synthetic work",
+        "author": {"__ref": "UserAccount:synthetic-author"},
+        "catchphrase": "Synthetic catchphrase",
+        "introduction": "Synthetic introduction",
+        "genre": "Fantasy",
+        "tagLabels": ["synthetic", "fixture"],
+        "serialStatus": "COMPLETED",
+        "publishedAt": "2026-01-01T00:00:00Z",
+        "lastEpisodePublishedAt": "2026-01-02T00:00:00Z",
+        "publicEpisodeCount": (
+            len(episodes) if public_count is None else public_count
+        ),
+        "tableOfContentsV2": [],
+    }
+    work.update(metadata_overrides or {})
     state = {
-        f"Work:{work_id}": {
-            "__typename": "Work",
-            "id": work_id,
-            "publicEpisodeCount": (
-                len(episodes) if public_count is None else public_count
-            ),
-            "tableOfContentsV2": [],
+        f"Work:{work_id}": work,
+        "UserAccount:synthetic-author": {
+            "__typename": "UserAccount",
+            "id": "synthetic-author",
+            "name": "Synthetic Author",
+            "screenName": "synthetic-author",
         }
     }
     episode_index = 0
@@ -91,8 +117,20 @@ def make_work_page_html(work_id, episodes, *, group_sizes=None, public_count=Non
         state[f"TableOfContentsChapter:{group_id}"] = {
             "__typename": "TableOfContentsChapter",
             "id": group_id,
+            "chapter": (
+                None
+                if group_index in chapterless_groups
+                else {"__ref": f"Chapter:synthetic-chapter-{group_index}"}
+            ),
             "episodeUnions": references,
         }
+        if group_index not in chapterless_groups:
+            state[f"Chapter:synthetic-chapter-{group_index}"] = {
+                "__typename": "Chapter",
+                "id": f"synthetic-chapter-{group_index}",
+                "title": f"synthetic section {group_index + 1}",
+                "level": group_index,
+            }
         state[f"Work:{work_id}"]["tableOfContentsV2"].append(
             {"__ref": f"TableOfContentsChapter:{group_id}"}
         )
@@ -348,6 +386,33 @@ class KakuyomuPageAdapterTests(unittest.TestCase):
         self.assertEqual(fetched.content, EXPECTED_TEXT.encode("utf-8"))
         self.assertTrue(fetched.content.startswith("太郎は｜東京".encode("utf-8")))
         self.assertIn("　次の段落".encode("utf-8"), fetched.content)
+
+    def test_preserves_nbsp_entity_and_fullwidth_space(self):
+        page = (
+            '<div class="widget-episodeTitle">第1話 はじまり</div>'
+            '<div class="widget-episodeBody">'
+            "<p>A&nbsp;B</p><p>&#x3000;次の段落</p></div>"
+        )
+        adapter, _, _ = make_adapter(page=page)
+
+        fetched = adapter.fetch_episode(EPISODE_ID)
+
+        self.assertEqual(
+            fetched.content,
+            "A\u00a0B\n\n\u3000次の段落".encode("utf-8"),
+        )
+
+    def test_preserves_paragraph_id_and_initial_fullwidth_indent(self):
+        page = (
+            '<div class="widget-episodeTitle">第1話 はじまり</div>'
+            '<div class="widget-episodeBody">'
+            '<p id="p1">&#x3000;冒頭。</p></div>'
+        )
+        adapter, _, _ = make_adapter(page=page)
+
+        fetched = adapter.fetch_episode(EPISODE_ID)
+
+        self.assertEqual(fetched.content, "\u3000冒頭。".encode("utf-8"))
 
     def test_robots_denial_stops_before_requesting_episode_page(self):
         adapter_episodes = (
@@ -746,6 +811,57 @@ class KakuyomuWorkCatalogDiscoveryTests(unittest.TestCase):
             [1, 2, 3],
         )
         self.assertEqual(
+            discovered.work_metadata.to_catalog_record(),
+            {
+                "source_url": WORK_URL,
+                "title": "Synthetic work",
+                "author_name": "Synthetic Author",
+                "author_screen_name": "synthetic-author",
+                "catchphrase": "Synthetic catchphrase",
+                "introduction": "Synthetic introduction",
+                "genre": "Fantasy",
+                "tags": ["synthetic", "fixture"],
+                "serial_status": "COMPLETED",
+                "published_at": "2026-01-01T00:00:00Z",
+                "last_episode_published_at": "2026-01-02T00:00:00Z",
+                "public_episode_count": 3,
+            },
+        )
+        self.assertEqual(
+            [
+                (
+                    group.group_id,
+                    group.chapter_id,
+                    group.title,
+                    group.level,
+                    group.position_start,
+                    group.position_end,
+                    group.episode_ids,
+                )
+                for group in discovered.chapters
+            ],
+            [
+                (
+                    "synthetic-group-0",
+                    "synthetic-chapter-0",
+                    "synthetic section 1",
+                    0,
+                    1,
+                    2,
+                    ("1111111111111111111", "2222222222222222222"),
+                ),
+                (
+                    "synthetic-group-1",
+                    "synthetic-chapter-1",
+                    "synthetic section 2",
+                    1,
+                    3,
+                    3,
+                    ("3333333333333333333",),
+                ),
+            ],
+        )
+        self.assertEqual(
             [request[0] for request in self.opener.requests],
             ["https://kakuyomu.jp/robots.txt", WORK_URL],
         )
@@ -788,6 +904,78 @@ class KakuyomuWorkCatalogDiscoveryTests(unittest.TestCase):
             [request[0] for request in self.opener.requests],
             ["https://kakuyomu.jp/robots.txt", WORK_URL],
         )
+
+    def test_metadata_only_change_does_not_change_episode_source_fingerprint(self):
+        first = self._discover()
+        self.responses[WORK_URL] = (
+            make_work_page_html(
+                WORK_ID,
+                self.episode_rows,
+                group_sizes=[2, 1],
+                metadata_overrides={"introduction": "Revised introduction"},
+            ).encode("utf-8"),
+            "text/html; charset=utf-8",
+        )
+
+        current = self._discover()
+
+        self.assertNotEqual(
+            first.work_metadata.introduction,
+            current.work_metadata.introduction,
+        )
+        self.assertEqual(first.source_fingerprint, current.source_fingerprint)
+
+    def test_discovers_empty_and_chapterless_groups(self):
+        html = make_work_page_html(
+            WORK_ID,
+            [self.episode_rows[0]],
+            group_sizes=[0, 1],
+            chapterless_groups=[1],
+        )
+        self.responses[WORK_URL] = (
+            html.encode("utf-8"),
+            "text/html; charset=utf-8",
+        )
+
+        discovered = self._discover()
+
+        self.assertEqual(len(discovered.episodes), 1)
+        self.assertEqual(
+            [
+                (
+                    group.chapter_id,
+                    group.title,
+                    group.position_start,
+                    group.position_end,
+                    group.episode_ids,
+                )
+                for group in discovered.chapters
+            ],
+            [
+                (
+                    "synthetic-chapter-0",
+                    "synthetic section 1",
+                    None,
+                    None,
+                    (),
+                ),
+                (None, None, 1, 1, ("1111111111111111111",)),
+            ],
+        )
+
+    def test_missing_chapter_reference_target_fails_closed(self):
+        malformed = self.work_html.replace(
+            "Chapter:synthetic-chapter-0",
+            "Chapter:missing-chapter",
+            1,
+        )
+        self.responses[WORK_URL] = (
+            malformed.encode("utf-8"),
+            "text/html; charset=utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "missing entity"):
+            self._discover()
 
     def test_work_page_robots_denial_stops_before_homepage_request(self):
         self.responses["https://kakuyomu.jp/robots.txt"] = (
@@ -933,12 +1121,372 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
         discovered = json.loads(
             (self.source_root / "discovered.json").read_text(encoding="utf-8")
         )
+        manifest = load_manifest(self.output_root / "source_manifest.json")
+        work_artifacts = [
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "work"
+        ]
+        self.assertEqual(len(work_artifacts), 1)
+        work_record = json.loads(
+            (self.output_root / work_artifacts[0]["relative_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(work_record["metadata"], discovered["work_metadata"])
+        self.assertEqual(discovered["schema_version"], 3)
+        self.assertEqual(
+            discovered["work_metadata"],
+            {
+                "source_url": WORK_URL,
+                "title": "Synthetic work",
+                "author_name": "Synthetic Author",
+                "author_screen_name": "synthetic-author",
+                "catchphrase": "Synthetic catchphrase",
+                "introduction": "Synthetic introduction",
+                "genre": "Fantasy",
+                "tags": ["synthetic", "fixture"],
+                "serial_status": "COMPLETED",
+                "published_at": "2026-01-01T00:00:00Z",
+                "last_episode_published_at": "2026-01-02T00:00:00Z",
+                "public_episode_count": 1,
+            },
+        )
         self.assertEqual(discovered["episodes"][0]["page_url"], PAGE_URL)
+        self.assertEqual(
+            discovered["chapters"],
+            [
+                {
+                    "group_id": "synthetic-group-0",
+                    "chapter_id": "synthetic-chapter-0",
+                    "title": "synthetic section 1",
+                    "level": 0,
+                    "position_start": 1,
+                    "position_end": 1,
+                    "episode_ids": [EPISODE_ID],
+                }
+            ],
+        )
+        loaded_work_id, loaded_episodes, _ = _load_catalog(
+            str(self.source_root), "discovered.json"
+        )
+        self.assertEqual(loaded_work_id, WORK_ID)
+        self.assertEqual(
+            [item.metadata.episode_id for item in loaded_episodes],
+            [EPISODE_ID],
+        )
         self.assertEqual(
             [request[0] for request in opener.requests],
             ["https://kakuyomu.jp/robots.txt", WORK_URL, PAGE_URL],
         )
         self.assertEqual(clock.sleeps, [2, 2])
+
+    def test_cli_append_only_update_fetches_only_new_episode(self):
+        first = (EPISODE_ID, "第1話 はじまり")
+        second_id = "1111111111111111111"
+        second_url = f"https://kakuyomu.jp/works/{WORK_ID}/episodes/{second_id}"
+        baseline_opener = FakeOpener(
+            {
+                "https://kakuyomu.jp/robots.txt": (
+                    ROBOTS.encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                ),
+                WORK_URL: (
+                    make_work_page_html(WORK_ID, [first]).encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+                PAGE_URL: (
+                    PAGE_HTML.encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+            }
+        )
+        baseline_stdout = io.StringIO()
+
+        def run_discovery(opener, arguments, stdout):
+            clock = FakeClock()
+            stderr = io.StringIO()
+
+            def discover_test_work(work_url, **options):
+                return discover_kakuyomu_work_catalog(
+                    work_url,
+                    opener=opener,
+                    sleep=clock.sleep,
+                    clock=clock.now,
+                    **options,
+                )
+
+            with (
+                patch(
+                    "scripts.ingest_kakuyomu_pages."
+                    "discover_kakuyomu_work_catalog",
+                    side_effect=discover_test_work,
+                ),
+                patch("sys.stdout", stdout),
+                patch("sys.stderr", stderr),
+            ):
+                result = main(arguments)
+            return result, stderr.getvalue()
+
+        baseline_result, baseline_stderr = run_discovery(
+            baseline_opener,
+            [
+                "--source-root",
+                str(self.source_root),
+                "--work-url",
+                WORK_URL,
+                "--discovered-catalog",
+                "catalog.v1.json",
+                "--output-root",
+                str(self.output_root),
+                "--checkpoint",
+                "checkpoint.v1.json",
+            ],
+            baseline_stdout,
+        )
+        self.assertEqual(baseline_result, 0)
+        self.assertEqual(baseline_stderr, "")
+
+        current_opener = FakeOpener(
+            {
+                "https://kakuyomu.jp/robots.txt": (
+                    ROBOTS.encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                ),
+                WORK_URL: (
+                    make_work_page_html(WORK_ID, [first, (second_id, "第2話 続き")])
+                    .encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+                second_url: (
+                    (
+                        '<html><div class="widget-episodeTitle">第2話 続き</div>'
+                        '<div class="widget-episodeBody"><p>新しい話。</p></div></html>'
+                    ).encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+            }
+        )
+        current_stdout = io.StringIO()
+        current_result, current_stderr = run_discovery(
+            current_opener,
+            [
+                "--source-root",
+                str(self.source_root),
+                "--work-url",
+                WORK_URL,
+                "--discovered-catalog",
+                "catalog.v2.json",
+                "--output-root",
+                str(self.output_root),
+                "--incremental-from-catalog",
+                "catalog.v1.json",
+                "--incremental-from-checkpoint",
+                "checkpoint.v1.json",
+                "--checkpoint",
+                "checkpoint.v2.json",
+            ],
+            current_stdout,
+        )
+
+        self.assertEqual(current_result, 0, current_stderr)
+        report = json.loads(current_stdout.getvalue())
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(
+            report["incremental_update"]["added_count"],
+            1,
+        )
+        self.assertEqual(report["incremental_update"]["reused_count"], 1)
+        self.assertEqual(
+            [request[0] for request in current_opener.requests],
+            ["https://kakuyomu.jp/robots.txt", WORK_URL, second_url],
+        )
+        baseline_checkpoint = json.loads(
+            (self.output_root / "checkpoint.v1.json").read_text(encoding="utf-8")
+        )
+        updated_checkpoint = json.loads(
+            (self.output_root / "checkpoint.v2.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(baseline_checkpoint["discovered_episode_ids"], [EPISODE_ID])
+        self.assertEqual(
+            updated_checkpoint["discovered_episode_ids"], [EPISODE_ID, second_id]
+        )
+        self.assertEqual(
+            updated_checkpoint["completed_episode_ids"], [EPISODE_ID, second_id]
+        )
+
+    def test_cli_full_refresh_rechecks_all_episodes_and_reports_hash_changes(self):
+        first = (EPISODE_ID, "第1話 はじまり")
+        second_id = "1111111111111111111"
+        second_url = f"https://kakuyomu.jp/works/{WORK_ID}/episodes/{second_id}"
+        second = (second_id, "第2話 続き")
+
+        def episode_html(title, body):
+            return (
+                f'<html><div class="widget-episodeTitle">{title}</div>'
+                f'<div class="widget-episodeBody"><p>{body}</p></div></html>'
+            ).encode("utf-8")
+
+        def work_responses(opener):
+            clock = FakeClock()
+            stderr = io.StringIO()
+
+            def discover_test_work(work_url, **options):
+                return discover_kakuyomu_work_catalog(
+                    work_url,
+                    opener=opener,
+                    sleep=clock.sleep,
+                    clock=clock.now,
+                    **options,
+                )
+
+            def run(arguments, stdout):
+                with (
+                    patch(
+                        "scripts.ingest_kakuyomu_pages."
+                        "discover_kakuyomu_work_catalog",
+                        side_effect=discover_test_work,
+                    ),
+                    patch("sys.stdout", stdout),
+                    patch("sys.stderr", stderr),
+                ):
+                    result = main(arguments)
+                return result
+
+            return run, stderr
+
+        baseline_opener = FakeOpener(
+            {
+                "https://kakuyomu.jp/robots.txt": (
+                    ROBOTS.encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                ),
+                WORK_URL: (
+                    make_work_page_html(WORK_ID, [first, second]).encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+                PAGE_URL: (
+                    episode_html(first[1], "同じ本文。"),
+                    "text/html; charset=utf-8",
+                ),
+                second_url: (
+                    episode_html(second[1], "更新前の本文。"),
+                    "text/html; charset=utf-8",
+                ),
+            }
+        )
+        baseline_run, baseline_stderr = work_responses(baseline_opener)
+        baseline_stdout = io.StringIO()
+        baseline_result = baseline_run(
+            [
+                "--source-root",
+                str(self.source_root),
+                "--work-url",
+                WORK_URL,
+                "--discovered-catalog",
+                "catalog.before.json",
+                "--output-root",
+                str(self.output_root),
+                "--checkpoint",
+                "checkpoint.before.json",
+            ],
+            baseline_stdout,
+        )
+        self.assertEqual(baseline_result, 0, baseline_stderr.getvalue())
+        baseline_checkpoint_bytes = (
+            self.output_root / "checkpoint.before.json"
+        ).read_bytes()
+        baseline_checkpoint = json.loads(baseline_checkpoint_bytes)
+        baseline_raw_versions = baseline_checkpoint["completed_raw_versions"]
+
+        refresh_opener = FakeOpener(
+            {
+                "https://kakuyomu.jp/robots.txt": (
+                    ROBOTS.encode("utf-8"),
+                    "text/plain; charset=utf-8",
+                ),
+                WORK_URL: (
+                    make_work_page_html(
+                        WORK_ID,
+                        [first, second],
+                        metadata_overrides={
+                            "introduction": "Updated work description"
+                        },
+                    ).encode("utf-8"),
+                    "text/html; charset=utf-8",
+                ),
+                PAGE_URL: (
+                    episode_html(first[1], "同じ本文。"),
+                    "text/html; charset=utf-8",
+                ),
+                second_url: (
+                    episode_html(second[1], "更新後の本文。"),
+                    "text/html; charset=utf-8",
+                ),
+            }
+        )
+        refresh_run, refresh_stderr = work_responses(refresh_opener)
+        refresh_stdout = io.StringIO()
+        refresh_result = refresh_run(
+            [
+                "--source-root",
+                str(self.source_root),
+                "--work-url",
+                WORK_URL,
+                "--discovered-catalog",
+                "catalog.after.json",
+                "--output-root",
+                str(self.output_root),
+                "--refresh-from-catalog",
+                "catalog.before.json",
+                "--refresh-from-checkpoint",
+                "checkpoint.before.json",
+                "--checkpoint",
+                "checkpoint.refresh.json",
+            ],
+            refresh_stdout,
+        )
+
+        self.assertEqual(refresh_result, 0, refresh_stderr.getvalue())
+        report = json.loads(refresh_stdout.getvalue())
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(report["content_refresh"]["episode_count"], 2)
+        self.assertEqual(report["content_refresh"]["unchanged_count"], 1)
+        self.assertEqual(report["content_refresh"]["changed_count"], 1)
+        self.assertEqual(
+            [
+                item["episode_id"]
+                for item in report["content_refresh"]["changed_episodes"]
+            ],
+            [second_id],
+        )
+        self.assertTrue(report["content_refresh"]["downstream_review_required"])
+        self.assertEqual(
+            [request[0] for request in refresh_opener.requests],
+            [
+                "https://kakuyomu.jp/robots.txt",
+                WORK_URL,
+                PAGE_URL,
+                second_url,
+            ],
+        )
+        self.assertEqual(
+            (self.output_root / "checkpoint.before.json").read_bytes(),
+            baseline_checkpoint_bytes,
+        )
+        refreshed_checkpoint = json.loads(
+            (self.output_root / "checkpoint.refresh.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            refreshed_checkpoint["completed_raw_versions"][EPISODE_ID],
+            baseline_raw_versions[EPISODE_ID],
+        )
+        self.assertNotEqual(
+            refreshed_checkpoint["completed_raw_versions"][second_id],
+            baseline_raw_versions[second_id],
+        )
 
     def test_catalog_rejects_non_kakuyomu_or_read_url(self):
         self._write_catalog()
@@ -952,6 +1500,49 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
         with self.assertRaises(ValueError):
             KakuyomuPageAdapter(work_id, episodes, opener=opener)
         self.assertEqual(opener.requests, [])
+
+    def test_catalog_v2_rejects_incomplete_chapter_mapping(self):
+        self._write_catalog()
+        catalog_path = self.source_root / "catalog.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["schema_version"] = 2
+        catalog["chapters"] = []
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "chapter groups"):
+            _load_catalog(str(self.source_root), "catalog.json")
+
+    def test_catalog_v2_rejects_reordered_group_episode_ids(self):
+        self._write_catalog()
+        catalog_path = self.source_root / "catalog.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        second_episode_id = "7777777777777777777"
+        catalog["schema_version"] = 2
+        catalog["episodes"].append(
+            {
+                "episode_id": second_episode_id,
+                "position": 2,
+                "page_url": (
+                    f"https://kakuyomu.jp/works/{WORK_ID}/episodes/"
+                    f"{second_episode_id}"
+                ),
+            }
+        )
+        catalog["chapters"] = [
+            {
+                "group_id": "synthetic-group",
+                "chapter_id": "synthetic-chapter",
+                "title": "synthetic section",
+                "level": 0,
+                "position_start": 1,
+                "position_end": 2,
+                "episode_ids": [second_episode_id, EPISODE_ID],
+            }
+        ]
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "positions are inconsistent"):
+            _load_catalog(str(self.source_root), "catalog.json")
 
     def test_cli_rejects_output_alias_with_catalog_before_network_or_writes(self):
         self._write_catalog()

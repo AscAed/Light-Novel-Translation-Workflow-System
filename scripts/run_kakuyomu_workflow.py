@@ -491,6 +491,8 @@ def run_workflow(
             discovered_catalog,
             work_id,
             episodes,
+            chapters=discovery.chapters,
+            work_metadata=discovery.work_metadata,
         )
 
     if adapter_factory is not None:
@@ -511,6 +513,11 @@ def run_workflow(
         manifest_relative_path=manifest,
         checkpoint_relative_path=checkpoint,
         max_archive_bytes=max_archive_bytes,
+        work_metadata=(
+            discovery.work_metadata.to_catalog_record()
+            if discovery is not None
+            else None
+        ),
     )
     if source_report["status"] != "complete":
         return {

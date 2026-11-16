@@ -2,9 +2,9 @@
 
 ## 项目状态
 
-- 最近一次代码变更为 `ba9979e`（PR #67）；后续 PR #68 只同步 Markdown。当前代码包含 JOJO→JYQF 显式回退，由合成契约单测验证，mock E2E 不覆盖该回退路径。具体边界和结果见[项目现状](docs/project-status.md)与[开发与验证](docs/development.md)。
+- 2026-11-16 工作集以 `main` 基线 `a3813c3` 为起点，补入 Kakuyomu 目录元数据、快照差异/选集、纯追加与显式正文刷新，以及 raw→normalized 来源新鲜度门禁。当前工作集 22 个非 E2E 模块 410 项通过 406、跳过 4，mock E2E 7 项通过；准确验证范围与限制见[开发与验证](docs/development.md)。既有 JOJO→JYQF 显式回退仍只由合成契约单测覆盖，mock E2E 不覆盖该回退路径。
 - D-11：新增逐章恢复日志，TM 写入失败或进程中断后可在重跑时恢复同一译文/TM 更新；多进程并发、断电持久性和日志冲突自动解决不在保证范围内。
-- 当前实现：Python CLI 翻译流水线、RAG 检索、章节对齐、来源版本清单、显式本地导入、UTF-8 Markdown 物化/章节导出与来源版本映射。Kakuyomu 专用工作流可从 `--work-url` 解析主页公开目录、校验唯一 episode ID 数等于 `publicEpisodeCount`、保存发现 catalog、按目录顺序访问全部普通 episode URL 并版本化归档；本次 source-only live 采集已完成主页声明的 88/88 话，生成 88 个单话 Markdown 和一份全书 export。工作流不登录、不跟随重定向、不访问 `/read`，请求间隔默认为 2 秒并限制为 1.5–3 秒；`run_kakuyomu_workflow.py` 还可预检 Provider、生成确定性章节映射并调用生产流水线。用户明确不要求官方澄清并要求普通 URL 路径；平台规则风险另有记录，不代表平台背书或公开分发授权。作品范围限于主页当前声明的公开话目，不包括草稿/私有章节或其声明外完整性；正文/ruby/旁点人工验收、真实 Provider 翻译尚未完成。目录解析、限额、验证和阶段边界见[项目现状](docs/project-status.md)与[原文采集方案](docs/source-ingestion-and-publication-plan.md)。
+- 当前实现：Python CLI 翻译流水线、RAG 检索、章节对齐、来源版本清单、显式本地导入、UTF-8 Markdown 物化/章节导出与来源版本映射。Kakuyomu 专用工作流可从 `--work-url` 解析主页公开目录、校验唯一 episode ID 数等于 `publicEpisodeCount`、保存发现 catalog、按目录顺序访问全部普通 episode URL 并版本化归档；历史 source-only live 采集已完成主页声明的 88/88 话。纯追加增量续采会校验旧 catalog/checkpoint/manifest，只请求目录末尾新增话，尚未执行真实增量。2026-11-16 显式全量刷新已按 2 秒间隔真实重取试点目录 88/88 话，正文哈希均未变化，旧/新 checkpoint 的 episode 顺序及 raw 版本绑定一致；刷新后 manifest 268/268 artifact 哈希通过。工作流不登录、不跟随重定向、不访问 `/read`，请求间隔限制为 1.5–3 秒；`run_kakuyomu_workflow.py` 还可预检 Provider、生成确定性章节映射并调用生产流水线。用户明确不要求官方澄清并要求普通 URL 路径；平台规则风险另有记录，不代表平台背书或公开分发授权。作品范围限于主页当前声明的公开话目，不包括草稿/私有章节或其声明外完整性；刷新只报告下游复核需求，不自动传播译文/知识过期状态。人工格式验收、真实 Provider 翻译尚未完成。目录解析、限额、验证和阶段边界见[项目现状](docs/project-status.md)与[原文采集方案](docs/source-ingestion-and-publication-plan.md)。
 - 阶段 2 可为术语、概要和 TM 原译对生成绑定候选哈希的本地审核回执；TM approved-only 快照仅在显式配置 `TM_REVIEWED_PATH` 时作为 RAG 检索源，运行时仍写入完整 `TM_PATH`。回执未签名/认证审核者身份，不证明审核真实发生或语义正确；旧 Markdown 概要仍兼容但未验证。默认 TM 检索仍未受门禁保护；完整知识状态机、人物知识治理、风险分层、更正/废弃和审核者认证未完成。
 - I5 EPUB builder 只产出显式选集 candidate 并运行有限结构检查，不代表质量/完整性批准或阅读器兼容；格式规范化、来源目录完整性独立证明、持久化下游过期状态、Notion 与完整 EPUB 构建尚未完成。
 - 外部 Provider 的书籍数据发送默认拒绝；逐 Provider/数据类别授权配置见[开发与验证](docs/development.md)。

@@ -8,7 +8,9 @@ from pathlib import Path
 
 from source_manifest import (
     latest_artifacts_by_kind,
+    latest_raw_parent_for_normalized,
     load_manifest,
+    verify_manifest_artifact,
 )
 from utils import (
     open_regular_file,
@@ -222,6 +224,12 @@ def verify_summary_sources(
             raise ValueError("Summary source version does not match its path.")
         current = latest.get(artifact["artifact_id"])
         if current is None or current["version_id"] != version_id:
+            raise ValueError("Summary source versions are not current.")
+        latest_raw = latest_raw_parent_for_normalized(manifest, current)
+        verify_manifest_artifact(
+            source_root, manifest, latest_raw["version_id"]
+        )
+        if latest_raw["version_id"] not in current["parent_version_ids"]:
             raise ValueError("Summary source versions are not current.")
 
         source_path = resolve_relative_path(source_root, filename)
