@@ -137,7 +137,7 @@
 - 当前显式 Gemini 回退仅允许 SDK 连接/超时异常及 HTTP 408/429/5xx；鉴权、请求/schema 错误和内容拦截不触发回退。该本地错误边界由单测和 mock E2E 验证，不构成 Provider 配置、逐阶段绑定、逐数据类别授权或真实服务兼容性验收。
 - JOJO→JYQF 回退由 `ENABLE_JYQF_FALLBACK` 显式启用，默认关闭，只覆盖 JOJO 主路由；使用 `deepseek-v4.1-flash`，复用同一请求提示词与响应 schema，最多执行一次备用调用。阶段启动预检会校验 JYQF URL、数据类别授权和远端 Key；`UnifiedAgent` 创建 JYQF 客户端前再次检查类别，本地 loopback 按本地端点规则处理。回退失败会直接传播，不级联 Gemini。仅有合成测试证据，真实中转站兼容性、费用与模型表现未验证。
 - `API_TIMEOUT` 默认 10 秒且必须是有限正数；当前传入 OpenAI-compatible 聊天和 Gemini 生成、RAG embedding、章节对齐 embedding 调用。Gemini SDK `HttpOptions.timeout` 使用毫秒，由秒值换算；默认值对慢速模型可能过短，须按获准端点实测后由操作者配置。
-- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别，预检与实际 Agent 调用保持一致；类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别，但当前 allowlist 默认仍为空，真实端点和实际请求尚未验收。
+- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别；启动预检只检查当前运行时可达的 Gemini 回退阶段，并逐阶段检查 JOJO→JYQF 回退与实际调用一致。类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别，但当前 allowlist 默认仍为空，真实端点和实际请求尚未验收。
 - 知识抽取脚本使用 `Config.PROOFREAD_MODEL` 发起请求，并复用 `get_primary_provider_route` 选择对应 Provider ID、base URL 与专属 Key；未知模型名在读取来源前失败，避免模型 ID 与实际接收 Provider 不一致。该共用路由不自动授权知识抽取用途，仍须该 Provider 的 `source_text` 在本地 allowlist 中获准；全书预算/分批与 tokenizer 适配未实现。
 - `CODING_PLAN_BASE_URL`/`CODING_PLAN_API_KEY` 仍在配置类中声明/读取，但没有接入当前主请求路由。用户决定暂不作为独立 Provider 支持，保留未接入配置；不能据此声称已实现 Coding Plan 或可替换 Provider。
 - 以上是静态代码与 mock 测试基线；本次未调用真实端点。M1 仍须定义 Provider/模型/凭据/阶段绑定契约，并为当前真实配置建立迁移和兼容规则。

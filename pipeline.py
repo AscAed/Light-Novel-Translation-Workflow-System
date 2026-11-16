@@ -754,7 +754,11 @@ def validate_provider_configuration() -> None:
                 )
                 if not fallback_is_local:
                     required_keys.add(fallback_route.api_key_env)
-        if Config.GEMINI_FALLBACK_ENABLED:
+        jyqf_handles_jojo_failures = (
+            Config.JYQF_FALLBACK_ENABLED
+            and route.provider_id == "jojo"
+        )
+        if Config.GEMINI_FALLBACK_ENABLED and not jyqf_handles_jojo_failures:
             require_provider_data_authorized(
                 "gemini",
                 data_categories,

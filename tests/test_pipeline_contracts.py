@@ -731,6 +731,35 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "JYQF_API_KEY"):
                 validate_provider_configuration()
 
+    def test_jyqf_fallback_preflight_only_requires_reachable_gemini_scope(self):
+        source_and_knowledge = frozenset(
+            {"source_text", "book_knowledge"}
+        )
+        full_translation = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        with (
+            patch.object(Config, "INITIAL_MODEL", "sakura-test"),
+            patch.object(Config, "PROOFREAD_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STYLE_MODEL", "gpt-6-luna"),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", True),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", True),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {
+                    "sakura": source_and_knowledge,
+                    "jojo": full_translation,
+                    "jyqf": full_translation,
+                    "gemini": source_and_knowledge,
+                },
+            ),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+        ):
+            validate_provider_configuration()
+
     @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
     async def test_timeout_rate_limit_and_server_errors_allow_fallback(self):
         for status_code in (408, 429, 500, 599):

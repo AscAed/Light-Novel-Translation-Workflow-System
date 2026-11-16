@@ -4,10 +4,10 @@
 
 - 基线：从 `main` HEAD `a8576349e3bd5fee86da42e8e4fffd4297bb96b0` 开始；本记录验证该基线加本工作区回退增量。根目录 `.env` 不存在，当前进程未发现 Provider allowlist、JOJO/JYQF endpoint/key 或 `PROOFREAD_MODEL`；未调用真实 Provider、Notion 或部署服务。
 - 新增 `ENABLE_JYQF_FALLBACK`，默认关闭，可由环境变量或 JSON 配置显式打开。只有主模型路由到 JOJO 的阶段才可回退到固定 `deepseek-v4.1-flash`；仅连接错误、HTTP 408/429/5xx 触发。鉴权、400/403/404、响应契约错误和内容拦截不回退，JYQF 请求失败后直接返回错误，不级联到 Gemini。
-- 开始章节扫描前，启动预检会逐 JOJO 阶段核验 JYQF URL、同阶段数据类别授权和远端凭据；本地 loopback 依项目的本地端点规则处理。实际创建 JYQF 客户端前再核验类别授权。回退可能使原始请求与备用请求都产生费用；仅发起一次备用调用，不自动重试。真实模型 ID、端点协议与费用仍未验证。
-- `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestProviderRouting -q`：36 项通过；`tests.test_pipeline_contracts`：89 项通过。
-- 全部非 E2E：21 个 `tests.test_*.py` 模块，378 项通过、4 项跳过、0 项失败。3 项 symlink 用例因当前进程缺少 `SeCreateSymbolicLinkPrivilege`（`WinError 1314`）跳过；1 项 FIFO 用例因 Windows 不提供 `os.mkfifo` 跳过。
-- 完整 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、全部通过，199.795 秒，退出码 0；请求只发送给本地 mock server。`.venv\Scripts\python.exe -m compileall -q .` 与 `.venv\Scripts\python.exe -m pip check` 均通过。
+- 开始章节扫描前，启动预检会逐 JOJO 阶段核验 JYQF URL、同阶段数据类别授权和远端凭据；本地 loopback 依项目的本地端点规则处理。若同时启用 Gemini 回退，只有运行时仍会回退到 Gemini 的阶段才检查该阶段的 Gemini 数据授权；JYQF 已接管的 JOJO 阶段不要求 Gemini 授权。实际创建备用 Provider 客户端前再次核验类别授权。备用调用可能产生额外费用；每次仅调用一次备用，不自动重试。真实模型 ID、端点协议与费用仍未验证。
+- PR #67 自动审查发现 Gemini 预检曾覆盖运行时不可达的 JOJO→JYQF 阶段，导致混合 Provider 配置被多要 `translation_text` 授权。修复后，合成回归覆盖“樱花初译、JOJO 校对/润色、JYQF 接管 JOJO 失败、Gemini 仅获初译所需类别”。`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestProviderRouting -q`：37 项通过；`tests.test_pipeline_contracts`：90 项通过。
+- 全部非 E2E：21 个 `tests.test_*.py` 模块，379 项通过、4 项跳过、0 项失败。3 项 symlink 用例因当前进程缺少 `SeCreateSymbolicLinkPrivilege`（`WinError 1314`）跳过；1 项 FIFO 用例因 Windows 不提供 `os.mkfifo` 跳过。
+- 完整 mock E2E：`.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项、全部通过，200.783 秒，退出码 0；请求只发送给本地 mock server。`.venv\Scripts\python.exe -m compileall -q .` 与 `.venv\Scripts\python.exe -m pip check` 均通过。
 - 首次、改动前的非 E2E 回归曾有一项 `test_cli_escapes_nonprintable_chapter_key_characters` 得到退出码 1 而非 2；该测试单独运行、整个模块运行及随后完整重跑均通过。未复现原因，作为一次性异常记录，不计入本次改动后的失败数。
 - 用户另行提供的安全路径 `-q` 输出为 9 项、3 项跳过，未包含具体测试名或跳过原因；当前 checkout 对应模块含 11 个测试方法，详细运行结果为 11 项、4 项跳过。普通权限执行明确显示 3 个 symlink 创建因 `WinError 1314` 跳过、FIFO 用例因 Windows 能力限制跳过。当前执行器无法取得 Windows 管理员令牌；要在本机验证 symlink 用例，可从“开始”菜单以管理员身份打开 PowerShell，执行：
 
