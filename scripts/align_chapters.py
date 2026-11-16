@@ -11,7 +11,7 @@ import re
 import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from source_manifest import load_manifest, verify_manifest_artifact
+from source_manifest import load_manifest, verify_current_normalized_source
 from utils import (
     open_regular_file,
     parse_api_timeout,
@@ -27,7 +27,7 @@ from utils import (
 def _read_bound_source(raw_dir, spec, source_manifest_path):
     manifest_path = resolve_relative_path(raw_dir, source_manifest_path)
     manifest = load_manifest(manifest_path)
-    artifact = verify_manifest_artifact(
+    artifact = verify_current_normalized_source(
         raw_dir, manifest, spec.source_version_id
     )
     if (
@@ -55,7 +55,7 @@ def _verify_bound_sources_current(raw_dir, source_manifest_path, chapter_specs):
         resolve_relative_path(raw_dir, source_manifest_path)
     )
     for spec in bound_specs:
-        artifact = verify_manifest_artifact(
+        artifact = verify_current_normalized_source(
             raw_dir, manifest, spec.source_version_id
         )
         if (

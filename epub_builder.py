@@ -15,9 +15,8 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 from source_ingestion import source_artifact_id
 from source_manifest import (
-    latest_artifacts_by_kind,
     parse_manifest_bytes,
-    verify_manifest_artifact,
+    verify_current_normalized_source,
 )
 from utils import open_regular_file, resolve_relative_path
 
@@ -467,17 +466,13 @@ def _validate_source_versions(
     with open_regular_file(manifest_path, binary=True) as stream:
         manifest_bytes = stream.read()
     manifest = parse_manifest_bytes(manifest_bytes)
-    latest_normalized = latest_artifacts_by_kind(
-        manifest, "normalized_source"
-    )
-
     for chapter in chapters:
         expected_artifact_id = source_artifact_id(
             work_id,
             "normalized_source",
             chapter["episode_id"],
         )
-        artifact = verify_manifest_artifact(
+        artifact = verify_current_normalized_source(
             root,
             manifest,
             chapter["source_version_id"],
@@ -489,12 +484,6 @@ def _validate_source_versions(
             raise ValueError(
                 "A source version does not match its catalog work and episode."
             )
-        latest = latest_normalized.get(expected_artifact_id)
-        if latest is None or latest["version_id"] != artifact["version_id"]:
-            raise ValueError(
-                "A source version is stale relative to the source manifest."
-            )
-
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     return (
         manifest_path.relative_to(root).as_posix(),

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pipeline import Config, get_chapter_specs
+from pipeline import ChapterSpec, Config, TranslationPipeline, get_chapter_specs
 from scripts.validate_tm_provenance import audit_translation_memory
 from source_ingestion import (
     EpisodeMetadata,
@@ -209,6 +209,63 @@ class SourcePipelineLinkageTests(unittest.TestCase):
             "source_manifest.json",
         )
         self.assertEqual([item["status"] for item in invalid], ["invalid"])
+
+    def test_tm_audit_marks_raw_update_before_materialization_stale(self):
+        tm_data = self._translation_memory()
+        (self.source_root / "chapter.txt").write_text(
+            "Updated raw source before normalization.",
+            encoding="utf-8",
+        )
+        adapter = LocalFileAdapter(
+            self.source_root,
+            [
+                LocalEpisodeFile(
+                    EpisodeMetadata("episode-1", "Synthetic episode", 1),
+                    "chapter.txt",
+                )
+            ],
+        )
+        collect_source(
+            adapter,
+            root=self.archive_root,
+            work_id="synthetic-work",
+            checkpoint_relative_path="raw-only-checkpoint.json",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Normalized source is stale"):
+            get_chapter_specs(
+                str(self.archive_root),
+                str(self.translation_root),
+                self._chapter_map(),
+                "source_manifest.json",
+            )
+
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        with (
+            patch.object(Config, "RAW_DIR", str(self.archive_root)),
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Normalized source is stale"):
+                pipeline._verify_chapter_source_snapshot(
+                    ChapterSpec(
+                        self.artifact["relative_path"],
+                        "第1話.md",
+                        "Volume1/第1話.md",
+                        self.artifact["version_id"],
+                    ),
+                    self.raw_text,
+                    mapped_paths=True,
+                )
+
+        findings = audit_translation_memory(
+            tm_data,
+            str(self.archive_root),
+            str(self.translation_root),
+            "source_manifest.json",
+        )
+
+        self.assertEqual([item["status"] for item in findings], ["stale"])
+        self.assertIn("older raw source", findings[0]["detail"])
 
     def test_tm_audit_verifies_byte_preserving_crlf_source_version(self):
         source_root = self.root / "crlf-source"

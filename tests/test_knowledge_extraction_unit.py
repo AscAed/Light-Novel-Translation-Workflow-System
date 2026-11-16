@@ -99,11 +99,28 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         source_path.parent.mkdir()
         original = b"versioned source"
         source_path.write_bytes(original)
+        raw_source_path = self.raw_dir / "raw" / "episode-1.txt"
+        raw_source_path.parent.mkdir()
+        raw_source_path.write_bytes(original)
         (self.raw_dir / "source_manifest.json").write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "artifacts": [
+                        {
+                            "artifact_id": source_artifact_id(
+                                "synthetic-work",
+                                "raw_source",
+                                "episode-1",
+                            ),
+                            "version_id": "raw-version-1",
+                            "kind": "raw_source",
+                            "content_sha256": hashlib.sha256(
+                                original
+                            ).hexdigest(),
+                            "relative_path": "raw/episode-1.txt",
+                            "parent_version_ids": [],
+                        },
                         {
                             "artifact_id": source_artifact_id(
                                 "synthetic-work",
@@ -114,7 +131,7 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                             "kind": "normalized_source",
                             "content_sha256": hashlib.sha256(original).hexdigest(),
                             "relative_path": "normalized/episode-1.md",
-                            "parent_version_ids": [],
+                            "parent_version_ids": ["raw-version-1"],
                         }
                     ],
                 }

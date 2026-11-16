@@ -37,7 +37,7 @@ from openai import (
     DefaultAsyncHttpxClient,
 )
 from rag_engine import RAGEngine
-from source_manifest import load_manifest, verify_manifest_artifact
+from source_manifest import load_manifest, verify_current_normalized_source
 from story_summary_review import load_reviewed_story_summary
 
 
@@ -501,7 +501,7 @@ def get_chapter_specs(
                     raw_dir, source_manifest_path
                 )
                 source_manifest = load_manifest(source_manifest_file)
-            source_artifact = verify_manifest_artifact(
+            source_artifact = verify_current_normalized_source(
                 raw_dir, source_manifest, source_version_id
             )
             if (
@@ -1502,6 +1502,11 @@ class TranslationPipeline:
             )
             raw_text = None
 
+        if spec.source_version_id is not None:
+            if raw_text is None:
+                raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+
         pending_transaction = has_pending_chapter_transaction(
             Config.OUTPUT_DIR, spec.translation_file, spec.tm_key
         )
@@ -1636,7 +1641,7 @@ class TranslationPipeline:
             Config.SOURCE_MANIFEST_PATH,
         )
         manifest = load_manifest(manifest_path)
-        artifact = verify_manifest_artifact(
+        artifact = verify_current_normalized_source(
             Config.RAW_DIR,
             manifest,
             spec.source_version_id,

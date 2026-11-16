@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_manifest import (
     latest_artifacts_by_kind,
+    latest_raw_parent_for_normalized,
     load_manifest,
     verify_manifest_artifact,
 )
@@ -216,6 +217,30 @@ def audit_knowledge_provenance(
                         "A newer normalized source version exists than the one recorded.",
                     )
                 )
+            continue
+
+        try:
+            latest_raw = latest_raw_parent_for_normalized(manifest, latest)
+            verify_manifest_artifact(
+                raw_dir, manifest, latest_raw["version_id"]
+            )
+        except ValueError:
+            findings.append(
+                _finding(
+                    "invalid",
+                    label,
+                    "Latest normalized source raw parent does not verify.",
+                )
+            )
+            continue
+        if latest_raw["version_id"] not in latest["parent_version_ids"]:
+            findings.append(
+                _finding(
+                    "stale",
+                    label,
+                    "Latest normalized source was derived from an older raw source version.",
+                )
+            )
             continue
 
         findings.append(

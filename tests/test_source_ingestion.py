@@ -12,8 +12,13 @@ from source_ingestion import (
     LocalFileAdapter,
     SourceAccessDenied,
     SourceRateLimited,
+    _persist_work_metadata,
     collect_source,
+    compare_full_refresh_versions,
     new_checkpoint,
+    prepare_append_only_checkpoint,
+    prepare_full_refresh_checkpoint,
+    source_artifact_id,
     validate_checkpoint,
 )
 from source_manifest import (
@@ -87,6 +92,284 @@ class SourceIngestionTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_append_only_checkpoint_reuses_verified_prefix_and_fetches_suffix(self):
+        first = EpisodeMetadata(
+            "ep-1", "First", 1, "https://source.test/ep-1"
+        )
+        second = EpisodeMetadata(
+            "ep-2", "Second", 2, "https://source.test/ep-2"
+        )
+        baseline_adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((first,), None)},
+            {"ep-1": b"first body"},
+        )
+        collect_source(
+            baseline_adapter,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="baseline.json",
+        )
+        baseline_checkpoint_bytes = (self.root / "baseline.json").read_bytes()
+
+        update_adapter = SyntheticSourceAdapter(
+            {"1": CatalogPage((second,), None)},
+            {"ep-1": b"first body", "ep-2": b"second body"},
+        )
+        checkpoint = prepare_append_only_checkpoint(
+            update_adapter,
+            root=self.root,
+            work_id="work-1",
+            current_episodes=(first, second),
+            baseline_episode_ids=["ep-1"],
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="update.json",
+        )
+
+        self.assertEqual(checkpoint["status"], "in_progress")
+        self.assertEqual(checkpoint["cursor"], "1")
+        self.assertEqual(checkpoint["discovered_episode_ids"], ["ep-1"])
+        self.assertEqual(checkpoint["completed_episode_ids"], ["ep-1"])
+        self.assertEqual(
+            checkpoint["completed_raw_versions"]["ep-1"],
+            json.loads(baseline_checkpoint_bytes)["completed_raw_versions"]["ep-1"],
+        )
+
+        report = collect_source(
+            update_adapter,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="update.json",
+        )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(update_adapter.catalog_calls, ["1"])
+        self.assertEqual(update_adapter.episode_calls, ["ep-2"])
+        self.assertEqual(
+            (self.root / "baseline.json").read_bytes(),
+            baseline_checkpoint_bytes,
+        )
+        merged = json.loads((self.root / "update.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            merged["completed_episode_ids"], ["ep-1", "ep-2"]
+        )
+        self.assertEqual(
+            set(merged["completed_raw_versions"]), {"ep-1", "ep-2"}
+        )
+
+    def test_append_only_checkpoint_resumes_a_paused_suffix(self):
+        first = EpisodeMetadata(
+            "ep-1", "First", 1, "https://source.test/ep-1"
+        )
+        second = EpisodeMetadata(
+            "ep-2", "Second", 2, "https://source.test/ep-2"
+        )
+        collect_source(
+            SyntheticSourceAdapter(
+                {None: CatalogPage((first,), None)},
+                {"ep-1": b"first body"},
+            ),
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="baseline.json",
+        )
+        limited_adapter = SyntheticSourceAdapter(
+            {"1": CatalogPage((second,), None)},
+            {"ep-1": b"first body", "ep-2": b"second body"},
+            limited_episodes={"ep-2"},
+        )
+        prepare_append_only_checkpoint(
+            limited_adapter,
+            root=self.root,
+            work_id="work-1",
+            current_episodes=(first, second),
+            baseline_episode_ids=["ep-1"],
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="update.json",
+        )
+        paused = collect_source(
+            limited_adapter,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="update.json",
+        )
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(paused["reason"], "rate_limited")
+
+        retry_adapter = SyntheticSourceAdapter(
+            {"1": CatalogPage((second,), None)},
+            {"ep-1": b"first body", "ep-2": b"second body"},
+        )
+        resumed = prepare_append_only_checkpoint(
+            retry_adapter,
+            root=self.root,
+            work_id="work-1",
+            current_episodes=(first, second),
+            baseline_episode_ids=["ep-1"],
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="update.json",
+        )
+        self.assertEqual(resumed["status"], "paused")
+        report = collect_source(
+            retry_adapter,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="update.json",
+        )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(retry_adapter.catalog_calls, [])
+        self.assertEqual(retry_adapter.episode_calls, ["ep-2"])
+
+    def test_append_only_checkpoint_rejects_changed_existing_metadata(self):
+        first = EpisodeMetadata(
+            "ep-1", "First", 1, "https://source.test/ep-1"
+        )
+        collect_source(
+            SyntheticSourceAdapter(
+                {None: CatalogPage((first,), None)},
+                {"ep-1": b"first body"},
+            ),
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="baseline.json",
+        )
+        changed = EpisodeMetadata(
+            "ep-1", "Renamed", 1, "https://source.test/ep-1"
+        )
+        adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((changed,), None)},
+            {"ep-1": b"first body"},
+        )
+        baseline_before = (self.root / "baseline.json").read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "metadata changed"):
+            prepare_append_only_checkpoint(
+                adapter,
+                root=self.root,
+                work_id="work-1",
+                current_episodes=(changed,),
+                baseline_episode_ids=["ep-1"],
+                baseline_checkpoint_relative_path="baseline.json",
+                checkpoint_relative_path="update.json",
+            )
+
+        self.assertFalse((self.root / "update.json").exists())
+        self.assertEqual(
+            (self.root / "baseline.json").read_bytes(), baseline_before
+        )
+
+    def test_full_refresh_hashes_changes_and_resumes_without_replacing_baseline(self):
+        first = EpisodeMetadata(
+            "ep-1", "First", 1, "https://source.test/ep-1"
+        )
+        second = EpisodeMetadata(
+            "ep-2", "Second", 2, "https://source.test/ep-2"
+        )
+        baseline_adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((first, second), None)},
+            {"ep-1": b"same body", "ep-2": b"before"},
+        )
+        collect_source(
+            baseline_adapter,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="baseline.json",
+        )
+        baseline_checkpoint_bytes = (self.root / "baseline.json").read_bytes()
+        baseline_manifest = load_manifest(self.root / "source_manifest.json")
+        baseline_raw_versions = {
+            item["artifact_id"]: item["version_id"]
+            for item in baseline_manifest["artifacts"]
+            if item["kind"] == "raw_source"
+        }
+
+        limited_adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((first, second), None)},
+            {"ep-1": b"same body", "ep-2": b"after"},
+            limited_episodes={"ep-2"},
+        )
+        limited_adapter.source_fingerprint = "c" * 64
+        prepared = prepare_full_refresh_checkpoint(
+            limited_adapter,
+            root=self.root,
+            work_id="work-1",
+            current_episodes=(first, second),
+            baseline_episode_ids=["ep-1", "ep-2"],
+            baseline_catalog_sha256="a" * 64,
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="refresh.json",
+        )
+        paused = collect_source(
+            prepared["adapter"],
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="refresh.json",
+        )
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(paused["reason"], "rate_limited")
+        self.assertEqual(limited_adapter.episode_calls, ["ep-1", "ep-2"])
+
+        retry_adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((first, second), None)},
+            {"ep-1": b"same body", "ep-2": b"after"},
+        )
+        retry_adapter.source_fingerprint = "c" * 64
+        resumed = prepare_full_refresh_checkpoint(
+            retry_adapter,
+            root=self.root,
+            work_id="work-1",
+            current_episodes=(first, second),
+            baseline_episode_ids=["ep-1", "ep-2"],
+            baseline_catalog_sha256="a" * 64,
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="refresh.json",
+        )
+        report = collect_source(
+            resumed["adapter"],
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="refresh.json",
+        )
+
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(retry_adapter.catalog_calls, [])
+        self.assertEqual(retry_adapter.episode_calls, ["ep-2"])
+        self.assertEqual(
+            (self.root / "baseline.json").read_bytes(),
+            baseline_checkpoint_bytes,
+        )
+        comparison = compare_full_refresh_versions(
+            root=self.root,
+            work_id="work-1",
+            episode_ids=["ep-1", "ep-2"],
+            baseline_checkpoint_relative_path="baseline.json",
+            checkpoint_relative_path="refresh.json",
+        )
+        self.assertEqual(comparison["unchanged_count"], 1)
+        self.assertEqual(comparison["changed_count"], 1)
+        self.assertEqual(
+            [item["episode_id"] for item in comparison["changed_episodes"]],
+            ["ep-2"],
+        )
+        self.assertTrue(comparison["downstream_review_required"])
+        final_manifest = load_manifest(self.root / "source_manifest.json")
+        final_raw_versions = {}
+        for item in final_manifest["artifacts"]:
+            if item["kind"] == "raw_source":
+                final_raw_versions.setdefault(item["artifact_id"], []).append(
+                    item["version_id"]
+                )
+        for artifact_id, version_id in baseline_raw_versions.items():
+            self.assertIn(version_id, final_raw_versions[artifact_id])
+        self.assertEqual(
+            len(final_raw_versions[source_artifact_id("work-1", "raw_source", "ep-1")]),
+            1,
+        )
+        self.assertEqual(
+            len(final_raw_versions[source_artifact_id("work-1", "raw_source", "ep-2")]),
+            2,
+        )
+
     def test_collects_pages_and_writes_metadata_and_raw_versions(self):
         adapter = SyntheticSourceAdapter(
             {
@@ -128,6 +411,144 @@ class SourceIngestionTests(unittest.TestCase):
             verify_manifest_files(self.root, manifest),
             6,
         )
+
+    def test_archives_work_metadata_versions_and_reuses_unchanged_snapshot(self):
+        adapter = SyntheticSourceAdapter(
+            {
+                None: CatalogPage(
+                    (EpisodeMetadata("ep-1", "Episode", 1),),
+                    None,
+                )
+            },
+            {"ep-1": b"synthetic raw"},
+        )
+        first_metadata = {"title": "Synthetic work", "tags": ["fixture"]}
+
+        first_report = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            work_metadata=first_metadata,
+        )
+
+        self.assertEqual(first_report["status"], "complete")
+        manifest_path = self.root / "source_manifest.json"
+        first_manifest = load_manifest(manifest_path)
+        work_artifacts = [
+            item for item in first_manifest["artifacts"] if item["kind"] == "work"
+        ]
+        self.assertEqual(len(work_artifacts), 1)
+        first_artifact = work_artifacts[0]
+        first_record = json.loads(
+            (self.root / first_artifact["relative_path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(first_record["metadata"], first_metadata)
+        self.assertRegex(
+            first_record["recorded_at_utc"],
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        )
+
+        repeated = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            work_metadata=first_metadata,
+        )
+        self.assertEqual(repeated["status"], "complete")
+        repeated_manifest = load_manifest(manifest_path)
+        self.assertEqual(
+            len([item for item in repeated_manifest["artifacts"] if item["kind"] == "work"]),
+            1,
+        )
+
+        updated_metadata = {"title": "Revised synthetic work", "tags": ["fixture"]}
+        updated = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            work_metadata=updated_metadata,
+        )
+        self.assertEqual(updated["status"], "complete")
+        updated_manifest = load_manifest(manifest_path)
+        updated_artifacts = [
+            item for item in updated_manifest["artifacts"] if item["kind"] == "work"
+        ]
+        self.assertEqual(len(updated_artifacts), 2)
+        self.assertEqual(
+            updated_artifacts[-1]["parent_version_ids"],
+            [first_artifact["version_id"]],
+        )
+        updated_record = json.loads(
+            (self.root / updated_artifacts[-1]["relative_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(updated_record["metadata"], updated_metadata)
+        self.assertEqual(adapter.episode_calls, ["ep-1"])
+        self.assertEqual(
+            verify_manifest_files(self.root, updated_manifest),
+            len(updated_manifest["artifacts"]),
+        )
+
+    def test_work_metadata_artifact_counts_toward_archive_byte_limit(self):
+        metadata = {"title": "Synthetic work " + "x" * 4096}
+        manifest_path = self.root / "source_manifest.json"
+        _persist_work_metadata(
+            self.root,
+            manifest_path,
+            "work-1",
+            metadata,
+        )
+        manifest_before = manifest_path.read_bytes()
+        archive_bytes = verified_manifest_content_bytes(
+            self.root,
+            load_manifest(manifest_path),
+        )
+        adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((EpisodeMetadata("ep-1", "Episode", 1),), None)},
+            {"ep-1": b"x"},
+        )
+
+        report = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            work_metadata=metadata,
+            max_archive_bytes=archive_bytes + 1,
+        )
+
+        self.assertEqual(report["status"], "paused")
+        self.assertEqual(report["reason"], "archive_limit")
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+        manifest = load_manifest(manifest_path)
+        self.assertEqual([item["kind"] for item in manifest["artifacts"]], ["work"])
+        self.assertEqual(adapter.catalog_calls, [None])
+        self.assertEqual(adapter.episode_calls, ["ep-1"])
+
+    def test_work_metadata_obeys_archive_byte_limit_before_writing(self):
+        adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((EpisodeMetadata("ep-1", "Episode", 1),), None)},
+            {"ep-1": b"synthetic raw"},
+        )
+
+        report = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            work_metadata={"title": "Synthetic work"},
+            max_archive_bytes=1,
+        )
+
+        self.assertEqual(report["status"], "paused")
+        self.assertEqual(report["reason"], "archive_limit")
+        self.assertFalse((self.root / "source_manifest.json").exists())
+        checkpoint = json.loads(
+            (self.root / "source_checkpoint.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(checkpoint["status"], "paused")
+        self.assertEqual(checkpoint["pause_reason"], "archive_limit")
+        self.assertEqual(adapter.catalog_calls, [])
+        self.assertEqual(adapter.episode_calls, [])
 
     def test_resume_after_rate_limit_does_not_relist_completed_page(self):
         adapter = SyntheticSourceAdapter(
