@@ -2,7 +2,7 @@
 
 ## 2026-11-17 当前工作树审查与完整回归
 
-- 验证基线：`main` 的 HEAD 为 `e2fe611258532c9f0bab3672eda52cf928102b1a`；覆盖该基线上的现有工作树改动和本节列出的本地修复。工作区仍有多项未提交实现、测试、配置和文档文件；根目录存在未纳入仓库的本地 freshness JSON，未读取其正文，也未纳入变更。
+- 验证基线：变更基于 `main` HEAD `e2fe611258532c9f0bab3672eda52cf928102b1a`，实现和测试提交为 `a8d056d355c4c03c643192296a859893c92539d9`，分支为 `codex/translation-workflow-audit-20261117`。提交后仅剩根目录的本地 freshness JSON 未跟踪；未读取其正文，也未纳入变更。
 - 修复：`source_editions._resolve_roots()` 现在在 `resolve()` 前检查用户提供的 AI/人读输出根是否为符号链接，避免解析后路径检查失效。回归测试通过模拟 `Path.is_symlink()` 验证拒绝行为，因此不依赖 Windows 创建链接权限。
 - 清理：移除 `tests/test_source_editions.py` 中重复定义的测试方法和重复 `patch` 导入；在 freshness CLI 测试辅助函数中隔离 `pipeline.Config.AI_EDITION_ROOT`，避免 mock 配置加载后继承前序测试的全局状态。
 - `tests.test_source_editions`：23 项通过；`tests.test_downstream_freshness_snapshot`：9 项通过。此前一次完整运行发现 summary fixture 受全局配置污染；修复测试隔离后复跑通过。
@@ -23,6 +23,7 @@
   用户另行提供的 `-q` 输出为 9 项运行、3 项跳过，但未包含逐项结果或 Git SHA；当前工作树详细运行发现 11 项、7 项通过、4 项跳过，二者分别记录，不合并计数。
 - `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 全部通过，224.381 秒，退出码 0。runner 请求仅发往其启动的 loopback mock server；输出中的 content-filter、段落契约和注入故障来自负向 fixture，不代表真实 Provider 失败或成功。
 - `py_compile` 覆盖本轮修改的源码与测试通过，`git diff --check` 通过。该结果仅验证当前本地代码与模拟服务；没有执行真实 Provider、真实新话采集、Notion、EPUB 阅读器、部署或人工翻译/格式验收。
+- PR #71 已创建，GitHub 当前报告 `OPEN`、`MERGEABLE`、`CLEAN`，没有 hosted checks 或评审结果。由于没有 CI 验证，且试点人类验收门槛仍未完成，本 PR 未自动合并。PR #56 已于 2026-11-14 合并。
 
 ## 2026-11-17 本轮收尾：RAWs_AI 正文与归档职责
 

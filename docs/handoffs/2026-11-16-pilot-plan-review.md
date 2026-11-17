@@ -169,4 +169,5 @@
 - 修复双版本导出输出根的符号链接检查顺序，并增加不依赖管理员权限的回归；删除 source-editions 测试中的重复方法/导入。另修正 freshness CLI 测试辅助函数的全局配置隔离，避免测试顺序改变结果。
 - 验证：`tests.test_source_editions` 23 项、`tests.test_downstream_freshness_snapshot` 9 项通过；完整非 E2E 回归 514 项运行、0 失败、4 项 Windows 能力跳过；仓库 mock E2E 7 项通过，224.381 秒。命令和范围见[开发与验证](../development.md#2026-11-17-当前工作树审查与完整回归)。
 - 本轮管理员 PowerShell 启动被自动执行策略拦截，没有当前工作树下的提升权限测试结果。3 项符号链接用例仍需在管理员 PowerShell 复跑；1 项 FIFO 跳过是 Windows 平台能力限制。旧提交上的管理员结果不替代本轮验证。
-- PR #56 已于 2026-11-14 合并；该请求对应的 PR 已是关闭/合并状态，无需再次操作。当前工作树的新改动尚未提交；试点映射、AI/人读清洗语义、reviewed 概要/术语表、当前审批回执、真实 Provider 翻译及 EPUB 阅读器仍待对应人工或外部验收。
+- 实现、测试和文档已提交为 `a8d056d355c4c03c643192296a859893c92539d9`，分支 `codex/translation-workflow-audit-20261117` 已推送。PR #71 已创建，GitHub 当前报告 `OPEN`、`MERGEABLE`、`CLEAN`，无 hosted checks、无评审结果；未自动合并。PR #56 已于 2026-11-14 合并，无需再次操作。
+- 试点映射、AI/人读清洗语义、reviewed 概要/术语表、当前审批回执、真实 Provider 翻译及 EPUB 阅读器仍待对应人工或外部验收。
