@@ -20,10 +20,19 @@
   .\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v
   ```
 
-  用户另行提供的 `-q` 输出为 9 项运行、3 项跳过，但未包含逐项结果或 Git SHA；当前工作树详细运行发现 11 项、7 项通过、4 项跳过，二者分别记录，不合并计数。
+  用户在 2026-11-18 提供的 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 输出为 9 项运行、3 项跳过、耗时 0.032 秒；该 `-q` 输出没有逐项跳过原因或 Git SHA，不能据此确认跳过是否由符号链接权限导致，也不能绑定到当前提交。当前工作树详细运行发现 11 项、7 项通过、4 项跳过，二者分别记录，不合并计数。
 - `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 全部通过，224.381 秒，退出码 0。runner 请求仅发往其启动的 loopback mock server；输出中的 content-filter、段落契约和注入故障来自负向 fixture，不代表真实 Provider 失败或成功。
 - `py_compile` 覆盖本轮修改的源码与测试通过，`git diff --check` 通过。该结果仅验证当前本地代码与模拟服务；没有执行真实 Provider、真实新话采集、Notion、EPUB 阅读器、部署或人工翻译/格式验收。
 - PR #71 已创建，GitHub 当前报告 `OPEN`、`MERGEABLE`、`CLEAN`，没有 hosted checks 或评审结果。由于没有 CI 验证，且试点人类验收门槛仍未完成，本 PR 未自动合并。PR #56 已于 2026-11-14 合并。
+
+## 2026-11-18 PR #71 评审修复
+
+- 修复 schema v1 catalog 在 `--source-edition normalized_source` 下被无条件传入双版本 edition 生成器的问题。现在只在选中 AI edition 时生成双版本；normalized-source 结果明确返回 `source_editions.status=not_needed` 和原因 `normalized_source_selected`。新增 schema v1 工作流回归，确认不调用生成器。
+- 统一章节 TM key 为项目模式已使用的 `source-edition:{work_id}:{episode_id}`。Kakuyomu CLI 的计划目标和项目默认 AI chapter map 使用同一约定，避免通过不同入口重跑时无法识别已提交章节。
+- 读取本地 tokenizer JSON 后调用 `no_truncation()`，防止 tokenizer 文件自带截断配置造成预算计数低于实际发送文本。新增启用 `max_length=1` 的 tokenizer fixture，验证加载后对完整输入计数。
+- 定向验证：`tests.test_kakuyomu_workflow` 11 项通过；`tests.test_pipeline_contracts` 106 项通过；`tests.test_knowledge_batching` 5 项通过。`tests.test_security_path_traversal` 当前 checkout 运行 11 项，7 项通过、4 项跳过：3 项创建符号链接时遇到 Windows `WinError 1314`，1 项因平台不支持 `os.mkfifo` 跳过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，222.694 秒，退出码 0。测试使用 loopback mock server；负向用例预期触发 Provider 拦截、响应格式和段落契约错误，不验证真实 Provider 或部署。
+- 用户于 2026-11-18 提供的安全路径测试摘要另行记录为 9 项运行、3 项跳过、0.032 秒。该 `-q` 输出未包含逐项 skip 原因或 Git SHA，不能判定其跳过分类或绑定到本提交。
 
 ## 2026-11-17 本轮收尾：RAWs_AI 正文与归档职责
 

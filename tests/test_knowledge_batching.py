@@ -39,6 +39,24 @@ class TestKnowledgeBatching(unittest.TestCase):
             self.assertEqual(len(digest), 64)
             self.assertEqual(count_message_tokens(loaded, "system", "hello user"), 3)
 
+    def test_loaded_tokenizer_ignores_serialized_truncation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tokenizer_path = Path(temp_dir) / "tokenizer.json"
+            tokenizer = Tokenizer(
+                models.WordLevel(
+                    {"[UNK]": 0, "system": 1, "user": 2, "hello": 3},
+                    unk_token="[UNK]",
+                )
+            )
+            tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+            tokenizer.enable_truncation(max_length=1)
+            tokenizer.save(str(tokenizer_path))
+
+            loaded, _ = load_tokenizer_json(str(tokenizer_path))
+
+            self.assertEqual(len(loaded.encode("system user hello").ids), 3)
+            self.assertEqual(count_message_tokens(loaded, "system", "hello user"), 3)
+
     def test_budget_reserves_output_safety_and_message_overhead(self):
         limit = validate_batch_budget(
             context_window_tokens=4096,

@@ -380,7 +380,11 @@ class E2ETestSuite(unittest.TestCase):
             pipeline_factory.assert_not_called()
             self.assertEqual(
                 preview_report["source_editions"]["status"],
-                "materialized",
+                "not_needed",
+            )
+            self.assertEqual(
+                preview_report["source_editions"]["reason"],
+                "normalized_source_selected",
             )
 
             preview_report = run_workflow(
@@ -543,7 +547,7 @@ class E2ETestSuite(unittest.TestCase):
 
         tm_path = Path(self.knowledge_dir, "translation_memory.json")
         tm = json.loads(tm_path.read_text(encoding="utf-8"))
-        tm_key = f"kakuyomu:{KAKUYOMU_WORK_ID}:{KAKUYOMU_EPISODE_ID}"
+        tm_key = f"source-edition:{KAKUYOMU_WORK_ID}:{KAKUYOMU_EPISODE_ID}"
         planned_ai_source = Path(
             self.raw_dir,
             planned_episodes[0]["source_file"],

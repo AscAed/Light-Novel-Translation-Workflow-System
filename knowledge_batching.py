@@ -66,6 +66,7 @@ def load_tokenizer_json(path: str):
         from tokenizers import Tokenizer
 
         tokenizer = Tokenizer.from_str(tokenizer_text)
+        tokenizer.no_truncation()
     except Exception as exc:
         raise TokenizerArtifactError(
             "Tokenizer JSON is not supported by the installed tokenizers package."

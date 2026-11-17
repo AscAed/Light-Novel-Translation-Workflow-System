@@ -38,7 +38,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     "episode_id": "123456789",
                     "position": 1,
                     "translation_file": "episode-0001-123456789.md",
-                    "tm_key": "kakuyomu:987654321:123456789",
+                    "tm_key": "source-edition:987654321:123456789",
                 }
             ],
         )
@@ -219,7 +219,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             targets = [
                 {
                     "translation_file": "episode-0001-123456789.md",
-                    "tm_key": "kakuyomu:987654321:123456789",
+                    "tm_key": "source-edition:987654321:123456789",
                 }
             ]
 
@@ -242,7 +242,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             output_path.write_text(translation_text, encoding="utf-8")
             target = {
                 "translation_file": output_path.name,
-                "tm_key": "kakuyomu:987654321:123456789",
+                "tm_key": "source-edition:987654321:123456789",
             }
             chapter = {
                 "raw_file": "normalized/chapter.md",
@@ -407,6 +407,102 @@ class KakuyomuWorkflowTests(unittest.TestCase):
         self.assertEqual(result["completed_count"], 1)
         self.assertEqual(result["pending_count"], 1)
 
+    def test_normalized_source_workflow_skips_ai_edition_generation_for_v1_catalog(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "SourceArchive"
+            translation_root = root / "Translation"
+            source_root.mkdir()
+            translation_root.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            catalog_path = source_root / "catalog.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "work_id": "987654321",
+                        "episodes": [
+                            {
+                                "episode_id": "123456789",
+                                "title": "Episode 1",
+                                "position": 1,
+                                "page_url": (
+                                    "https://kakuyomu.jp/works/987654321/"
+                                    "episodes/123456789"
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.multiple(
+                    Config,
+                    WORKSPACE_DIR=str(root),
+                    INFO_PATH=str(config_path),
+                    TM_PATH=str(root / "tm.json"),
+                    RAW_DIR=str(source_root),
+                    OUTPUT_DIR=str(translation_root),
+                    CHAPTER_MAP=None,
+                    SOURCE_MANIFEST_PATH=None,
+                    STORY_SUMMARY_PATH=str(root / "STORY_SUMMARY_reviewed.json"),
+                ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.validate_provider_configuration"
+                ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.collect_source",
+                    return_value={
+                        "status": "complete",
+                        "reason": None,
+                        "discovered_count": 1,
+                        "completed_count": 1,
+                        "pending_count": 0,
+                    },
+                ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.materialize_episode_markdown"
+                ),
+                patch(
+                    "scripts.run_kakuyomu_workflow.prepare_source_editions"
+                ) as prepare_editions,
+                patch(
+                    "scripts.run_kakuyomu_workflow.preview_translation_plan",
+                    return_value={"status": "blocked"},
+                ) as preview_plan,
+                patch(
+                    "scripts.run_kakuyomu_workflow._refresh_downstream_freshness_snapshot",
+                    return_value={"status": "not_needed"},
+                ),
+            ):
+                result = run_workflow(
+                    source_root=str(source_root),
+                    catalog="catalog.json",
+                    translation_root=str(translation_root),
+                    config_file=str(config_path),
+                    source_edition="normalized_source",
+                    config_loader=lambda **_: None,
+                    adapter_factory=lambda *_args: object(),
+                )
+
+        self.assertEqual(result["status"], "translation_plan_blocked")
+        self.assertEqual(
+            result["source_editions"],
+            {
+                "status": "not_needed",
+                "reason": "normalized_source_selected",
+            },
+        )
+        prepare_editions.assert_not_called()
+        self.assertIsNone(preview_plan.call_args.kwargs["ai_edition_root"])
+        self.assertEqual(
+            preview_plan.call_args.kwargs["source_edition"],
+            "normalized_source",
+        )
+
     def test_workflow_retry_allows_verified_completed_episode(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -460,7 +556,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
 
             first_target = {
                 "translation_file": "episode-0001-123456789.md",
-                "tm_key": "kakuyomu:987654321:123456789",
+                "tm_key": "source-edition:987654321:123456789",
             }
             translated = "first translation"
             (translation_root / first_target["translation_file"]).write_text(
@@ -520,7 +616,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         f"episode-{position:04d}-{episode_id}.md"
                     ),
                     "translation_target_exists": position == 1,
-                    "tm_key": f"kakuyomu:987654321:{episode_id}",
+                    "tm_key": f"source-edition:987654321:{episode_id}",
                 }
                 for position, episode_id in (
                     (1, "123456789"),

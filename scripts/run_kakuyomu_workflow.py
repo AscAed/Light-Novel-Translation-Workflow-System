@@ -190,7 +190,7 @@ def _translation_targets(work_id: str, episodes) -> list[dict]:
                 "translation_file": (
                     f"episode-{metadata.position:04d}-{metadata.episode_id}.md"
                 ),
-                "tm_key": f"kakuyomu:{work_id}:{metadata.episode_id}",
+                "tm_key": f"source-edition:{work_id}:{metadata.episode_id}",
             }
         )
     return targets
@@ -847,15 +847,21 @@ def run_workflow(
         if catalog is not None
         else str(catalog_path.relative_to(source_path)).replace("\\", "/")
     )
-    edition_report = prepare_source_editions(
-        source_root=str(source_path),
-        catalog_relative_path=plan_catalog,
-        manifest_relative_path=manifest,
-        human_root=human_edition_root,
-        ai_root=ai_edition_root,
-        edition_manifest_relative_path=edition_manifest,
-        refresh_indexes=True,
-    )
+    if selected_ai_edition_root is not None:
+        edition_report = prepare_source_editions(
+            source_root=str(source_path),
+            catalog_relative_path=plan_catalog,
+            manifest_relative_path=manifest,
+            human_root=human_edition_root,
+            ai_root=ai_edition_root,
+            edition_manifest_relative_path=edition_manifest,
+            refresh_indexes=True,
+        )
+    else:
+        edition_report = {
+            "status": "not_needed",
+            "reason": "normalized_source_selected",
+        }
     plan = preview_translation_plan(
         source_root=str(source_path),
         catalog=plan_catalog,
