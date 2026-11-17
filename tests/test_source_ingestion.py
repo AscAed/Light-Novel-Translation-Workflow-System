@@ -8,6 +8,7 @@ from unittest.mock import patch
 from source_ingestion import (
     CatalogPage,
     EpisodeMetadata,
+    FetchedEpisode,
     LocalEpisodeFile,
     LocalFileAdapter,
     SourceAccessDenied,
@@ -30,9 +31,18 @@ from source_manifest import (
 
 
 class SyntheticSourceAdapter:
-    def __init__(self, pages, content, *, denied_cursors=(), limited_episodes=()):
+    def __init__(
+        self,
+        pages,
+        content,
+        *,
+        page_html=None,
+        denied_cursors=(),
+        limited_episodes=(),
+    ):
         self.pages = pages
         self.content = content
+        self.page_html = page_html or {}
         self.denied_cursors = set(denied_cursors)
         self.limited_episodes = set(limited_episodes)
         self.catalog_calls = []
@@ -61,6 +71,10 @@ class SyntheticSourceAdapter:
                 episode_id: hashlib.sha256(content).hexdigest()
                 for episode_id, content in sorted(self.content.items())
             },
+            "page_html": {
+                episode_id: hashlib.sha256(page_html).hexdigest()
+                for episode_id, page_html in sorted(self.page_html.items())
+            },
         }
         snapshot_bytes = json.dumps(
             snapshot,
@@ -80,6 +94,18 @@ class SyntheticSourceAdapter:
         self.episode_calls.append(episode_id)
         if episode_id in self.limited_episodes:
             raise SourceRateLimited
+        if episode_id in self.page_html:
+            metadata = next(
+                episode
+                for page in self.pages.values()
+                for episode in page.episodes
+                if episode.episode_id == episode_id
+            )
+            return FetchedEpisode(
+                metadata,
+                self.content[episode_id],
+                self.page_html[episode_id],
+            )
         return self.content[episode_id]
 
 
@@ -1070,6 +1096,138 @@ class SourceIngestionTests(unittest.TestCase):
         self.assertEqual(new_run.catalog_calls, [None])
         self.assertEqual(new_run.episode_calls, ["ep-1"])
         self.assertEqual((self.root / "source_manifest.json").read_bytes(), manifest_before)
+
+    def test_archives_raw_page_html_with_source_lineage_and_exact_bytes(self):
+        metadata = EpisodeMetadata(
+            "ep-1", "Episode", 1, "https://source.test/ep-1"
+        )
+        page_html = b"<div class='episode'><ruby>raw markup</ruby></div>\r\n"
+        adapter = SyntheticSourceAdapter(
+            {None: CatalogPage((metadata,), None)},
+            {"ep-1": b"visible parsed text"},
+            page_html={"ep-1": page_html},
+        )
+
+        report = collect_source(
+            adapter,
+            root=self.root,
+            work_id="work-1",
+            max_archive_bytes=4096,
+        )
+
+        manifest = load_manifest(self.root / "source_manifest.json")
+        metadata_artifact = next(
+            item for item in manifest["artifacts"] if item["kind"] == "episode"
+        )
+        raw_artifact = next(
+            item for item in manifest["artifacts"] if item["kind"] == "raw_source"
+        )
+        html_artifact = next(
+            item for item in manifest["artifacts"] if item["kind"] == "raw_page_html"
+        )
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(html_artifact["parent_version_ids"], [
+            metadata_artifact["version_id"],
+            raw_artifact["version_id"],
+        ])
+        self.assertEqual(
+            (self.root / html_artifact["relative_path"]).read_bytes(),
+            page_html,
+        )
+        self.assertEqual(
+            (self.root / raw_artifact["relative_path"]).read_bytes(),
+            b"visible parsed text",
+        )
+        self.assertEqual(verify_manifest_files(self.root, manifest), 3)
+        self.assertEqual(
+            verified_manifest_content_bytes(self.root, manifest),
+            sum(
+                len((self.root / item["relative_path"]).read_bytes())
+                for item in manifest["artifacts"]
+            ),
+        )
+
+    def test_changed_page_html_appends_capture_without_changing_visible_source(self):
+        metadata = EpisodeMetadata("ep-1", "Episode", 1)
+        pages = {None: CatalogPage((metadata,), None)}
+        first = SyntheticSourceAdapter(
+            pages,
+            {"ep-1": b"visible parsed text"},
+            page_html={"ep-1": b"<p>first capture</p>"},
+        )
+        collect_source(
+            first,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="first.json",
+        )
+        first_manifest = load_manifest(self.root / "source_manifest.json")
+        first_raw = next(
+            item for item in first_manifest["artifacts"] if item["kind"] == "raw_source"
+        )
+
+        second = SyntheticSourceAdapter(
+            pages,
+            {"ep-1": b"visible parsed text"},
+            page_html={"ep-1": b"<p>second capture</p>"},
+        )
+        collect_source(
+            second,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="second.json",
+        )
+
+        manifest = load_manifest(self.root / "source_manifest.json")
+        raw_versions = [
+            item for item in manifest["artifacts"] if item["kind"] == "raw_source"
+        ]
+        html_versions = [
+            item for item in manifest["artifacts"] if item["kind"] == "raw_page_html"
+        ]
+        latest_html = html_versions[-1]
+        self.assertEqual(len(raw_versions), 1)
+        self.assertEqual(len(html_versions), 2)
+        self.assertEqual(first_raw["version_id"], raw_versions[-1]["version_id"])
+        self.assertIn(raw_versions[-1]["version_id"], latest_html["parent_version_ids"])
+        self.assertEqual(verify_manifest_files(self.root, manifest), 4)
+
+    def test_raw_page_html_counts_toward_archive_limit_before_append(self):
+        metadata = EpisodeMetadata("ep-1", "Episode", 1)
+        pages = {None: CatalogPage((metadata,), None)}
+        first = SyntheticSourceAdapter(
+            pages,
+            {"ep-1": b"visible parsed text"},
+        )
+        collect_source(
+            first,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="text-only.json",
+        )
+        manifest_path = self.root / "source_manifest.json"
+        manifest_before = manifest_path.read_bytes()
+        existing_bytes = verified_manifest_content_bytes(
+            self.root, load_manifest(manifest_path)
+        )
+        second = SyntheticSourceAdapter(
+            pages,
+            {"ep-1": b"visible parsed text"},
+            page_html={"ep-1": b"<p>captured page</p>"},
+        )
+
+        report = collect_source(
+            second,
+            root=self.root,
+            work_id="work-1",
+            checkpoint_relative_path="page-html.json",
+            max_archive_bytes=existing_bytes,
+        )
+
+        self.assertEqual(report["status"], "paused")
+        self.assertEqual(report["reason"], "archive_limit")
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+        self.assertFalse(list((self.root / "raw_page_html").glob("**/*.html")))
 
     def test_archive_limit_preflights_episode_and_binds_resume_budget(self):
         adapter = SyntheticSourceAdapter(

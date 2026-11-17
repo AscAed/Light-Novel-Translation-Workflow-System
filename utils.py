@@ -240,6 +240,19 @@ def write_new_relative_text(root: str, relative_path: str, content: str) -> None
         stream.write(content)
 
 
+def write_new_relative_bytes(root: str, relative_path: str, content: bytes) -> None:
+    """Create a mapped binary file under root without replacing an existing file."""
+    if not isinstance(content, bytes):
+        raise TypeError("Mapped binary content must be bytes.")
+    path = resolve_relative_path(root, relative_path, allow_missing=True)
+    if not path.parent.is_dir():
+        raise ValueError("Mapped output parent directory does not exist.")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o666)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+
+
 def write_text_atomically(path: str, content: str) -> None:
     """Replace a file atomically, leaving its previous contents intact on failure."""
     target = Path(path)

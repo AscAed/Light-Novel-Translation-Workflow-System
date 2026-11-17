@@ -309,6 +309,7 @@ class TranslationMemoryReviewTests(unittest.TestCase):
             source_manifest_path="source_manifest.json",
             reviewed_tm_path=str(self.bundle_path),
             translation_root=str(self.translation_root),
+            allow_unreviewed_tm=True,
         )
 
         with patch.object(

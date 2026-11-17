@@ -4,6 +4,7 @@ import argparse
 import hmac
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,6 +35,16 @@ def main(argv=None) -> int:
         plan = load_translation_plan(args.plan)
         if plan.get("status") != "ready_for_review":
             raise ValueError("Only a ready_for_review plan can be approved.")
+        source_root = Path(plan["source_root"]).resolve()
+        receipt_path = Path(args.receipt).resolve()
+        try:
+            receipt_path.relative_to(source_root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                "Approval receipts must be stored outside the plan source root."
+            )
         receipt = create_approval_receipt(plan, args.reviewer)
     except (OSError, UnicodeError, ValueError) as exc:
         print(
@@ -49,7 +60,10 @@ def main(argv=None) -> int:
     for episode in plan["episodes"]:
         print(
             f"{episode['position']}\t{episode['episode_id']}\t"
-            f"{episode['title']}\t{episode['source_version_id']}\t"
+            f"{episode['title']}\t"
+            f"archive={episode['source_file']}\t"
+            f"input={episode['source_input_file'] or episode['source_file']}\t"
+            f"{episode['source_version_id']}\t"
             f"{episode['translation_file']}\t{episode['tm_key']}"
         )
 

@@ -372,9 +372,17 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             root = Path(temp_dir)
             raw_dir = root / "生肉"
             output_dir = root / "熟肉"
+            ai_root = root / "RAWs_AI"
             (raw_dir / "第一卷").mkdir(parents=True)
             (output_dir / "Ntera").mkdir(parents=True)
+            ai_root.mkdir()
             (raw_dir / "第一卷" / "第1話.md").write_text(
+                "「synthetic source」", encoding="utf-8"
+            )
+            ai_input_file = "episodes/0001-episode-1.md"
+            ai_input_path = ai_root / ai_input_file
+            ai_input_path.parent.mkdir(parents=True)
+            ai_input_path.write_text(
                 "「synthetic source」", encoding="utf-8"
             )
             source_version_id = "source-version-1"
@@ -423,6 +431,10 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                     "translation_file": "Ntera/第一話.md",
                     "tm_key": "Volume1/第1話.md",
                     "source_version_id": source_version_id,
+                    "source_input_file": ai_input_file,
+                    "source_sha256": hashlib.sha256(
+                        ai_input_path.read_bytes()
+                    ).hexdigest(),
                 }
             ]
             stdout = io.StringIO()
@@ -430,33 +442,38 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                 with patch("pipeline.Config.load_config"):
                     with patch.object(Config, "RAW_DIR", str(raw_dir)):
                         with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
-                            with patch.object(Config, "CHAPTER_MAP", chapter_map):
-                                with patch.object(
-                                    Config,
-                                    "SOURCE_MANIFEST_PATH",
-                                    "source_manifest.json",
-                                ):
+                            with patch.object(
+                                Config,
+                                "AI_EDITION_ROOT",
+                                str(ai_root),
+                            ):
+                                with patch.object(Config, "CHAPTER_MAP", chapter_map):
                                     with patch.object(
                                         Config,
-                                        "TM_PATH",
-                                        str(root / "translation_memory.json"),
+                                        "SOURCE_MANIFEST_PATH",
+                                        "source_manifest.json",
                                     ):
-                                        with patch(
-                                            "scripts.align_chapters.load_existing_tm",
-                                            return_value={"chapters": {}},
+                                        with patch.object(
+                                            Config,
+                                            "TM_PATH",
+                                            str(root / "translation_memory.json"),
                                         ):
                                             with patch(
-                                                "scripts.align_chapters.generate_embeddings_batched",
-                                                return_value=[[0.5]],
+                                                "scripts.align_chapters.load_existing_tm",
+                                                return_value={"chapters": {}},
                                             ):
                                                 with patch(
-                                                    "scripts.align_chapters.save_tm"
-                                                ) as save_tm:
-                                                    with redirect_stdout(stdout):
-                                                        with self.assertRaises(
-                                                            SystemExit
-                                                        ) as raised:
-                                                            align_main()
+                                                    "scripts.align_chapters.generate_embeddings_batched",
+                                                    return_value=[[0.5]],
+                                                ):
+                                                    with patch(
+                                                        "scripts.align_chapters.save_tm"
+                                                    ) as save_tm:
+                                                        with redirect_stdout(stdout):
+                                                            with self.assertRaises(
+                                                                SystemExit
+                                                            ) as raised:
+                                                                align_main()
 
             self.assertEqual(raised.exception.code, 0)
             tm_data = save_tm.call_args.args[1]

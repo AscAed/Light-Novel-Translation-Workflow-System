@@ -77,6 +77,7 @@ class CatalogPage:
 class FetchedEpisode:
     metadata: EpisodeMetadata
     content: bytes
+    page_html: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -1369,9 +1370,16 @@ def _persist_episode(
     episode: EpisodeMetadata,
     content: bytes,
     *,
+    page_html: bytes | None = None,
     max_archive_bytes: int | None = None,
     current_archive_bytes: int | None = None,
 ) -> int | None:
+    if page_html is not None and (
+        not isinstance(page_html, bytes)
+        or not page_html
+        or len(page_html) > DEFAULT_MAX_EPISODE_BYTES
+    ):
+        raise ValueError("Source page HTML must be bytes within the episode limit.")
     manifest = (
         load_manifest(manifest_path)
         if manifest_path.exists()
@@ -1435,6 +1443,7 @@ def _persist_episode(
     )
     raw_hash = hashlib.sha256(content).hexdigest()
     latest_raw = _latest_artifact(manifest, raw_artifact_id)
+    raw_artifact_to_append = None
     if (
         latest_raw
         and latest_raw["content_sha256"] == raw_hash
@@ -1445,20 +1454,62 @@ def _persist_episode(
             or _hash_file(root, latest_raw["relative_path"]) != raw_hash
         ):
             raise ValueError("Existing raw episode has an unexpected hash.")
-        return current_archive_bytes
+        raw_version_id = latest_raw["version_id"]
+        raw_artifact = latest_raw
+    else:
+        raw_parents = [metadata_version_id]
+        if latest_raw:
+            raw_parents.append(latest_raw["version_id"])
+        raw_version_id = _artifact_version_id(
+            raw_artifact_id, raw_hash, raw_parents
+        )
+        raw_artifact = {
+            "artifact_id": raw_artifact_id,
+            "version_id": raw_version_id,
+            "kind": "raw_source",
+            "content_sha256": raw_hash,
+            "relative_path": f"raw/{episode_key}/{raw_version_id[2:]}.bin",
+            "parent_version_ids": raw_parents,
+        }
+        raw_artifact_to_append = (raw_artifact, content)
 
-    raw_parents = [metadata_version_id]
-    if latest_raw:
-        raw_parents.append(latest_raw["version_id"])
-    raw_version_id = _artifact_version_id(raw_artifact_id, raw_hash, raw_parents)
-    raw_artifact = {
-        "artifact_id": raw_artifact_id,
-        "version_id": raw_version_id,
-        "kind": "raw_source",
-        "content_sha256": raw_hash,
-        "relative_path": f"raw/{episode_key}/{raw_version_id[2:]}.bin",
-        "parent_version_ids": raw_parents,
-    }
+    page_html_to_append = None
+    if page_html is not None:
+        html_artifact_id = _source_artifact_id(
+            work_id, "raw_page_html", episode.episode_id
+        )
+        html_hash = hashlib.sha256(page_html).hexdigest()
+        latest_html = _latest_artifact(manifest, html_artifact_id)
+        if (
+            latest_html
+            and latest_html["content_sha256"] == html_hash
+            and metadata_version_id in latest_html["parent_version_ids"]
+            and raw_version_id in latest_html["parent_version_ids"]
+        ):
+            if (
+                latest_html["relative_path"] is None
+                or _hash_file(root, latest_html["relative_path"]) != html_hash
+            ):
+                raise ValueError("Existing source page HTML has an unexpected hash.")
+        else:
+            html_parents = [metadata_version_id, raw_version_id]
+            if latest_html:
+                html_parents.append(latest_html["version_id"])
+            html_version_id = _artifact_version_id(
+                html_artifact_id, html_hash, html_parents
+            )
+            html_artifact = {
+                "artifact_id": html_artifact_id,
+                "version_id": html_version_id,
+                "kind": "raw_page_html",
+                "content_sha256": html_hash,
+                "relative_path": (
+                    f"raw_page_html/{episode_key}/{html_version_id[2:]}.html"
+                ),
+                "parent_version_ids": html_parents,
+            }
+            page_html_to_append = (html_artifact, page_html)
+
     if max_archive_bytes is not None:
         if (
             isinstance(current_archive_bytes, bool)
@@ -1466,7 +1517,11 @@ def _persist_episode(
             or current_archive_bytes < 0
         ):
             raise ValueError("Current archive byte count is required for a byte limit.")
-        candidates = [(raw_artifact, content)]
+        candidates = [
+            item
+            for item in (raw_artifact_to_append, page_html_to_append)
+            if item is not None
+        ]
         if metadata_to_append is not None:
             candidates.append(metadata_to_append)
         additions = sum(
@@ -1491,13 +1546,24 @@ def _persist_episode(
             metadata_artifact,
             metadata,
         )
-    _append_immutable_artifact(
-        root,
-        manifest_path,
-        manifest,
-        raw_artifact,
-        content,
-    )
+    if raw_artifact_to_append is not None:
+        raw_artifact, raw_content = raw_artifact_to_append
+        manifest = _append_immutable_artifact(
+            root,
+            manifest_path,
+            manifest,
+            raw_artifact,
+            raw_content,
+        )
+    if page_html_to_append is not None:
+        html_artifact, html_content = page_html_to_append
+        _append_immutable_artifact(
+            root,
+            manifest_path,
+            manifest,
+            html_artifact,
+            html_content,
+        )
     if current_archive_bytes is not None:
         return current_archive_bytes + additions
     return None
@@ -2273,10 +2339,14 @@ def collect_source(
                     )
                 episode = fetched.metadata
                 content = fetched.content
+                page_html = fetched.page_html
             else:
                 content = fetched
+                page_html = None
             if not isinstance(content, bytes):
                 raise ValueError("Source adapter must return episode content as bytes.")
+            if page_html is not None and not isinstance(page_html, bytes):
+                raise ValueError("Source adapter page HTML must be bytes.")
 
             try:
                 archive_bytes = _persist_episode(
@@ -2285,6 +2355,7 @@ def collect_source(
                     work_id,
                     episode,
                     content,
+                    page_html=page_html,
                     max_archive_bytes=max_archive_bytes,
                     current_archive_bytes=archive_bytes,
                 )

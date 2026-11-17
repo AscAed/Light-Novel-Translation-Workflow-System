@@ -44,10 +44,18 @@ class RAGEngine:
         source_manifest_path: Optional[str] = None,
         reviewed_tm_path: Optional[str] = None,
         translation_root: Optional[str] = None,
+        allow_unreviewed_tm: bool = False,
+        require_reviewed_glossary: bool = False,
+        source_input_root: Optional[str] = None,
+        source_input_map: Optional[dict] = None,
     ):
         """Initialise paths and load initial database contents from disk."""
         self.logger = logging.getLogger(__name__)
 
+        if not isinstance(allow_unreviewed_tm, bool):
+            raise ValueError("allow_unreviewed_tm must be a boolean.")
+        if not isinstance(require_reviewed_glossary, bool):
+            raise ValueError("require_reviewed_glossary must be a boolean.")
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
@@ -55,6 +63,10 @@ class RAGEngine:
         self.source_manifest_path = source_manifest_path
         self.reviewed_tm_path = reviewed_tm_path
         self.translation_root = translation_root
+        self.allow_unreviewed_tm = allow_unreviewed_tm
+        self.require_reviewed_glossary = require_reviewed_glossary
+        self.source_input_root = source_input_root
+        self.source_input_map = source_input_map
         reject_knowledge_draft_path(self.glossary_path, "glossary input")
         self.api_timeout = parse_api_timeout(
             api_timeout if api_timeout is not None else os.environ.get("API_TIMEOUT", 10.0)
@@ -76,11 +88,35 @@ class RAGEngine:
                 self.source_root,
                 self.translation_root,
                 self.source_manifest_path,
+                source_input_root=self.source_input_root,
+                source_input_map=self.source_input_map,
             )
 
         # Initialise glossary raw content
         self.glossary_raw = ""
-        if os.path.exists(self.glossary_path):
+        if self.require_reviewed_glossary:
+            try:
+                with open_regular_file(self.glossary_path) as f:
+                    self.glossary_raw = f.read()
+            except (OSError, ValueError):
+                raise ValueError(
+                    "Project translation requires a readable reviewed glossary bundle."
+                ) from None
+            try:
+                reviewed_glossary = json.loads(self.glossary_raw)
+            except json.JSONDecodeError:
+                raise ValueError(
+                    "Project translation requires a valid reviewed glossary bundle."
+                ) from None
+            if (
+                not isinstance(reviewed_glossary, dict)
+                or "_knowledge_review_schema" not in reviewed_glossary
+            ):
+                raise ValueError(
+                    "Project translation requires a reviewed glossary bundle."
+                )
+            self._parse_reviewed_glossary_bundle(reviewed_glossary)
+        elif os.path.exists(self.glossary_path):
             try:
                 with open(self.glossary_path, "r", encoding="utf-8") as f:
                     self.glossary_raw = f.read()
@@ -153,20 +189,15 @@ class RAGEngine:
 
     @property
     def tm_retrieval_data(self) -> dict:
-        return self._reviewed_tm_data or self.tm_data
+        if self._reviewed_tm_data is not None:
+            return self._reviewed_tm_data
+        if self.allow_unreviewed_tm:
+            return self.tm_data
+        return {"chapters": {}}
 
     async def query_translation_memory(self, raw_text: str, top_k: int = 3) -> List[Dict[str, str]]:
         """Query translation memory using cosine similarity matching."""
         if not raw_text.strip():
-            return []
-
-        try:
-            q_emb = self._generate_embedding_sync(raw_text)
-        except Exception as e:
-            logger.warning(
-                "Failed to generate embedding for query (%s).",
-                type(e).__name__,
-            )
             return []
 
         candidates = []
@@ -180,6 +211,15 @@ class RAGEngine:
                         candidates.append((pair["raw"], pair["translated"], emb))
 
         if not candidates:
+            return []
+
+        try:
+            q_emb = self._generate_embedding_sync(raw_text)
+        except Exception as e:
+            logger.warning(
+                "Failed to generate embedding for query (%s).",
+                type(e).__name__,
+            )
             return []
 
         q_arr = np.array(q_emb)
@@ -343,6 +383,8 @@ class RAGEngine:
             },
             self.source_root,
             self.source_manifest_path,
+            source_input_root=self.source_input_root,
+            source_input_map=self.source_input_map,
         )
         if not findings or any(item["status"] != "verified" for item in findings):
             raise ValueError("Reviewed glossary source versions are not current.")

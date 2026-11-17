@@ -337,6 +337,7 @@ class KakuyomuPageAdapterTests(unittest.TestCase):
         fetched = adapter.fetch_episode(EPISODE_ID)
         self.assertIsInstance(fetched, FetchedEpisode)
         self.assertEqual(fetched.content, EXPECTED_TEXT.encode("utf-8"))
+        self.assertEqual(fetched.page_html, PAGE_HTML.encode("utf-8"))
         self.assertEqual(fetched.metadata.title, "第1話 はじまり")
         self.assertEqual(
             [request[0] for request in opener.requests],
@@ -1057,6 +1058,111 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(report["completed_count"], 1)
 
+    def test_project_mode_records_source_and_ai_edition_freshness(self):
+        projects_root = self.root / "projects"
+        project_root = projects_root / "synthetic"
+        source_root = project_root / "SourceArchive"
+        translation_root = project_root / "熟肉"
+        source_root.mkdir(parents=True)
+        translation_root.mkdir()
+        catalog = {
+            "schema_version": 1,
+            "work_id": WORK_ID,
+            "episodes": [
+                {
+                    "episode_id": EPISODE_ID,
+                    "position": 1,
+                    "page_url": PAGE_URL,
+                }
+            ],
+        }
+        (source_root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        adapter, _, _ = make_adapter()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "scripts.ingest_kakuyomu_pages._PROJECTS_ROOT",
+                projects_root,
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages.KakuyomuPageAdapter",
+                return_value=adapter,
+            ),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+        ):
+            result = main(
+                [
+                    "--project",
+                    "synthetic",
+                    "--source-root",
+                    str(source_root),
+                    "--catalog",
+                    "catalog.json",
+                    "--output-root",
+                    str(source_root),
+                ]
+            )
+
+        report = json.loads(stdout.getvalue())
+        freshness = report["project_freshness_snapshot"]
+        snapshot_path = source_root / freshness["path"]
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("太郎", stdout.getvalue())
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(freshness["status"], "persisted")
+        self.assertEqual(
+            freshness["consumers"]["ai_edition_index"]["unverified"],
+            1,
+        )
+        self.assertTrue((source_root / "source_editions_manifest.json").is_file())
+        self.assertEqual(
+            snapshot["consumers"]["ai_edition_index"]["findings"][0]["status"],
+            "unverified",
+        )
+        self.assertEqual(
+            snapshot["source_manifest"]["relative_path"],
+            "source_editions_manifest.json",
+        )
+
+    def test_project_mode_rejects_roots_outside_project_archive_before_fetch(self):
+        projects_root = self.root / "projects"
+        source_root = projects_root / "synthetic" / "SourceArchive"
+        source_root.mkdir(parents=True)
+        with (
+            patch(
+                "scripts.ingest_kakuyomu_pages._PROJECTS_ROOT",
+                projects_root,
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages.KakuyomuPageAdapter"
+            ) as adapter_class,
+            patch("sys.stderr", io.StringIO()) as stderr,
+        ):
+            result = main(
+                [
+                    "--project",
+                    "synthetic",
+                    "--source-root",
+                    str(self.source_root),
+                    "--catalog",
+                    "catalog.json",
+                    "--output-root",
+                    str(self.output_root),
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("ERROR: ValueError", stderr.getvalue())
+        adapter_class.assert_not_called()
+
     def test_cli_discovers_homepage_catalog_and_archives_all_listed_pages(self):
         work_html = make_work_page_html(
             WORK_ID,
@@ -1134,6 +1240,25 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
             )
         )
         self.assertEqual(work_record["metadata"], discovered["work_metadata"])
+        html_artifacts = [
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "raw_page_html"
+        ]
+        raw_artifact = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "raw_source"
+        )
+        self.assertEqual(len(html_artifacts), 1)
+        self.assertEqual(
+            (self.output_root / html_artifacts[0]["relative_path"]).read_bytes(),
+            PAGE_HTML.encode("utf-8"),
+        )
+        self.assertIn(
+            raw_artifact["version_id"],
+            html_artifacts[0]["parent_version_ids"],
+        )
         self.assertEqual(discovered["schema_version"], 3)
         self.assertEqual(
             discovered["work_metadata"],

@@ -15,6 +15,7 @@ ARTIFACT_KINDS = frozenset(
         "work",
         "episode",
         "raw_source",
+        "raw_page_html",
         "normalized_source",
         "translation",
         "knowledge",
@@ -294,7 +295,30 @@ def latest_raw_parent_for_normalized(manifest: dict, normalized_artifact: dict) 
 
 def verify_current_normalized_source(root, manifest: dict, version_id: str) -> dict:
     """Verify a normalized version and require its raw parent to be current."""
-    artifact = verify_manifest_artifact(root, manifest, version_id)
+    artifact = verify_current_normalized_source_metadata(manifest, version_id)
+    latest_raw = latest_raw_parent_for_normalized(manifest, artifact)
+    _verify_artifact_file(root, artifact)
+    _verify_artifact_file(root, latest_raw)
+    return artifact
+
+
+def verify_current_normalized_source_metadata(
+    manifest: dict, version_id: str
+) -> dict:
+    """Verify normalized-source lineage from manifest metadata only."""
+    validate_manifest(manifest)
+    artifact = next(
+        (
+            item
+            for item in manifest["artifacts"]
+            if item["version_id"] == version_id
+        ),
+        None,
+    )
+    if artifact is None:
+        raise ValueError(f"Artifact version {version_id!r} is not in the manifest.")
+    if artifact["relative_path"] is None:
+        raise ValueError(f"Artifact version {version_id!r} has no content file.")
     if artifact["kind"] != "normalized_source":
         raise ValueError("Source version is not a normalized source.")
 
@@ -302,10 +326,9 @@ def verify_current_normalized_source(root, manifest: dict, version_id: str) -> d
         artifact["artifact_id"]
     )
     if latest is None or latest["version_id"] != version_id:
-        raise ValueError("Normalized source version is stale.")
+        raise ValueError("Normalized source version is stale; it is not current.")
 
     latest_raw = latest_raw_parent_for_normalized(manifest, latest)
-    verify_manifest_artifact(root, manifest, latest_raw["version_id"])
     if latest_raw["version_id"] not in latest["parent_version_ids"]:
         raise ValueError(
             "Normalized source is stale because its raw parent is not current."

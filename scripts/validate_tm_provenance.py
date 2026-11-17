@@ -13,6 +13,7 @@ from source_manifest import (
     latest_raw_parent_for_normalized,
     load_manifest,
     verify_manifest_artifact,
+    verify_current_normalized_source_metadata,
 )
 from utils import (
     open_regular_file,
@@ -49,6 +50,8 @@ def _audit_chapter(
     translation_dir: str,
     source_manifest: dict | None = None,
     latest_normalized_by_artifact_id: dict | None = None,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> list[dict[str, str]]:
     findings = []
     try:
@@ -57,7 +60,32 @@ def _audit_chapter(
         return [_finding("invalid", chapter, str(exc))]
 
     try:
-        raw_text = read_relative_text(raw_dir, provenance["raw_file"])
+        if source_input_root is None:
+            raw_text = read_relative_text(raw_dir, provenance["raw_file"])
+        else:
+            source_input = (source_input_map or {}).get(provenance["raw_file"])
+            if (
+                not isinstance(source_input, dict)
+                or source_input.get("source_version_id")
+                != provenance.get("source_version_id")
+                or not isinstance(source_input.get("source_input_file"), str)
+                or source_input.get("source_sha256")
+                != provenance.get("raw_sha256")
+            ):
+                return [
+                    _finding(
+                        "mismatch",
+                        chapter,
+                        "TM source does not match the current AI edition map.",
+                    )
+                ]
+            from source_editions import read_verified_ai_edition_bytes
+
+            raw_text = read_verified_ai_edition_bytes(
+                source_input_root,
+                source_input["source_input_file"],
+                source_input["source_sha256"],
+            ).decode("utf-8")
         translation_text = read_relative_text(
             translation_dir, provenance["translation_file"]
         )
@@ -90,8 +118,16 @@ def _audit_chapter(
             )
         else:
             try:
-                source_artifact = verify_manifest_artifact(
-                    raw_dir, source_manifest, provenance["source_version_id"]
+                source_artifact = (
+                    verify_current_normalized_source_metadata(
+                        source_manifest, provenance["source_version_id"]
+                    )
+                    if source_input_root is not None
+                    else verify_manifest_artifact(
+                        raw_dir,
+                        source_manifest,
+                        provenance["source_version_id"],
+                    )
                 )
             except ValueError:
                 findings.append(
@@ -105,6 +141,11 @@ def _audit_chapter(
                 if (
                     source_artifact["kind"] != "normalized_source"
                     or source_artifact["relative_path"] != provenance["raw_file"]
+                    or (
+                        source_input_root is not None
+                        and source_artifact["content_sha256"]
+                        != source_input["source_sha256"]
+                    )
                 ):
                     findings.append(
                         _finding(
@@ -125,39 +166,22 @@ def _audit_chapter(
                                 "Manifest has no current normalized source version.",
                             )
                         )
-                    elif latest_source["version_id"] != source_artifact["version_id"]:
-                        try:
-                            verify_manifest_artifact(
-                                raw_dir,
-                                source_manifest,
-                                latest_source["version_id"],
-                            )
-                        except ValueError:
-                            findings.append(
-                                _finding(
-                                    "invalid",
-                                    chapter,
-                                    "Latest normalized source version does not verify.",
-                                )
-                            )
-                        else:
-                            findings.append(
-                                _finding(
-                                    "stale",
-                                    chapter,
-                                    "A newer normalized source version exists than the one recorded.",
-                                )
-                            )
                     else:
                         try:
                             latest_raw = latest_raw_parent_for_normalized(
                                 source_manifest, latest_source
                             )
-                            verify_manifest_artifact(
-                                raw_dir,
-                                source_manifest,
-                                latest_raw["version_id"],
-                            )
+                            if source_input_root is None:
+                                verify_manifest_artifact(
+                                    raw_dir,
+                                    source_manifest,
+                                    latest_source["version_id"],
+                                )
+                                verify_manifest_artifact(
+                                    raw_dir,
+                                    source_manifest,
+                                    latest_raw["version_id"],
+                                )
                         except ValueError:
                             findings.append(
                                 _finding(
@@ -176,6 +200,14 @@ def _audit_chapter(
                                         "stale",
                                         chapter,
                                         "Latest normalized source was derived from an older raw source version.",
+                                    )
+                                )
+                            elif latest_source["version_id"] != source_artifact["version_id"]:
+                                findings.append(
+                                    _finding(
+                                        "stale",
+                                        chapter,
+                                        "A newer normalized source version exists than the one recorded.",
                                     )
                                 )
 
@@ -258,6 +290,9 @@ def audit_translation_memory(
     raw_dir: str,
     translation_dir: str,
     source_manifest_path: str | None = None,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> list[dict[str, str]]:
     """Compare indexed TM pairs with their local source files without writing."""
     if not isinstance(tm_data, dict) or not isinstance(tm_data.get("chapters"), dict):
@@ -312,6 +347,8 @@ def audit_translation_memory(
                 translation_dir,
                 source_manifest,
                 latest_normalized_by_artifact_id,
+                source_input_root,
+                source_input_map,
             )
         )
     return findings
@@ -343,11 +380,24 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("TEST_WORKSPACE_DIR must be a non-empty path.")
         Config.load_config(project=args.project, config_file=args.config)
         tm_data = _load_tm(Config.TM_PATH)
+        source_input_map = {
+            item["raw_file"]: {
+                "source_version_id": item.get("source_version_id"),
+                "source_input_file": item.get("source_input_file"),
+                "source_sha256": item.get("source_sha256"),
+            }
+            for item in (Config.CHAPTER_MAP or [])
+            if isinstance(item, dict)
+            and isinstance(item.get("raw_file"), str)
+            and isinstance(item.get("source_input_file"), str)
+        }
         findings = audit_translation_memory(
             tm_data,
             Config.RAW_DIR,
             Config.OUTPUT_DIR,
             Config.SOURCE_MANIFEST_PATH,
+            source_input_root=Config.AI_EDITION_ROOT if source_input_map else None,
+            source_input_map=source_input_map,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"ERROR: {_escape_nonprintable(str(exc))}", file=sys.stderr)

@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import tempfile
 import unittest
@@ -21,7 +22,7 @@ class TranslationPlanApprovalTests(unittest.TestCase):
         self.plan_path = self.root / "translation-plan.json"
         self.receipt_path = self.root / "translation-approval.json"
         self.plan = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "ready_for_review",
             "work_id": "synthetic-work",
             "source_root": str(self.root / "source"),
@@ -41,6 +42,10 @@ class TranslationPlanApprovalTests(unittest.TestCase):
                     "title": "Synthetic episode",
                     "source_file": "normalized/episode.md",
                     "source_version_id": "normalized-version-1",
+                    "source_input_file": None,
+                    "source_sha256": hashlib.sha256(
+                        b"synthetic source"
+                    ).hexdigest(),
                     "translation_file": "episode-0001-123456789.md",
                     "translation_target_exists": False,
                     "tm_key": "kakuyomu:synthetic-work:123456789",
@@ -77,6 +82,33 @@ class TranslationPlanApprovalTests(unittest.TestCase):
         receipt = verify_approval_receipt(self.receipt_path, self.plan)
         self.assertEqual(receipt["approved_by"], "synthetic reviewer")
 
+    def test_cli_rejects_receipt_inside_source_archive_before_confirmation(self):
+        write_new_json(self.plan_path, self.plan)
+        archive_root = Path(self.plan["source_root"])
+        archive_root.mkdir()
+        receipt_path = archive_root / "approval.json"
+        error = io.StringIO()
+
+        with (
+            patch("builtins.input") as confirmation,
+            contextlib.redirect_stderr(error),
+        ):
+            result = main(
+                [
+                    "--plan",
+                    str(self.plan_path),
+                    "--receipt",
+                    str(receipt_path),
+                    "--reviewer",
+                    "synthetic reviewer",
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertFalse(receipt_path.exists())
+        confirmation.assert_not_called()
+        self.assertIn("ValueError", error.getvalue())
+
     def test_wrong_digest_does_not_write_receipt(self):
         write_new_json(self.plan_path, self.plan)
         error = io.StringIO()
@@ -108,6 +140,45 @@ class TranslationPlanApprovalTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "does not match"):
             verify_approval_receipt(self.receipt_path, changed_plan)
+
+    def test_approval_digest_binds_ai_edition_index_and_manifest(self):
+        ai_plan = dict(self.plan)
+        ai_plan["source_edition"] = {
+            "profile_id": "ai-efficient-v1",
+            "index_root": str(self.root / "ai"),
+            "index_relative_path": "catalog.json",
+            "index_sha256": "a" * 64,
+            "manifest": "source_editions_manifest.json",
+            "manifest_sha256": "b" * 64,
+        }
+        ai_plan["episodes"] = [dict(self.plan["episodes"][0])]
+        ai_plan["episodes"][0]["source_input_file"] = "episodes/0001.md"
+        ai_plan["plan_sha256"] = translation_plan_sha256(ai_plan)
+        receipt = create_approval_receipt(ai_plan, "synthetic reviewer")
+        write_new_json(self.receipt_path, receipt)
+
+        changed_plan = dict(ai_plan)
+        changed_plan["source_edition"] = dict(ai_plan["source_edition"])
+        changed_plan["source_edition"]["index_sha256"] = "c" * 64
+        changed_plan["plan_sha256"] = translation_plan_sha256(changed_plan)
+
+        self.assertNotEqual(
+            ai_plan["plan_sha256"],
+            changed_plan["plan_sha256"],
+        )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            verify_approval_receipt(self.receipt_path, changed_plan)
+
+        changed_input = dict(ai_plan)
+        changed_input["episodes"] = [dict(ai_plan["episodes"][0])]
+        changed_input["episodes"][0]["source_input_file"] = "episodes/changed.md"
+        changed_input["plan_sha256"] = translation_plan_sha256(changed_input)
+        self.assertNotEqual(
+            ai_plan["plan_sha256"],
+            changed_input["plan_sha256"],
+        )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            verify_approval_receipt(self.receipt_path, changed_input)
 
     def test_existing_targets_can_resume_only_from_matching_approval(self):
         receipt = create_approval_receipt(self.plan, "synthetic reviewer")

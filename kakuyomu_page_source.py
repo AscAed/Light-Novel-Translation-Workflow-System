@@ -1085,4 +1085,5 @@ class KakuyomuPageAdapter:
                 item.page_url,
             ),
             content,
+            page_bytes,
         )

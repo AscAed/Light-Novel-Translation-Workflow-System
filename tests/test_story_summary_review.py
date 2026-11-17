@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.apply_story_summary_review import main
 from source_ingestion import (
@@ -161,7 +162,7 @@ class StorySummaryReviewTests(unittest.TestCase):
 
         self.assertTrue(self.template_path.is_file())
 
-    def test_template_rejects_more_sources_than_extractor_can_select(self):
+    def test_template_accepts_full_book_source_coverage(self):
         provenance = dict(self.provenance)
         provenance["source_files"] = [
             {
@@ -169,18 +170,258 @@ class StorySummaryReviewTests(unittest.TestCase):
                 "filename": f"chapter-{index}.md",
                 "source_version_id": f"version-{index}",
             }
-            for index in range(1, 5)
+            for index in range(1, 89)
         ]
         provenance["summary_source_chapters"] = [
             item["filename"] for item in provenance["source_files"]
         ]
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 88,
+            "included_chapter_count": 88,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
         (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
             json.dumps(provenance, ensure_ascii=False),
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(ValueError, "one to three source chapters"):
+        result = self._create_template()
+
+        self.assertEqual(result["source_count"], 88)
+
+    def test_template_rejects_incomplete_full_book_coverage(self):
+        provenance = dict(self.provenance)
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 2,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "incomplete full-book coverage"):
             self._create_template()
+
+    def test_token_batch_claim_evidence_survives_summary_approval(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source_filename = self.artifact["relative_path"]
+        provenance["source_files"][0]["source_index"] = 1
+        provenance["source_files"][0]["included_paragraph_count"] = 2
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        provenance["token_budget"] = {
+            "tokenizer_sha256": "a" * 64,
+            "context_window_tokens": 4096,
+            "max_output_tokens_per_request": 512,
+            "safety_margin_tokens": 256,
+            "message_overhead_tokens": 32,
+            "max_input_tokens_per_request": 3328,
+            "max_provider_calls": 10,
+            "provider_call_count": 1,
+            "total_estimated_input_tokens": 100,
+            "batches": [
+                {
+                    "batch_id": "B0001",
+                    "source_ids": ["C0001P00001", "C0001P00002"],
+                    "estimated_input_tokens": 100,
+                    "reported_prompt_tokens": None,
+                    "user_message_characters": 100,
+                    "user_message_sha256": "b" * 64,
+                    "response_sha256": "c" * 64,
+                }
+            ],
+        }
+        provenance["claim_evidence"] = [
+            {
+                "claim_id": "B0001-summary-0001",
+                "category": "summary",
+                "batch_id": "B0001",
+                "claim_text": "Synthetic plot summary.",
+                "claim_sha256": hashlib.sha256(
+                    b"Synthetic plot summary."
+                ).hexdigest(),
+                "evidence": [
+                    {
+                        "source_id": "C0001P00001",
+                        "filename": source_filename,
+                        "paragraph_index": 1,
+                    }
+                ],
+            }
+        ]
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+
+        loaded = load_reviewed_story_summary(
+            str(self.output_path),
+            str(self.archive_root),
+            "source_manifest.json",
+            require_full_book_coverage=True,
+            expected_sources=[
+                {
+                    "filename": source_filename,
+                    "source_version_id": self.artifact["version_id"],
+                }
+            ],
+        )
+        self.assertIn("Synthetic plot summary.", loaded)
+        bundle = json.loads(self.output_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            bundle["source_provenance"]["claim_evidence"][0]["evidence"][0][
+                "source_id"
+            ],
+            "C0001P00001",
+        )
+
+    def test_token_batch_claim_cannot_cite_a_paragraph_outside_its_location(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source_filename = self.artifact["relative_path"]
+        provenance["source_files"][0]["source_index"] = 1
+        provenance["source_files"][0]["included_paragraph_count"] = 2
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        provenance["token_budget"] = {
+            "tokenizer_sha256": "a" * 64,
+            "context_window_tokens": 4096,
+            "max_output_tokens_per_request": 512,
+            "safety_margin_tokens": 256,
+            "message_overhead_tokens": 32,
+            "max_input_tokens_per_request": 3328,
+            "max_provider_calls": 10,
+            "provider_call_count": 1,
+            "total_estimated_input_tokens": 100,
+            "batches": [
+                {
+                    "batch_id": "B0001",
+                    "source_ids": ["C0001P00001", "C0001P00002"],
+                    "estimated_input_tokens": 100,
+                    "reported_prompt_tokens": None,
+                    "user_message_characters": 100,
+                    "user_message_sha256": "b" * 64,
+                    "response_sha256": "c" * 64,
+                }
+            ],
+        }
+        provenance["claim_evidence"] = [
+            {
+                "claim_id": "B0001-summary-0001",
+                "category": "summary",
+                "batch_id": "B0001",
+                "claim_text": "Synthetic plot summary.",
+                "claim_sha256": hashlib.sha256(
+                    b"Synthetic plot summary."
+                ).hexdigest(),
+                "evidence": [
+                    {
+                        "source_id": "C0001P00002",
+                        "filename": source_filename,
+                        "paragraph_index": 1,
+                    }
+                ],
+            }
+        ]
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "invalid claim locations"):
+            self._create_template()
+
+    def test_summary_source_size_limit_is_cumulative(self):
+        self._create_template()
+        self._complete_receipt()
+
+        with patch("story_summary_review._MAX_TOTAL_SOURCE_BYTES", 1):
+            with self.assertRaisesRegex(ValueError, "total size limit"):
+                self._publish()
+
+        self.assertFalse(self.output_path.exists())
+
+    def test_full_book_bundle_must_match_current_chapter_map(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+
+        expected = [
+            {
+                "filename": self.artifact["relative_path"],
+                "source_version_id": self.artifact["version_id"],
+            }
+        ]
+        loaded = load_reviewed_story_summary(
+            str(self.output_path),
+            str(self.archive_root),
+            "source_manifest.json",
+            require_full_book_coverage=True,
+            expected_sources=expected,
+        )
+        self.assertIn("Synthetic plot summary.", loaded)
+
+        with self.assertRaisesRegex(ValueError, "do not match"):
+            load_reviewed_story_summary(
+                str(self.output_path),
+                str(self.archive_root),
+                "source_manifest.json",
+                require_full_book_coverage=True,
+                expected_sources=[
+                    {
+                        "filename": self.artifact["relative_path"],
+                        "source_version_id": "stale-version",
+                    }
+                ],
+            )
 
     def test_publishes_approved_bundle_and_runtime_rechecks_sources(self):
         self._create_template()
@@ -197,6 +438,70 @@ class StorySummaryReviewTests(unittest.TestCase):
         self.assertEqual(bundle["approval_status"], "approved")
         self.assertEqual(bundle["summary"], self.summary_bytes.decode("utf-8"))
         self.assertEqual(self._load(), self.summary_bytes.decode("utf-8"))
+
+    def test_project_summary_verification_reads_ai_mirror_not_archive_body(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 1,
+            "input_character_limit": 100,
+        }
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+        ai_root = self.root / "RAWs_AI"
+        ai_root.mkdir()
+        ai_input = ai_root / "episode.md"
+        ai_input.write_bytes(
+            (self.archive_root / self.artifact["relative_path"]).read_bytes()
+        )
+        source_sha256 = hashlib.sha256(ai_input.read_bytes()).hexdigest()
+
+        with (
+            patch(
+                "source_manifest._verify_artifact_file",
+                side_effect=AssertionError("archive body read during translation"),
+            ),
+            patch(
+                "story_summary_review.verify_manifest_artifact",
+                side_effect=AssertionError("archive body read during translation"),
+            ),
+        ):
+            summary = load_reviewed_story_summary(
+                str(self.output_path),
+                str(self.archive_root),
+                "source_manifest.json",
+                require_full_book_coverage=True,
+                expected_sources=[
+                    {
+                        "filename": self.artifact["relative_path"],
+                        "source_version_id": self.artifact["version_id"],
+                        "source_input_file": "episode.md",
+                        "source_sha256": source_sha256,
+                    }
+                ],
+                source_input_root=str(ai_root),
+                source_input_map={
+                    self.artifact["relative_path"]: {
+                        "source_version_id": self.artifact["version_id"],
+                        "source_input_file": "episode.md",
+                        "source_sha256": source_sha256,
+                    }
+                },
+            )
+
+        self.assertEqual(summary, self.summary_bytes.decode("utf-8"))
 
     def test_reviewed_summary_requires_json_output_name(self):
         self._create_template()

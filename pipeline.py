@@ -12,10 +12,13 @@ from urllib.parse import urlsplit
 from chapter_transaction import (
     commit_chapter_translation,
     has_pending_chapter_transaction,
+    is_chapter_translation_committed,
     recover_chapter_translation,
 )
+from scripts.ingest_kakuyomu_pages import _load_catalog_snapshot
 from utils import (
     extract_chapter_num,
+    open_regular_file,
     parse_api_timeout,
     parse_provider_data_policy,
     read_child_text,
@@ -37,8 +40,127 @@ from openai import (
     DefaultAsyncHttpxClient,
 )
 from rag_engine import RAGEngine
-from source_manifest import load_manifest, verify_current_normalized_source
+from source_manifest import (
+    load_manifest,
+    verify_current_normalized_source,
+    verify_current_normalized_source_metadata,
+)
+from source_editions import (
+    read_verified_ai_edition_bytes,
+    verify_ai_edition_index,
+)
 from story_summary_review import load_reviewed_story_summary
+
+
+def _default_ai_edition_config(workspace_dir: str) -> dict:
+    """Resolve the project's verified AI edition required by project mode."""
+    workspace = Path(workspace_dir)
+    source_root = workspace / "SourceArchive"
+    ai_root = workspace / "RAWs_AI"
+    if not source_root.exists() and not ai_root.exists():
+        raise FileNotFoundError(
+            "Project translation input requires a verified AI edition "
+            "in SourceArchive and RAWs_AI; use an explicit JSON config "
+            "to select another source."
+        )
+    if not source_root.is_dir() or not ai_root.is_dir():
+        raise FileNotFoundError(
+            "Project AI translation input requires both SourceArchive and RAWs_AI."
+        )
+
+    verified = verify_ai_edition_index(
+        source_root=str(source_root),
+        ai_root=str(ai_root),
+        source_manifest_relative_path="source_manifest.json",
+        edition_manifest_relative_path="source_editions_manifest.json",
+    )
+    index = verified["index"]
+    work_id = index["work_id"]
+    if not isinstance(work_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", work_id):
+        raise ValueError("AI edition index contains an invalid work ID.")
+
+    catalog_record = index.get("catalog")
+    if (
+        not isinstance(catalog_record, dict)
+        or not isinstance(catalog_record.get("relative_path"), str)
+        or not isinstance(catalog_record.get("sha256"), str)
+    ):
+        raise ValueError("AI edition index is missing its source catalog identity.")
+    catalog = _load_catalog_snapshot(
+        str(source_root),
+        catalog_record["relative_path"],
+    )
+    if (
+        catalog["work_id"] != work_id
+        or catalog["sha256"] != catalog_record["sha256"]
+    ):
+        raise ValueError("AI edition index is stale for its source catalog.")
+    catalog_episodes = {
+        episode.metadata.episode_id: episode.metadata
+        for episode in catalog["episodes"]
+    }
+
+    episodes = index["episodes"]
+    if not episodes or set(catalog_episodes) != {
+        episode.get("episode_id") for episode in episodes
+    }:
+        raise ValueError("AI edition index does not cover the complete catalog.")
+    chapter_map = []
+    seen_ids = set()
+    seen_positions = set()
+    for episode in episodes:
+        episode_id = episode.get("episode_id")
+        position = episode.get("position")
+        metadata = catalog_episodes.get(episode_id)
+        if (
+            not isinstance(episode_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", episode_id)
+            or episode_id in seen_ids
+            or isinstance(position, bool)
+            or not isinstance(position, int)
+            or position < 1
+            or position in seen_positions
+            or metadata is None
+            or metadata.position != position
+            or metadata.title != episode.get("title")
+        ):
+            raise ValueError(
+                "AI edition index episode metadata does not match its catalog."
+            )
+        raw_file = episode.get("ai_archive_relative_path")
+        source_input_file = episode.get("ai_relative_path")
+        source_sha256 = episode.get("output_sha256")
+        source_version_id = episode.get("ai_edition_version_id")
+        if (
+            not isinstance(raw_file, str)
+            or not isinstance(source_input_file, str)
+            or not isinstance(source_sha256, str)
+            or not isinstance(source_version_id, str)
+        ):
+            raise ValueError("AI edition index is missing an archived source version.")
+        seen_ids.add(episode_id)
+        seen_positions.add(position)
+        chapter_map.append(
+            {
+                "raw_file": raw_file,
+                "source_input_file": source_input_file,
+                "source_sha256": source_sha256,
+                "translation_file": (
+                    f"episode-{position:04d}-{episode_id}.md"
+                ),
+                "tm_key": f"source-edition:{work_id}:{episode_id}",
+                "source_version_id": source_version_id,
+                "chapter_position": position,
+            }
+        )
+
+    chapter_map.sort(key=lambda chapter: chapter["chapter_position"])
+    return {
+        "source_root": str(source_root),
+        "ai_edition_root": str(ai_root),
+        "source_manifest_path": "source_editions_manifest.json",
+        "chapter_map": chapter_map,
+    }
 
 
 def _resolve_project_content_dir(
@@ -59,6 +181,130 @@ def _resolve_project_content_dir(
             "and OUTPUT_DIR in an explicit --config file."
         )
     return content_dir
+
+
+def _load_project_workflow_path_settings(workspace_dir: str) -> Optional[dict]:
+    settings_path = Path(workspace_dir) / "workflow_paths.json"
+    if settings_path.is_symlink():
+        raise ValueError("Project workflow path settings cannot be a symbolic link.")
+    if not settings_path.exists():
+        return None
+
+    with open_regular_file(settings_path) as stream:
+        settings = json.load(stream, object_pairs_hook=_reject_duplicate_json_fields)
+    allowed_fields = {
+        "schema_version",
+        "output_dir",
+        "human_edition_root",
+    }
+    if (
+        not isinstance(settings, dict)
+        or not {"schema_version", "output_dir"}.issubset(settings)
+        or not set(settings).issubset(allowed_fields)
+        or isinstance(settings.get("schema_version"), bool)
+        or settings.get("schema_version") != 1
+        or any(
+            not isinstance(settings.get(key), str)
+            or not settings[key].strip()
+            for key in ("output_dir", "human_edition_root")
+            if key in settings
+        )
+    ):
+        raise ValueError(
+            "Project workflow path settings require schema_version and "
+            "output_dir, with optional human_edition_root."
+        )
+    return settings
+
+
+def _resolve_configured_project_path(
+    workspace_dir: str,
+    value: str,
+    *,
+    must_exist: bool,
+    setting_name: str,
+) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(workspace_dir) / path
+    if path.is_symlink():
+        raise ValueError(f"Configured project {setting_name} cannot be a symbolic link.")
+    path = path.resolve(strict=must_exist)
+    if path.exists() and not path.is_dir():
+        raise NotADirectoryError(
+            f"Configured project {setting_name} is not a directory."
+        )
+    if must_exist and not path.is_dir():
+        raise NotADirectoryError(
+            f"Configured project {setting_name} is not a directory."
+        )
+    return path
+
+
+def _resolve_project_human_edition_root(workspace_dir: str) -> str:
+    settings = _load_project_workflow_path_settings(workspace_dir)
+    value = (
+        settings.get("human_edition_root")
+        if settings is not None
+        else None
+    )
+    if value is None:
+        return str(Path(workspace_dir) / "生肉")
+    human_path = _resolve_configured_project_path(
+        workspace_dir,
+        value,
+        must_exist=False,
+        setting_name="human_edition_root",
+    )
+    return str(human_path)
+
+
+def _resolve_project_output_override(workspace_dir: str) -> Optional[str]:
+    settings = _load_project_workflow_path_settings(workspace_dir)
+    if settings is None:
+        return None
+
+    output_path = _resolve_configured_project_path(
+        workspace_dir,
+        settings["output_dir"],
+        must_exist=True,
+        setting_name="output_dir",
+    )
+    protected_roots = (
+        Path(workspace_dir) / "SourceArchive",
+        Path(workspace_dir) / "RAWs_AI",
+        Path(workspace_dir) / "生肉",
+    )
+    human_edition_root = settings.get("human_edition_root")
+    if human_edition_root:
+        protected_roots += (
+            _resolve_configured_project_path(
+                workspace_dir,
+                human_edition_root,
+                must_exist=False,
+                setting_name="human_edition_root",
+            ),
+        )
+    for protected_root in protected_roots:
+        try:
+            source_path = protected_root.resolve(strict=False)
+            common = Path(os.path.commonpath((str(output_path), str(source_path))))
+        except (OSError, ValueError):
+            continue
+        if common == output_path or common == source_path:
+            raise ValueError(
+                "Configured project output_dir must not overlap source directories."
+            )
+    return str(output_path)
+
+
+def _reject_duplicate_json_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Project workflow path settings contain duplicate fields.")
+        result[key] = value
+    return result
 
 
 # Monkey-patch for aiohttp < 3.9.0 where ClientConnectorDNSError is missing
@@ -88,11 +334,14 @@ urllib.request.proxy_bypass = patched_proxy_bypass
 class Config:
     WORKSPACE_DIR = os.environ.get("TEST_WORKSPACE_DIR", "")
     RAW_DIR = ""
+    AI_EDITION_ROOT = None
     OUTPUT_DIR = ""
     CHAPTER_MAP = None
     SOURCE_MANIFEST_PATH = None
     TM_REVIEWED_PATH = None
+    ALLOW_UNREVIEWED_TM = False
     GLOSSARY_PATH = ""
+    REQUIRE_REVIEWED_GLOSSARY = False
     GUIDELINES_PATH = ""
     INFO_PATH = ""
     
@@ -123,6 +372,7 @@ class Config:
     JYQF_BASE_URL = "https://jyqf.me/v1"
     
     STORY_SUMMARY_PATH = ""
+    REQUIRE_REVIEWED_STORY_SUMMARY = False
     TM_PATH = ""
     
     EXECUTION_MODE = "CODING_PLAN"
@@ -140,10 +390,21 @@ class Config:
     )
 
     @classmethod
+    def _apply_model_environment_overrides(cls):
+        for name in ("INITIAL_MODEL", "PROOFREAD_MODEL", "STYLE_MODEL"):
+            value = os.environ.get(name)
+            if value is not None:
+                setattr(cls, name, value)
+
+    @classmethod
     def load_config(cls, project: Optional[str] = None, config_file: Optional[str] = None):
         cls.CHAPTER_MAP = None
         cls.SOURCE_MANIFEST_PATH = None
+        cls.AI_EDITION_ROOT = None
+        cls.REQUIRE_REVIEWED_STORY_SUMMARY = False
+        cls.REQUIRE_REVIEWED_GLOSSARY = False
         cls.TM_REVIEWED_PATH = None
+        cls.ALLOW_UNREVIEWED_TM = False
         if config_file and not Path(config_file).is_file():
             raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
@@ -211,6 +472,11 @@ class Config:
             cls.PROVIDER_DATA_POLICY = parse_provider_data_policy(
                 os.environ.get("PROVIDER_DATA_POLICY", {})
             )
+            cls.ALLOW_UNREVIEWED_TM = (
+                os.environ.get("ALLOW_UNREVIEWED_TM", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
+            cls._apply_model_environment_overrides()
             
             return
 
@@ -233,9 +499,19 @@ class Config:
         if not project and not config_file:
             projects_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
             if os.path.exists(projects_dir):
-                dirs = [d for d in os.listdir(projects_dir) if os.path.isdir(os.path.join(projects_dir, d)) and d != "example"]
-                if dirs:
+                dirs = sorted(
+                    d
+                    for d in os.listdir(projects_dir)
+                    if os.path.isdir(os.path.join(projects_dir, d))
+                    and d != "example"
+                )
+                if len(dirs) == 1:
                     project = dirs[0]
+                elif len(dirs) > 1:
+                    raise ValueError(
+                        "Multiple translation projects are available; "
+                        "pass --project or set TRANSLATOR_PROJECT."
+                    )
                     
         if project:
             # Prevent path traversal vulnerabilities
@@ -298,25 +574,36 @@ class Config:
                 legacy_summary = os.path.join(workspace_dir, "STORY_SUMMARY.md")
                 if os.path.exists(legacy_summary):
                     cfg_data["STORY_SUMMARY_PATH"] = legacy_summary
+            cfg_data["STORY_SUMMARY_PATH"] = os.path.join(
+                workspace_dir,
+                "Knowledge",
+                "STORY_SUMMARY_reviewed.json",
+            )
+            cfg_data["REQUIRE_REVIEWED_STORY_SUMMARY"] = True
+            cfg_data["GLOSSARY_PATH"] = os.path.join(
+                workspace_dir,
+                "Knowledge",
+                "Glossary_reviewed.json",
+            )
+            cfg_data["REQUIRE_REVIEWED_GLOSSARY"] = True
 
-            cfg_data["RAW_DIR"] = _resolve_project_content_dir(
-                workspace_dir, "生肉", "RAW_DIR"
-            )
-            cfg_data["OUTPUT_DIR"] = _resolve_project_content_dir(
-                workspace_dir, "熟肉", "OUTPUT_DIR"
-            )
+            ai_edition_config = _default_ai_edition_config(workspace_dir)
+            cfg_data["RAW_DIR"] = ai_edition_config["source_root"]
+            cfg_data["SOURCE_MANIFEST_PATH"] = ai_edition_config[
+                "source_manifest_path"
+            ]
+            cfg_data["CHAPTER_MAP"] = ai_edition_config["chapter_map"]
+            cfg_data["AI_EDITION_ROOT"] = ai_edition_config[
+                "ai_edition_root"
+            ]
+            cfg_data["OUTPUT_DIR"] = _resolve_project_output_override(
+                workspace_dir
+            ) or _resolve_project_content_dir(workspace_dir, "熟肉", "OUTPUT_DIR")
         else:
-            workspace_dir = os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
-            cfg_data = {
-                "WORKSPACE_DIR": workspace_dir,
-                "RAW_DIR": os.path.join(workspace_dir, "生肉"),
-                "OUTPUT_DIR": os.path.join(workspace_dir, "熟肉"),
-                "GLOSSARY_PATH": os.path.join(workspace_dir, "Knowledge", "Glossary.json"),
-                "GUIDELINES_PATH": os.path.join(workspace_dir, "Knowledge", "guidelines.txt"),
-                "INFO_PATH": os.path.join(workspace_dir, "Knowledge", "作品基本信息.json"),
-                "STORY_SUMMARY_PATH": os.path.join(workspace_dir, "Knowledge", "STORY_SUMMARY.md"),
-                "TM_PATH": os.path.join(workspace_dir, "Knowledge", "translation_memory.json"),
-            }
+            raise FileNotFoundError(
+                "No translation project with a verified AI edition was selected; "
+                "pass --project or configure an explicit JSON config."
+            )
 
         env_mapping = {
             "TEST_WORKSPACE_DIR": "WORKSPACE_DIR",
@@ -336,9 +623,18 @@ class Config:
 
         for k, v in cfg_data.items():
             setattr(cls, k, v)
+        cls._apply_model_environment_overrides()
 
         cls.TM_REVIEWED_PATH = os.environ.get(
             "TM_REVIEWED_PATH", cfg_data.get("TM_REVIEWED_PATH")
+        )
+        allow_unreviewed_tm = os.environ.get(
+            "ALLOW_UNREVIEWED_TM",
+            cfg_data.get("ALLOW_UNREVIEWED_TM", False),
+        )
+        cls.ALLOW_UNREVIEWED_TM = (
+            str(allow_unreviewed_tm).strip().lower()
+            in {"1", "true", "yes", "on"}
         )
         jyqf_fallback_enabled = os.environ.get(
             "ENABLE_JYQF_FALLBACK",
@@ -409,6 +705,8 @@ class ChapterSpec:
     tm_key: str
     source_version_id: Optional[str] = None
     chapter_position: Optional[int] = None
+    source_input_file: Optional[str] = None
+    source_sha256: Optional[str] = None
 
 
 def get_chapter_specs(
@@ -416,6 +714,7 @@ def get_chapter_specs(
     output_dir: str,
     chapter_map: Optional[list] = None,
     source_manifest_path: Optional[str] = None,
+    source_input_root: Optional[str] = None,
 ) -> List[ChapterSpec]:
     """Resolve a reviewed chapter map, or preserve the legacy flat-directory scan."""
     if source_manifest_path is not None and (
@@ -443,18 +742,27 @@ def get_chapter_specs(
             not isinstance(item, dict)
             or not expected_fields <= set(item)
             or not set(item)
-            <= expected_fields | {"source_version_id", "chapter_position"}
+            <= expected_fields
+            | {
+                "source_version_id",
+                "chapter_position",
+                "source_input_file",
+                "source_sha256",
+            }
         ):
             raise ValueError(
                 f"CHAPTER_MAP entry {index} must contain exactly "
                 "raw_file, translation_file, and tm_key, with optional "
-                "source_version_id and chapter_position."
+                "source_version_id, chapter_position, source_input_file, "
+                "and source_sha256."
             )
         raw_file = item["raw_file"]
         translation_file = item["translation_file"]
         tm_key = item["tm_key"]
         source_version_id = item.get("source_version_id")
         chapter_position = item.get("chapter_position")
+        source_input_file = item.get("source_input_file")
+        source_sha256 = item.get("source_sha256")
         if (
             not isinstance(raw_file, str)
             or not raw_file.lower().endswith(".md")
@@ -475,11 +783,15 @@ def get_chapter_specs(
                 "without control characters."
             )
 
-        raw_path = resolve_relative_path(raw_dir, raw_file)
+        raw_path = resolve_relative_path(
+            raw_dir,
+            raw_file,
+            allow_missing=source_input_file is not None,
+        )
         translation_path = resolve_relative_path(
             output_dir, translation_file, allow_missing=True
         )
-        if not raw_path.is_file():
+        if source_input_file is None and not raw_path.is_file():
             raise ValueError(f"CHAPTER_MAP entry {index} source must be a regular file.")
         if "source_version_id" in item:
             if (
@@ -501,8 +813,14 @@ def get_chapter_specs(
                     raw_dir, source_manifest_path
                 )
                 source_manifest = load_manifest(source_manifest_file)
-            source_artifact = verify_current_normalized_source(
-                raw_dir, source_manifest, source_version_id
+            source_artifact = (
+                verify_current_normalized_source_metadata(
+                    source_manifest, source_version_id
+                )
+                if source_input_file is not None
+                else verify_current_normalized_source(
+                    raw_dir, source_manifest, source_version_id
+                )
             )
             if (
                 source_artifact["kind"] != "normalized_source"
@@ -512,6 +830,41 @@ def get_chapter_specs(
                     f"CHAPTER_MAP entry {index} source version does not match "
                     "its normalized raw_file."
                 )
+        if source_input_file is not None:
+            if (
+                not isinstance(source_input_file, str)
+                or not source_input_file.lower().endswith(".md")
+                or not isinstance(source_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+                or source_version_id is None
+                or source_artifact["content_sha256"] != source_sha256
+                or not isinstance(source_input_root, str)
+                or not source_input_root
+            ):
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} has an invalid AI edition input."
+                )
+            if source_artifact["content_sha256"] != source_sha256:
+                raise ValueError(
+                    f"CHAPTER_MAP entry {index} AI input hash does not match "
+                    "its archived source version."
+                )
+            read_verified_ai_edition_bytes(
+                source_input_root,
+                source_input_file,
+                source_sha256,
+            )
+        elif source_sha256 is not None and (
+            not isinstance(source_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            or (
+                source_version_id is not None
+                and source_artifact["content_sha256"] != source_sha256
+            )
+        ):
+            raise ValueError(
+                f"CHAPTER_MAP entry {index} has an invalid source_sha256."
+            )
         if "chapter_position" in item and (
             isinstance(chapter_position, bool)
             or not isinstance(chapter_position, int)
@@ -544,9 +897,25 @@ def get_chapter_specs(
                 tm_key,
                 source_version_id,
                 chapter_position,
+                source_input_file,
+                source_sha256,
             )
         )
     return specs
+
+
+def _read_chapter_source_text(spec, mapped_paths):
+    if spec.source_input_file is not None:
+        if not Config.AI_EDITION_ROOT or not spec.source_sha256:
+            raise ValueError("AI edition input root and digest are required.")
+        return read_verified_ai_edition_bytes(
+            Config.AI_EDITION_ROOT,
+            spec.source_input_file,
+            spec.source_sha256,
+        ).decode("utf-8")
+    if mapped_paths:
+        return read_relative_text(Config.RAW_DIR, spec.raw_file)
+    return read_child_text(Config.RAW_DIR, spec.raw_file)
 
 
 def get_sliced_story_summary(full_summary: str, current_chap_num: float, window_size: int = 5) -> str:
@@ -1058,7 +1427,58 @@ class TranslationPipeline:
             Config.STORY_SUMMARY_PATH, "story summary input"
         )
         self.story_summary = ""
-        if os.path.exists(Config.STORY_SUMMARY_PATH):
+        source_input_map = {
+            item["raw_file"]: {
+                "source_version_id": item.get("source_version_id"),
+                "source_input_file": item.get("source_input_file"),
+                "source_sha256": item.get("source_sha256"),
+            }
+            for item in (Config.CHAPTER_MAP or [])
+            if isinstance(item, dict)
+            and isinstance(item.get("raw_file"), str)
+            and item.get("source_input_file") is not None
+        }
+        source_input_root = (
+            Config.AI_EDITION_ROOT if source_input_map else None
+        )
+        if Config.REQUIRE_REVIEWED_STORY_SUMMARY:
+            if not os.path.exists(Config.STORY_SUMMARY_PATH):
+                raise ValueError(
+                    "Project translation requires an approved full-book "
+                    "story summary for the current AI source edition."
+                )
+            chapter_specs = get_chapter_specs(
+                Config.RAW_DIR,
+                Config.OUTPUT_DIR,
+                Config.CHAPTER_MAP,
+                Config.SOURCE_MANIFEST_PATH,
+                source_input_root=Config.AI_EDITION_ROOT,
+            )
+            expected_sources = [
+                {
+                    "filename": chapter.raw_file,
+                    "source_version_id": chapter.source_version_id,
+                    "source_input_file": chapter.source_input_file,
+                    "source_sha256": chapter.source_sha256,
+                }
+                for chapter in chapter_specs
+            ]
+            if not expected_sources or any(
+                not source["source_version_id"] for source in expected_sources
+            ):
+                raise ValueError(
+                    "Project translation requires a complete versioned AI chapter map."
+                )
+            self.story_summary = load_reviewed_story_summary(
+                Config.STORY_SUMMARY_PATH,
+                Config.RAW_DIR,
+                Config.SOURCE_MANIFEST_PATH,
+                require_full_book_coverage=True,
+                expected_sources=expected_sources,
+                source_input_root=source_input_root,
+                source_input_map=source_input_map,
+            )
+        elif os.path.exists(Config.STORY_SUMMARY_PATH):
             if Path(Config.STORY_SUMMARY_PATH).suffix.lower() == ".json":
                 self.story_summary = load_reviewed_story_summary(
                     Config.STORY_SUMMARY_PATH,
@@ -1080,6 +1500,10 @@ class TranslationPipeline:
             source_manifest_path=Config.SOURCE_MANIFEST_PATH,
             reviewed_tm_path=Config.TM_REVIEWED_PATH,
             translation_root=Config.OUTPUT_DIR,
+            allow_unreviewed_tm=Config.ALLOW_UNREVIEWED_TM,
+            require_reviewed_glossary=Config.REQUIRE_REVIEWED_GLOSSARY,
+            source_input_root=source_input_root,
+            source_input_map=source_input_map,
         )
 
     def _get_agent_instruction(self, agent_dir: str) -> str:
@@ -1495,7 +1919,7 @@ class TranslationPipeline:
             output_path = resolve_relative_path(
                 Config.OUTPUT_DIR, spec.translation_file, allow_missing=True
             )
-            raw_text = read_relative_text(Config.RAW_DIR, spec.raw_file)
+            raw_text = _read_chapter_source_text(spec, mapped_paths)
         else:
             output_path = resolve_child_path(
                 Config.OUTPUT_DIR, spec.translation_file, allow_missing=True
@@ -1504,7 +1928,7 @@ class TranslationPipeline:
 
         if spec.source_version_id is not None:
             if raw_text is None:
-                raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+                raw_text = _read_chapter_source_text(spec, mapped_paths)
             self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
 
         pending_transaction = has_pending_chapter_transaction(
@@ -1512,7 +1936,7 @@ class TranslationPipeline:
         )
         if pending_transaction:
             if raw_text is None:
-                raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+                raw_text = _read_chapter_source_text(spec, mapped_paths)
             self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
             recovered = recover_chapter_translation(
                 Config.OUTPUT_DIR,
@@ -1524,6 +1948,25 @@ class TranslationPipeline:
             if recovered:
                 print(f"RECOVERED: {spec.translation_file}")
                 return
+
+        if spec.source_version_id is not None:
+            tm_chapters = self.rag.tm_data.get("chapters", {})
+            has_tm_entry = (
+                isinstance(tm_chapters, dict) and spec.tm_key in tm_chapters
+            )
+            if output_path.exists() or has_tm_entry:
+                if is_chapter_translation_committed(
+                    Config.OUTPUT_DIR,
+                    raw_text,
+                    spec,
+                    self.rag,
+                ):
+                    print(f">>> Skipping verified {spec.translation_file}")
+                    return
+                raise FileExistsError(
+                    "Existing translation output or memory does not match "
+                    "the current source version; preserving it for review."
+                )
 
         if output_path.exists():
             tm_chapters = self.rag.tm_data.get("chapters", {})
@@ -1541,7 +1984,7 @@ class TranslationPipeline:
             print(f">>> Skipping {spec.translation_file}")
             return
         if raw_text is None:
-            raw_text = read_child_text(Config.RAW_DIR, spec.raw_file)
+            raw_text = _read_chapter_source_text(spec, mapped_paths)
         if not raw_text.strip():
             self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
             print(f"Chapter {spec.raw_file} is empty. Writing empty output.")
@@ -1620,11 +2063,7 @@ class TranslationPipeline:
             raise ValueError("Chapter transaction translation is not normalized.")
 
     def _verify_chapter_source_snapshot(self, spec, raw_text, mapped_paths):
-        current_text = (
-            read_relative_text(Config.RAW_DIR, spec.raw_file)
-            if mapped_paths
-            else read_child_text(Config.RAW_DIR, spec.raw_file)
-        )
+        current_text = _read_chapter_source_text(spec, mapped_paths)
         if current_text != raw_text:
             raise ValueError(
                 f"Source chapter {spec.raw_file} changed during processing."
@@ -1641,10 +2080,17 @@ class TranslationPipeline:
             Config.SOURCE_MANIFEST_PATH,
         )
         manifest = load_manifest(manifest_path)
-        artifact = verify_current_normalized_source(
-            Config.RAW_DIR,
-            manifest,
-            spec.source_version_id,
+        artifact = (
+            verify_current_normalized_source_metadata(
+                manifest,
+                spec.source_version_id,
+            )
+            if spec.source_input_file is not None
+            else verify_current_normalized_source(
+                Config.RAW_DIR,
+                manifest,
+                spec.source_version_id,
+            )
         )
         if (
             artifact["kind"] != "normalized_source"
@@ -1652,6 +2098,13 @@ class TranslationPipeline:
         ):
             raise ValueError(
                 "Source version no longer matches the configured chapter."
+            )
+        if (
+            spec.source_sha256 is not None
+            and artifact["content_sha256"] != spec.source_sha256
+        ):
+            raise ValueError(
+                "Source version hash no longer matches the configured chapter."
             )
 
     async def run_all(self):
@@ -1661,6 +2114,7 @@ class TranslationPipeline:
             Config.OUTPUT_DIR,
             Config.CHAPTER_MAP,
             Config.SOURCE_MANIFEST_PATH,
+            source_input_root=Config.AI_EDITION_ROOT,
         )
         if not chapters:
             raise RuntimeError(

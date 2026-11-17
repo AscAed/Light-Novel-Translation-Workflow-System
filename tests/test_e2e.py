@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import os
 import sys
@@ -15,6 +16,10 @@ from unittest.mock import patch
 from scripts.ingest_local_sources import main as ingest_local_sources_main
 from scripts.run_kakuyomu_workflow import run_workflow
 from source_ingestion import collect_source, materialize_episode_markdown
+from story_summary_review import (
+    create_summary_review_template,
+    publish_reviewed_summary,
+)
 from translation_plan_approval import create_approval_receipt, write_new_json
 from tests.test_kakuyomu_page_source import (
     EPISODE_ID as KAKUYOMU_EPISODE_ID,
@@ -332,7 +337,7 @@ class E2ETestSuite(unittest.TestCase):
                     self.knowledge_dir, "作品基本信息.json"
                 ),
                 STORY_SUMMARY_PATH=os.path.join(
-                    self.knowledge_dir, "STORY_SUMMARY.md"
+                    self.knowledge_dir, "STORY_SUMMARY_reviewed.json"
                 ),
                 TM_PATH=os.path.join(
                     self.knowledge_dir, "translation_memory.json"
@@ -351,6 +356,10 @@ class E2ETestSuite(unittest.TestCase):
                 "scripts.run_kakuyomu_workflow.TranslationPipeline",
                 wraps=TranslationPipeline,
             ) as pipeline_factory,
+            patch(
+                "scripts.run_kakuyomu_workflow._resolve_project_human_edition_root",
+                return_value=os.path.join(self.test_dir, "human-edition"),
+            ),
             redirect_stdout(workflow_output),
         ):
             preview_report = run_workflow(
@@ -359,11 +368,41 @@ class E2ETestSuite(unittest.TestCase):
                 translation_root=self.output_dir,
                 config_file=config_path,
                 discovered_catalog="source_catalog.discovered.json",
+                source_edition="normalized_source",
                 config_loader=load_test_config,
                 discovery_factory=discover_test_work,
             )
-            self.assertEqual(preview_report["status"], "approval_required")
+            self.assertEqual(
+                preview_report["status"],
+                "approval_required",
+                preview_report,
+            )
             pipeline_factory.assert_not_called()
+            self.assertEqual(
+                preview_report["source_editions"]["status"],
+                "materialized",
+            )
+
+            preview_report = run_workflow(
+                source_root=self.raw_dir,
+                catalog=preview_report["discovered_catalog"],
+                translation_root=self.output_dir,
+                config_file=config_path,
+                checkpoint="source_checkpoint.discovered.json",
+                config_loader=load_test_config,
+                adapter_factory=lambda *_args: (
+                    discovered_works[0].create_page_adapter()
+                ),
+            )
+            self.assertEqual(preview_report["status"], "approval_required")
+            self.assertEqual(
+                preview_report["source_editions"]["status"],
+                "materialized",
+            )
+            self.assertEqual(
+                preview_report["plan"]["source_edition"]["profile_id"],
+                "ai-efficient-v1",
+            )
             receipt_path = os.path.join(
                 self.test_dir, "translation-plan-approval.json"
             )
@@ -373,6 +412,88 @@ class E2ETestSuite(unittest.TestCase):
                     preview_report["plan"],
                     "synthetic reviewer",
                 ),
+            )
+            planned_episodes = preview_report["plan"]["episodes"]
+            source_files = []
+            source_texts = []
+            for episode in planned_episodes:
+                source_path = Path(
+                    self.test_dir,
+                    "RAWs_AI",
+                    episode["source_input_file"],
+                )
+                source_text = source_path.read_text(encoding="utf-8")
+                source_texts.append(source_text)
+                source_files.append(
+                    {
+                        "filename": episode["source_file"],
+                        "source_sha256": hashlib.sha256(
+                            source_text.encode("utf-8")
+                        ).hexdigest(),
+                        "source_version_id": episode["source_version_id"],
+                    }
+                )
+            summary_chapters = [
+                source["filename"] for source in source_files
+            ]
+            input_characters = sum(map(len, source_texts))
+            self.write_file(
+                os.path.join(
+                    self.knowledge_dir, "STORY_SUMMARY_draft.md"
+                ),
+                "# Synthetic Whole-Book Summary\n\nOne chapter fixture.",
+            )
+            self.write_file(
+                os.path.join(
+                    self.knowledge_dir, "KNOWLEDGE_PROVENANCE_draft.json"
+                ),
+                {
+                    "schema_version": 1,
+                    "artifact_status": "complete",
+                    "source_files": source_files,
+                    "summary_source_chapters": summary_chapters,
+                    "input_coverage": {
+                        "scope": "all_configured_chapters",
+                        "complete_for_configured_chapters": True,
+                        "configured_chapter_count": len(source_files),
+                        "included_chapter_count": len(source_files),
+                        "input_characters": input_characters,
+                        "input_character_limit": max(1, input_characters),
+                    },
+                },
+                is_json=True,
+            )
+            summary_receipt = os.path.join(
+                self.knowledge_dir, "summary-review.json"
+            )
+            create_summary_review_template(
+                self.knowledge_dir, os.path.basename(summary_receipt)
+            )
+            summary_review = json.loads(
+                Path(summary_receipt).read_text(encoding="utf-8")
+            )
+            summary_review.update(
+                {
+                    "reviewer": {
+                        "provider_id": "synthetic-reviewer",
+                        "model_id": "fixture-v1",
+                        "review_id": "summary-review-001",
+                    },
+                    "reviewed_at_utc": "2026-11-16T00:00:00Z",
+                    "decision": "approved",
+                    "rationale": "Synthetic whole-book summary fixture.",
+                }
+            )
+            Path(summary_receipt).write_text(
+                json.dumps(summary_review, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            publish_reviewed_summary(
+                self.knowledge_dir,
+                self.raw_dir,
+                "source_editions_manifest.json",
+                os.path.basename(summary_receipt),
+                "STORY_SUMMARY_reviewed.json",
             )
             report = run_workflow(
                 source_root=self.raw_dir,
@@ -423,9 +544,13 @@ class E2ETestSuite(unittest.TestCase):
         tm_path = Path(self.knowledge_dir, "translation_memory.json")
         tm = json.loads(tm_path.read_text(encoding="utf-8"))
         tm_key = f"kakuyomu:{KAKUYOMU_WORK_ID}:{KAKUYOMU_EPISODE_ID}"
+        planned_ai_source = Path(
+            self.raw_dir,
+            planned_episodes[0]["source_file"],
+        ).read_text(encoding="utf-8")
         self.assertEqual(
             "\n\n".join(pair["raw"] for pair in tm["chapters"][tm_key]),
-            KAKUYOMU_EXPECTED_TEXT,
+            planned_ai_source,
         )
         self.assertEqual(
             tm["source_provenance"][tm_key]["source_version_id"],

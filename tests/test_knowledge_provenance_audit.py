@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.validate_knowledge_provenance import (
     audit_knowledge_provenance,
@@ -93,6 +94,35 @@ class KnowledgeProvenanceAuditTests(unittest.TestCase):
             (self.archive_root / self.artifact["relative_path"]).read_bytes(),
             self.source_bytes,
         )
+
+    def test_project_audit_reads_ai_mirror_not_archive_body(self):
+        ai_root = self.root / "RAWs_AI"
+        ai_root.mkdir()
+        ai_path = ai_root / "episode.md"
+        ai_path.write_bytes(
+            (self.archive_root / self.artifact["relative_path"]).read_bytes()
+        )
+        source_sha256 = hashlib.sha256(ai_path.read_bytes()).hexdigest()
+
+        with patch(
+            "source_manifest._verify_artifact_file",
+            side_effect=AssertionError("archive body read during translation"),
+        ):
+            findings = audit_knowledge_provenance(
+                self.provenance,
+                str(self.archive_root),
+                "source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map={
+                    self.artifact["relative_path"]: {
+                        "source_version_id": self.artifact["version_id"],
+                        "source_input_file": "episode.md",
+                        "source_sha256": source_sha256,
+                    }
+                },
+            )
+
+        self.assertEqual([item["status"] for item in findings], ["verified"])
 
     def test_reports_newer_source_version_as_stale(self):
         self.source_file.write_bytes(b"Updated source.\r\n")

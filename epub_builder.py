@@ -99,6 +99,9 @@ def _resolve_pandoc_executable(executable):
     executable = os.fspath(executable)
     if os.path.dirname(executable):
         return os.path.abspath(executable)
+    resolved = shutil.which(executable)
+    if resolved:
+        return os.path.abspath(resolved)
     return executable
 
 

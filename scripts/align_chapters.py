@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_manifest import load_manifest, verify_current_normalized_source
+from source_editions import read_verified_ai_edition_bytes
 from utils import (
     open_regular_file,
     parse_api_timeout,
@@ -24,7 +25,7 @@ from utils import (
 )
 
 
-def _read_bound_source(raw_dir, spec, source_manifest_path):
+def _read_bound_source(raw_dir, ai_root, spec, source_manifest_path):
     manifest_path = resolve_relative_path(raw_dir, source_manifest_path)
     manifest = load_manifest(manifest_path)
     artifact = verify_current_normalized_source(
@@ -35,6 +36,20 @@ def _read_bound_source(raw_dir, spec, source_manifest_path):
         or artifact["relative_path"] != spec.raw_file
     ):
         raise ValueError("Source version does not match the mapped chapter.")
+    if (
+        spec.source_sha256 is not None
+        and artifact["content_sha256"] != spec.source_sha256
+    ):
+        raise ValueError("Source version hash does not match the mapped chapter.")
+    if spec.source_input_file is not None:
+        if not ai_root or not spec.source_sha256:
+            raise ValueError("AI edition input root and digest are required.")
+        content = read_verified_ai_edition_bytes(
+            ai_root,
+            spec.source_input_file,
+            spec.source_sha256,
+        )
+        return content.decode("utf-8")
     source_path = resolve_relative_path(raw_dir, spec.raw_file)
     with open_regular_file(source_path, binary=True) as stream:
         content = stream.read()
@@ -403,6 +418,7 @@ def main():
             output_dir,
             Config.CHAPTER_MAP,
             Config.SOURCE_MANIFEST_PATH,
+            source_input_root=Config.AI_EDITION_ROOT,
         )
     except (OSError, ValueError) as exc:
         print(
@@ -435,6 +451,7 @@ def main():
             try:
                 raw_content = _read_bound_source(
                     raw_dir,
+                    Config.AI_EDITION_ROOT,
                     spec,
                     Config.SOURCE_MANIFEST_PATH,
                 )

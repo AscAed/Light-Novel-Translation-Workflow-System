@@ -12,6 +12,8 @@ from source_manifest import (
     new_manifest,
     parse_manifest_bytes,
     validate_manifest,
+    verify_current_normalized_source,
+    verify_current_normalized_source_metadata,
     verify_manifest_artifact,
     verify_manifest_files,
     verified_manifest_content_bytes,
@@ -170,6 +172,35 @@ class SourceManifestTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "not in the manifest"):
             verify_manifest_artifact(root, manifest, "missing-version")
+
+    def test_normalized_source_metadata_verification_does_not_read_archive_files(self):
+        root = Path(self.temp_dir.name) / "archive"
+        root.mkdir()
+        raw = self._artifact(
+            artifact_id="work-1/episode-1/raw",
+            version_id="raw-version-1",
+            content=b"raw source",
+            relative_path="raw/episode-1.txt",
+        )
+        normalized = self._artifact(
+            artifact_id="work-1/episode-1/normalized",
+            version_id="normalized-version-1",
+            kind="normalized_source",
+            content=b"normalized source",
+            relative_path="normalized/episode-1.md",
+            parent_version_ids=["raw-version-1"],
+        )
+        manifest = {"schema_version": 1, "artifacts": [raw, normalized]}
+
+        artifact = verify_current_normalized_source_metadata(
+            manifest, "normalized-version-1"
+        )
+
+        self.assertEqual(artifact, normalized)
+        with self.assertRaisesRegex(ValueError, "could not be verified"):
+            verify_current_normalized_source(
+                root, manifest, "normalized-version-1"
+            )
 
     def test_skips_metadata_without_a_file_path(self):
         artifact = self._artifact(

@@ -28,6 +28,8 @@ _EPISODE_FIELDS = (
     "title",
     "source_file",
     "source_version_id",
+    "source_input_file",
+    "source_sha256",
     "translation_file",
     "tm_key",
 )
@@ -90,7 +92,7 @@ def _require_sha256(value, field: str) -> str:
 def _validate_plan_shape(plan: dict) -> list[dict]:
     if (
         isinstance(plan.get("schema_version"), bool)
-        or plan.get("schema_version") != 1
+        or plan.get("schema_version") != 2
     ):
         raise ValueError("Translation plan schema version is unsupported.")
     for field in _PLAN_FIELDS:
@@ -104,6 +106,30 @@ def _validate_plan_shape(plan: dict) -> list[dict]:
         "translation_root",
     ):
         _require_text(plan[field], field)
+    if "source_edition" in plan and plan["source_edition"] is not None:
+        source_edition = plan["source_edition"]
+        expected_source_edition_fields = {
+            "profile_id",
+            "index_root",
+            "index_relative_path",
+            "index_sha256",
+            "manifest",
+            "manifest_sha256",
+        }
+        if (
+            not isinstance(source_edition, dict)
+            or set(source_edition) != expected_source_edition_fields
+        ):
+            raise ValueError("Translation plan source edition is invalid.")
+        for field in (
+            "profile_id",
+            "index_root",
+            "index_relative_path",
+            "manifest",
+        ):
+            _require_text(source_edition[field], field, maximum=4096)
+        for field in ("index_sha256", "manifest_sha256"):
+            _require_sha256(source_edition[field], field)
 
     episode_count = plan["episode_count"]
     episodes = plan.get("episodes")
@@ -128,9 +154,15 @@ def _validate_plan_shape(plan: dict) -> list[dict]:
             "tm_key",
         ):
             _require_text(episode[field], field, maximum=4096)
-        for field in ("source_file", "source_version_id"):
+        for field in (
+            "source_file",
+            "source_version_id",
+            "source_input_file",
+        ):
             if episode[field] is not None:
                 _require_text(episode[field], field, maximum=4096)
+        if episode["source_sha256"] is not None:
+            _require_sha256(episode["source_sha256"], "source_sha256")
         position = episode["position"]
         if (
             isinstance(position, bool)
@@ -145,6 +177,8 @@ def translation_plan_sha256(plan: dict) -> str:
     """Hash only stable source-to-output mapping identity, not run state."""
     episodes = _validate_plan_shape(plan)
     identity = {field: plan[field] for field in _PLAN_FIELDS}
+    if "source_edition" in plan:
+        identity["source_edition"] = plan["source_edition"]
     identity["episodes"] = [
         {field: episode[field] for field in _EPISODE_FIELDS}
         for episode in episodes
@@ -182,6 +216,15 @@ def _require_approvable_plan(plan: dict) -> str:
     if any(
         episode["source_file"] is None
         or episode["source_version_id"] is None
+        or episode["source_sha256"] is None
+        or (
+            plan.get("source_edition") is not None
+            and episode["source_input_file"] is None
+        )
+        or (
+            plan.get("source_edition") is None
+            and episode["source_input_file"] is not None
+        )
         for episode in episodes
     ):
         raise ValueError("Every approved episode must have a verified source.")
@@ -242,6 +285,15 @@ def verify_approval_receipt(path: str | Path, plan: dict) -> dict:
     if not (ready or resumable) or any(
         episode["source_file"] is None
         or episode["source_version_id"] is None
+        or episode["source_sha256"] is None
+        or (
+            plan.get("source_edition") is not None
+            and episode["source_input_file"] is None
+        )
+        or (
+            plan.get("source_edition") is None
+            and episode["source_input_file"] is not None
+        )
         for episode in episodes
     ):
         raise ValueError("Current translation plan is not safe to execute.")

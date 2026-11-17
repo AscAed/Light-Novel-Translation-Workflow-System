@@ -1,7 +1,7 @@
 # 模型与 API 配置方案
 
 > 状态：`计划`。资料访问日期：2026-11-14。本文记录用户提供的渠道报价/参考配额、公开资料核实结果、建议配置和待验证事项；不代表任何端点、账户或翻译质量已验收。
-> 范围：模型与 API 选型方案及后续开发计划。2026-11-14 的后续实施已将有限正数 `API_TIMEOUT` 传入 OpenAI-compatible 聊天、Gemini 生成、RAG embedding 和章节对齐 embedding；该局部实现不构成通用 Provider 配置、数据授权或真实端点评估。本文所列建议仍未通过本项目样本评测。
+> 范围：模型与 API 选型方案及后续开发计划。2026-11-14 的后续实施已将有限正数 `API_TIMEOUT` 传入 OpenAI-compatible 聊天、Gemini 生成、RAG embedding 和章节对齐 embedding；2026-11-17 新增三阶段模型环境变量覆盖。局部实现不构成通用 Provider 配置、数据授权或真实端点评估。本文所列建议仍未通过本项目样本评测。
 
 ## 证据与判断规则
 
@@ -13,7 +13,7 @@
 
 ## 试点渠道与数据边界
 
-用户指定 JOJO Code（`https://max2.jojocode.com/v1`）的 `gpt-6-Luna` 为主、JYQF AI（`https://jyqf.me/v1`）的渠道模型 `deepseek-v4.1-flash` 为备用，两者均为中转站；试点为《祝福のネトラレラ》第 1 话，该书已由用户明确确认获得授权。代码提供显式的 `gpt-6-luna*` → `JOJO_BASE_URL`/`JOJO_API_KEY` 和精确别名 `deepseek-v4.1-flash` → `JYQF_BASE_URL`/`JYQF_API_KEY`；通用 `deepseek-flash` 仍路由到原有 DeepSeek Provider。默认模型不变，路由不代表端点已接通。用户授权主备模型接收各自职责所需的最小数据类别；当前代码已按实际调用阶段声明并预检：标注/初译为 `source_text` + `book_knowledge`，校对/润色为三类全集，启用严格反思时初译模型也需三类全集。`ENABLE_JYQF_FALLBACK=true` 可显式启用 JOJO 阶段到固定 JYQF 模型的有限回退；默认关闭，只有连接错误、HTTP 408/429/5xx 会触发，且回退前及请求时均验证 JYQF 对同一阶段类别的授权。鉴权、请求/schema 错误和内容拦截不回退，备用失败后停止，不再调用 Gemini。回退可能产生重复费用。模型调用 ID、端点、协议兼容性及真实可用性未验证。作品授权已确认，不是待办或阻塞；平台规则、Provider/Notion 数据接收边界分别处理。
+用户指定 JOJO Code（`https://max2.jojocode.com/v1`）的 `gpt-6-Luna` 为主、JYQF AI（`https://jyqf.me/v1`）的渠道模型 `deepseek-v4.1-flash` 为备用，两者均为中转站；试点为《祝福のネトラレラ》第 1 话，该书已由用户明确确认获得授权。代码提供显式的 `gpt-6-luna*` → `JOJO_BASE_URL`/`JOJO_API_KEY` 和精确别名 `deepseek-v4.1-flash` → `JYQF_BASE_URL`/`JYQF_API_KEY`；通用 `deepseek-flash` 仍路由到原有 DeepSeek Provider。代码模型默认保持原值；2026-11-17 增加 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 环境变量覆盖后，当前忽略的本机 `.env` 将试点三阶段主模型设为 `gpt-6-Luna`，JYQF 回退开关开启。此本地选择不证明端点或模型 ID 已接通。用户授权主备模型接收各自职责所需的最小数据类别；当前代码已按实际调用阶段声明并预检：标注/初译为 `source_text` + `book_knowledge`，校对/润色为三类全集，启用严格反思时初译模型也需三类全集。本机 allowlist 对 JOJO/JYQF 只列出这些类别，不含 `evaluation_samples`；Gemini、Notion 不在授权范围。只有连接错误、HTTP 408/429/5xx 会触发一次 JYQF 回退；鉴权、请求/schema 错误和内容拦截不回退，备用失败后停止，不再调用 Gemini。回退可能产生重复费用。模型调用 ID、端点、协议兼容性及真实可用性未验证。作品授权已确认，不是待办或阻塞；平台规则、Provider/Notion 数据接收边界分别处理。
 
 | 调用范围 | 当前代码声明的类别或待核事项 | 试点约束 |
 | --- | --- | --- |
@@ -23,7 +23,7 @@
 | 嵌入、章节对齐与知识候选抽取 | 相关路径声明 `source_text`；现有 RAG 使用 Gemini embedding，不能假设已由两个中转站提供。 | 明确实际接收方、协议及数据范围后再授权；嵌入模型兼容性尚未验证。 |
 | 评测样本 | `evaluation_samples` 是独立授权类别；真实评测的数据组成和调用链尚待设计，当前 JOJO/JYQF 最小职责授权不包含该类别。 | 评测前明确样本、接收方和用途；不能从试点作品授权或翻译职责授权推定评测数据可外发。 |
 
-端点、账户、当前凭据、模型 ID、渠道条款、协议兼容性及通用渠道路由均`未验证`；当前按模型名路由的实现不等于已接入上述渠道。指定书籍授权已由用户明确确认，不是本方案的阻塞；真实调用前仍须核实实际接收方/处理方式，并在需要时通过安全方式配置当前 Key，不写入聊天、文档或日志。本次未调用 API。
+端点、账户、当前凭据、模型 ID 与端点兼容性、渠道条款、协议兼容性及通用渠道路由均`未验证`；当前按模型名路由及本机阶段选择不等于已接通上述渠道。指定书籍授权已由用户明确确认，不是本方案的阻塞；当前本机未配置 JOJO/JYQF 凭据，真实调用前仍须由凭据所有者安全设置当前 Key，并核实实际接收方/处理方式，不写入聊天、文档或日志。本轮未调用 API。
 
 ## 模型目录
 
@@ -137,10 +137,11 @@
 - 当前显式 Gemini 回退仅允许 SDK 连接/超时异常及 HTTP 408/429/5xx；鉴权、请求/schema 错误和内容拦截不触发回退。该本地错误边界由单测和 mock E2E 验证，不构成 Provider 配置、逐阶段绑定、逐数据类别授权或真实服务兼容性验收。
 - JOJO→JYQF 回退由 `ENABLE_JYQF_FALLBACK` 显式启用，默认关闭，只覆盖 JOJO 主路由；使用 `deepseek-v4.1-flash`，复用同一请求提示词与响应 schema，备用客户端设置 `max_retries=0`，避免 SDK 在单次回退调用内自动重试。阶段启动预检会校验 JYQF URL、数据类别授权和远端 Key；`UnifiedAgent` 创建 JYQF 客户端前再次检查类别，本地 loopback 按本地端点规则处理。回退失败会直接传播，不级联 Gemini。仅有合成契约测试证据，mock E2E 不覆盖该回退路径；真实中转站兼容性、费用与模型表现未验证。
 - `API_TIMEOUT` 默认 10 秒且必须是有限正数；当前传入 OpenAI-compatible 聊天和 Gemini 生成、RAG embedding、章节对齐 embedding 调用。Gemini SDK `HttpOptions.timeout` 使用毫秒，由秒值换算；默认值对慢速模型可能过短，须按获准端点实测后由操作者配置。
-- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别；启动预检只检查当前运行时可达的 Gemini 回退阶段，并逐阶段检查 JOJO→JYQF 回退与实际调用一致。类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别，但当前 allowlist 默认仍为空，真实端点和实际请求尚未验收。
+- `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别；启动预检只检查当前运行时可达的 Gemini 回退阶段，并逐阶段检查 JOJO→JYQF 回退与实际调用一致。类别未全部获准时请求在客户端边界被拒绝。用户已授权 JOJO/JYQF 接收各自职责所需的最小类别；当前忽略的本机 `.env` 已为试点列出 `source_text`、`translation_text`、`book_knowledge`，代码默认仍为空。缺少 credentials；真实端点和实际请求尚未验收。
+- 2026-11-17 配置增量：`Config.load_config` 允许 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 由环境变量覆盖 JSON 配置；本机试点用例选择 JOJO 主模型并启用已选 JYQF 有限回退。回归覆盖环境变量优先级。配置系统仍未提供一般化 Provider/模型能力目录、阶段 UI、凭据存储或端点验证命令。
 - 知识抽取脚本使用 `Config.PROOFREAD_MODEL` 发起请求，并复用 `get_primary_provider_route` 选择对应 Provider ID、base URL 与专属 Key；未知模型名在读取来源前失败，避免模型 ID 与实际接收 Provider 不一致。该共用路由不自动授权知识抽取用途，仍须该 Provider 的 `source_text` 在本地 allowlist 中获准；全书预算/分批与 tokenizer 适配未实现。
 - `CODING_PLAN_BASE_URL`/`CODING_PLAN_API_KEY` 仍在配置类中声明/读取，但没有接入当前主请求路由。用户决定暂不作为独立 Provider 支持，保留未接入配置；不能据此声称已实现 Coding Plan 或可替换 Provider。
-- 以上是静态代码与 mock 测试基线；本次未调用真实端点。M1 仍须定义 Provider/模型/凭据/阶段绑定契约，并为当前真实配置建立迁移和兼容规则。
+- 以上是静态代码与 mock 测试基线；本轮未调用真实端点。M1 仍须定义完整 Provider/模型/凭据/阶段绑定契约，并为当前真实配置建立迁移和兼容规则。
 
 | 工作包 | 目标与主要任务 | 依赖 | 验收标准 | 主要风险/缓解 |
 | --- | --- | --- | --- | --- |

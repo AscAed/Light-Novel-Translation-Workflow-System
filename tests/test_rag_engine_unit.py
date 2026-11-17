@@ -105,11 +105,28 @@ Chapter 2 specific guidelines.
         mock_embed.assert_not_called()
 
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    def test_unreviewed_tm_is_not_retrieved_by_default(self, mock_embed):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        import asyncio
+        res = asyncio.run(engine.query_translation_memory("hello"))
+
+        self.assertEqual(res, [])
+        self.assertEqual(engine.tm_data, self.default_tm)
+        self.assertEqual(engine.tm_retrieval_data, {"chapters": {}})
+        mock_embed.assert_not_called()
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_query_translation_memory_similarity(self, mock_embed):
         """Verify cosine similarity search retrieves the closest matches from TM."""
         # Query matching closer to the first vector
         mock_embed.return_value = [0.11] * 768
-        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            allow_unreviewed_tm=True,
+        )
         
         import asyncio
         res = asyncio.run(engine.query_translation_memory("hello", top_k=1))

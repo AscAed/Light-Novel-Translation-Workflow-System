@@ -25,11 +25,17 @@ from kakuyomu_page_source import (  # noqa: E402
 from pipeline import (  # noqa: E402
     Config,
     TranslationPipeline,
+    _resolve_project_human_edition_root,
     validate_provider_configuration,
 )
 from scripts.ingest_kakuyomu_pages import (  # noqa: E402
     _load_catalog,
     _validate_output_paths,
+)
+from scripts.snapshot_downstream_freshness import (  # noqa: E402
+    _load_json_regular,
+    build_downstream_freshness_snapshot,
+    persist_downstream_freshness_snapshot,
 )
 from source_ingestion import (  # noqa: E402
     ArchiveLimitExceeded,
@@ -46,7 +52,14 @@ from source_manifest import (  # noqa: E402
     latest_artifacts_by_kind,
     load_manifest,
     verify_manifest_artifact,
+    verify_current_normalized_source_metadata,
 )
+from source_editions import (  # noqa: E402
+    prepare_source_editions,
+    read_verified_ai_edition_bytes,
+    verify_ai_edition_index,
+)
+from story_summary_review import load_reviewed_story_summary  # noqa: E402
 from translation_plan_approval import (  # noqa: E402
     translation_plan_sha256,
     verify_approval_receipt,
@@ -102,6 +115,29 @@ def _roots_are_disjoint(source_path: Path, translation_path: Path) -> bool:
     return common not in (source_path, translation_path)
 
 
+def _validate_workflow_root_boundaries(
+    source_path: Path,
+    translation_path: Path,
+    human_edition_root: str,
+    ai_edition_root: str,
+) -> None:
+    roots = (
+        source_path.resolve(strict=False),
+        Path(human_edition_root).resolve(strict=False),
+        Path(ai_edition_root).resolve(strict=False),
+        translation_path.resolve(strict=False),
+    )
+    if any(
+        not _roots_are_disjoint(roots[left], roots[right])
+        for left in range(len(roots))
+        for right in range(left + 1, len(roots))
+    ):
+        raise ValueError(
+            "SourceArchive, human edition, RAWs_AI, and translation roots "
+            "must be pairwise disjoint."
+        )
+
+
 def _resolve_roots(source_root: str, translation_root: str) -> tuple[Path, Path]:
     source_path = Path(source_root).resolve(strict=True)
     translation_path = Path(translation_root).resolve(strict=True)
@@ -110,6 +146,19 @@ def _resolve_roots(source_root: str, translation_root: str) -> tuple[Path, Path]
     if not _roots_are_disjoint(source_path, translation_path):
         raise ValueError("Source and translation roots must be disjoint.")
     return source_path, translation_path
+
+
+def _validate_plan_output_location(source_root: str, plan_output: str) -> None:
+    archive_root = Path(source_root).resolve(strict=True)
+    output_path = Path(plan_output).resolve(strict=False)
+    try:
+        output_path.relative_to(archive_root)
+    except ValueError:
+        return
+    raise ValueError(
+        "Translation plan reports must be stored outside SourceArchive; "
+        "use the project's Workflow/Plans directory."
+    )
 
 
 def _translation_targets(work_id: str, episodes) -> list[dict]:
@@ -147,18 +196,47 @@ def _translation_targets(work_id: str, episodes) -> list[dict]:
     return targets
 
 
+def _select_source_edition(
+    source_root: Path,
+    source_edition: str,
+    ai_edition_root: str | None,
+) -> str | None:
+    if source_edition not in {"ai", "normalized_source"}:
+        raise ValueError("Source edition must be 'ai' or 'normalized_source'.")
+    if source_edition == "normalized_source":
+        if ai_edition_root is not None:
+            raise ValueError(
+                "--ai-edition-root cannot be combined with "
+                "--source-edition normalized_source."
+            )
+        return None
+    if ai_edition_root is not None:
+        if not ai_edition_root.strip():
+            raise ValueError("AI edition root must not be empty.")
+        return ai_edition_root
+    return str(source_root.parent / "RAWs_AI")
+
+
 def preview_translation_plan(
     *,
     source_root: str,
     catalog: str,
     translation_root: str,
     manifest: str = "source_manifest.json",
+    source_edition: str = "ai",
+    ai_edition_root: str | None = None,
+    edition_manifest: str = "source_editions_manifest.json",
 ) -> dict:
     """Build a read-only, source-verified chapter map without network or providers."""
     source_path, translation_path = _resolve_roots(
         source_root, translation_root
     )
-    work_id, episodes, _catalog_path = _load_catalog(
+    selected_ai_edition_root = _select_source_edition(
+        source_path,
+        source_edition,
+        ai_edition_root,
+    )
+    work_id, episodes, catalog_path = _load_catalog(
         str(source_path), catalog
     )
     targets = _translation_targets(work_id, episodes)
@@ -171,6 +249,49 @@ def preview_translation_plan(
     normalized_by_id = latest_artifacts_by_kind(
         source_manifest, "normalized_source"
     )
+
+    ai_edition = None
+    ai_edition_issue = None
+    if selected_ai_edition_root is not None:
+        try:
+            ai_path = Path(selected_ai_edition_root).resolve(strict=True)
+            if not ai_path.is_dir():
+                raise ValueError("AI edition root must be a directory.")
+            if not _roots_are_disjoint(source_path, ai_path) or not (
+                _roots_are_disjoint(translation_path, ai_path)
+            ):
+                raise ValueError(
+                    "Source, translation, and AI edition roots must be disjoint."
+                )
+            ai_edition = verify_ai_edition_index(
+                source_root=str(source_path),
+                ai_root=str(ai_path),
+                source_manifest_relative_path=manifest,
+                edition_manifest_relative_path=edition_manifest,
+            )
+            index = ai_edition["index"]
+            index_catalog = index.get("catalog")
+            with open_regular_file(catalog_path, binary=True) as stream:
+                catalog_sha256 = hashlib.sha256(stream.read()).hexdigest()
+            indexed_episodes = ai_edition["episodes_by_id"]
+            expected_ids = {target["episode_id"] for target in targets}
+            if (
+                not isinstance(index_catalog, dict)
+                or index_catalog.get("sha256") != catalog_sha256
+                or set(indexed_episodes) != expected_ids
+            ):
+                ai_edition_issue = "stale_ai_edition_catalog"
+            else:
+                for episode in episodes:
+                    indexed = indexed_episodes[episode.metadata.episode_id]
+                    if (
+                        indexed.get("title") != episode.metadata.title
+                        or indexed.get("position") != episode.metadata.position
+                    ):
+                        ai_edition_issue = "stale_ai_edition_catalog"
+                        break
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            ai_edition_issue = "invalid_ai_edition"
 
     planned_episodes = []
     issues = []
@@ -187,6 +308,8 @@ def preview_translation_plan(
             "title": episode.metadata.title,
             "source_file": None,
             "source_version_id": None,
+            "source_input_file": None,
+            "source_sha256": None,
             "translation_file": target["translation_file"],
             "translation_target_exists": target_path.exists(),
             "tm_key": target["tm_key"],
@@ -197,6 +320,10 @@ def preview_translation_plan(
 
         if planned["translation_target_exists"]:
             add_issue("translation_target_exists")
+        if ai_edition_issue is not None:
+            add_issue(ai_edition_issue)
+            planned_episodes.append(planned)
+            continue
 
         metadata_id = source_artifact_id(work_id, "episode", episode_id)
         if metadata_id not in metadata_by_id:
@@ -240,14 +367,15 @@ def preview_translation_plan(
             add_issue("stale_raw_source")
             planned_episodes.append(planned)
             continue
-        try:
-            verify_manifest_artifact(
-                source_path, source_manifest, raw_artifact["version_id"]
-            )
-        except (OSError, UnicodeError, ValueError):
-            add_issue("invalid_raw_source")
-            planned_episodes.append(planned)
-            continue
+        if ai_edition is None:
+            try:
+                verify_manifest_artifact(
+                    source_path, source_manifest, raw_artifact["version_id"]
+                )
+            except (OSError, UnicodeError, ValueError):
+                add_issue("invalid_raw_source")
+                planned_episodes.append(planned)
+                continue
 
         normalized_id = source_artifact_id(
             work_id, "normalized_source", episode_id
@@ -257,40 +385,71 @@ def preview_translation_plan(
             add_issue("missing_normalized_source")
             planned_episodes.append(planned)
             continue
-        planned["source_file"] = normalized["relative_path"]
-        planned["source_version_id"] = normalized["version_id"]
         if raw_artifact["version_id"] not in normalized["parent_version_ids"]:
             add_issue("stale_normalized_source")
             planned_episodes.append(planned)
             continue
         try:
-            verify_manifest_artifact(
-                source_path, source_manifest, normalized["version_id"]
-            )
+            if ai_edition is None:
+                verify_manifest_artifact(
+                    source_path, source_manifest, normalized["version_id"]
+                )
+            else:
+                verify_current_normalized_source_metadata(
+                    source_manifest, normalized["version_id"]
+                )
         except (OSError, UnicodeError, ValueError):
             add_issue("invalid_normalized_source")
+            planned_episodes.append(planned)
+            continue
+        if ai_edition is None:
+            planned["source_file"] = normalized["relative_path"]
+            planned["source_version_id"] = normalized["version_id"]
+            planned["source_sha256"] = normalized["content_sha256"]
+        else:
+            ai_episode = ai_edition["episodes_by_id"].get(episode_id)
+            if ai_episode is None:
+                add_issue("missing_ai_edition_episode")
+            else:
+                planned["source_file"] = ai_episode[
+                    "ai_archive_relative_path"
+                ]
+                planned["source_version_id"] = ai_episode[
+                    "ai_edition_version_id"
+                ]
+                planned["source_input_file"] = ai_episode["ai_relative_path"]
+                planned["source_sha256"] = ai_episode["output_sha256"]
+                planned["source_profile"] = index["cleaning_profile"]["id"]
+                planned["source_input_version_id"] = ai_episode[
+                    "raw_source_version_id"
+                ]
         planned_episodes.append(planned)
 
+    source_edition_record = None
+    if ai_edition is not None and ai_edition_issue is None:
+        index = ai_edition["index"]
+        source_edition_record = {
+            "profile_id": index["cleaning_profile"]["id"],
+            "index_root": str(
+                Path(selected_ai_edition_root).resolve(strict=True)
+            ),
+            "index_relative_path": "catalog.json",
+            "index_sha256": ai_edition["index_sha256"],
+            "manifest": edition_manifest.replace("\\", "/"),
+            "manifest_sha256": index["edition_manifest"]["sha256"],
+        }
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "ready_for_review" if not issues else "blocked",
         "work_id": work_id,
         "source_root": str(source_path),
         "catalog": catalog.replace("\\", "/"),
         "manifest": manifest.replace("\\", "/"),
+        "source_edition": source_edition_record,
         "translation_root": str(translation_path),
         "episode_count": len(planned_episodes),
         "verified_source_count": sum(
             episode["source_version_id"] is not None
-            and not any(
-                issue["episode_id"] == episode["episode_id"]
-                and issue["code"]
-                in {
-                    "stale_normalized_source",
-                    "invalid_normalized_source",
-                }
-                for issue in issues
-            )
             for episode in planned_episodes
         ),
         "network_requests": 0,
@@ -321,9 +480,19 @@ def _is_committed_translation(
     target: dict,
     source_artifact: dict,
     tm_data: dict,
+    ai_edition_root: str | None = None,
 ) -> bool:
     try:
-        raw_text = read_relative_text(source_root, source_artifact["raw_file"])
+        if source_artifact.get("source_input_file") is not None:
+            if not ai_edition_root:
+                return False
+            raw_text = read_verified_ai_edition_bytes(
+                ai_edition_root,
+                source_artifact["source_input_file"],
+                source_artifact["source_sha256"],
+            ).decode("utf-8")
+        else:
+            raw_text = read_relative_text(source_root, source_artifact["raw_file"])
         translation_path = resolve_relative_path(
             translation_root, target["translation_file"]
         )
@@ -408,6 +577,113 @@ def _validate_project_config() -> None:
         raise ValueError("Project configuration must define TM_PATH.")
 
 
+def _refresh_downstream_freshness_snapshot(
+    *,
+    source_root: Path,
+    translation_root: Path,
+    manifest_relative_path: str,
+    workspace_dir: str,
+    plan: dict,
+) -> dict:
+    tm_path = Path(Config.TM_PATH)
+    knowledge_path = (
+        Path(workspace_dir) / "Knowledge" / "KNOWLEDGE_PROVENANCE_draft.json"
+    )
+    summary_value = getattr(Config, "STORY_SUMMARY_PATH", None)
+    summary_path = (
+        Path(summary_value)
+        if isinstance(summary_value, str)
+        and summary_value
+        and Path(summary_value).suffix.casefold() == ".json"
+        else None
+    )
+    configured_paths = (tm_path, knowledge_path, summary_path)
+    present_paths = [
+        path
+        for path in configured_paths
+        if path is not None and (path.exists() or path.is_symlink())
+    ]
+    if not present_paths:
+        return {"status": "not_needed"}
+
+    try:
+        tm_data = (
+            _load_json_regular(str(tm_path), "translation memory")
+            if tm_path.exists() or tm_path.is_symlink()
+            else None
+        )
+        knowledge = (
+            _load_json_regular(
+                str(knowledge_path),
+                "knowledge provenance",
+            )
+            if knowledge_path.exists() or knowledge_path.is_symlink()
+            else None
+        )
+        summary_file = (
+            str(summary_path)
+            if summary_path is not None
+            and (summary_path.exists() or summary_path.is_symlink())
+            else None
+        )
+        expected_sources = [
+            {
+                "filename": episode.get("source_file"),
+                "source_version_id": episode.get("source_version_id"),
+                "source_input_file": episode.get("source_input_file"),
+                "source_sha256": episode.get("source_sha256"),
+            }
+            for episode in plan.get("episodes", [])
+        ]
+        source_input_map = {
+            item["filename"]: {
+                "source_version_id": item["source_version_id"],
+                "source_input_file": item["source_input_file"],
+                "source_sha256": item["source_sha256"],
+            }
+            for item in expected_sources
+            if isinstance(item.get("filename"), str)
+            and isinstance(item.get("source_input_file"), str)
+        }
+        source_input_root = (
+            plan.get("source_edition", {}).get("index_root")
+            if source_input_map and isinstance(plan.get("source_edition"), dict)
+            else None
+        )
+        snapshot = build_downstream_freshness_snapshot(
+            tm_data=tm_data,
+            source_root=str(source_root),
+            translation_root=str(translation_root),
+            manifest_relative_path=manifest_relative_path,
+            tm_label=tm_path.name,
+            knowledge_provenance=knowledge,
+            knowledge_label=knowledge_path.name if knowledge is not None else None,
+            story_summary_path=summary_file,
+            expected_sources=expected_sources if summary_file else None,
+            source_input_root=source_input_root,
+            source_input_map=source_input_map,
+        )
+        persisted = persist_downstream_freshness_snapshot(
+            snapshot,
+            str(source_root),
+        )
+    except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+        return {
+            "status": "unavailable",
+            "error_type": type(exc).__name__,
+        }
+
+    return {
+        "status": "created" if persisted["created"] else "reused",
+        "snapshot_id": persisted["snapshot_id"],
+        "path": persisted["path"],
+        "consumer_statuses": {
+            name: result["summary"]
+            for name, result in snapshot["consumers"].items()
+        },
+    }
+
+
 def run_workflow(
     *,
     source_root: str,
@@ -418,6 +694,9 @@ def run_workflow(
     approval_receipt: str | None = None,
     discovered_catalog: str = "source_catalog.discovered.json",
     manifest: str = "source_manifest.json",
+    source_edition: str = "ai",
+    ai_edition_root: str | None = None,
+    edition_manifest: str = "source_editions_manifest.json",
     checkpoint: str | None = None,
     max_archive_bytes: int | None = None,
     max_episodes: int = DEFAULT_MAX_EPISODES,
@@ -430,6 +709,11 @@ def run_workflow(
         raise ValueError("Specify exactly one of catalog or work_url.")
     source_path, translation_path = _resolve_roots(
         source_root, translation_root
+    )
+    selected_ai_edition_root = _select_source_edition(
+        source_path,
+        source_edition,
+        ai_edition_root,
     )
     discovered_catalog_path = resolve_relative_path(
         str(source_path),
@@ -444,9 +728,25 @@ def run_workflow(
     loader(config_file=str(config_path))
     _validate_project_config()
     Config.RAW_DIR = str(source_path)
+    Config.AI_EDITION_ROOT = selected_ai_edition_root
     Config.OUTPUT_DIR = str(translation_path)
     Config.CHAPTER_MAP = None
-    Config.SOURCE_MANIFEST_PATH = manifest
+    Config.SOURCE_MANIFEST_PATH = (
+        edition_manifest if selected_ai_edition_root is not None else manifest
+    )
+    workspace_dir = getattr(Config, "WORKSPACE_DIR", None)
+    if not isinstance(workspace_dir, str) or not workspace_dir:
+        workspace_dir = str(source_path.parent)
+    human_edition_root = _resolve_project_human_edition_root(workspace_dir)
+    ai_edition_root = selected_ai_edition_root or str(
+        source_path.parent / "RAWs_AI"
+    )
+    _validate_workflow_root_boundaries(
+        source_path,
+        translation_path,
+        human_edition_root,
+        ai_edition_root,
+    )
     validate_provider_configuration()
 
     if checkpoint is None:
@@ -535,35 +835,45 @@ def run_workflow(
             ),
         }
 
-    chapter_map = []
     for target in targets:
-        artifact = materialize_episode_markdown(
+        materialize_episode_markdown(
             str(source_path),
             work_id=work_id,
             episode_id=target["episode_id"],
             manifest_relative_path=manifest,
         )
-        chapter_map.append(
-            {
-                "raw_file": artifact["relative_path"],
-                "translation_file": target["translation_file"],
-                "tm_key": target["tm_key"],
-                "source_version_id": artifact["version_id"],
-                "chapter_position": target["position"],
-            }
-        )
-
-    Config.CHAPTER_MAP = chapter_map
     plan_catalog = (
         catalog.replace("\\", "/")
         if catalog is not None
         else str(catalog_path.relative_to(source_path)).replace("\\", "/")
+    )
+    edition_report = prepare_source_editions(
+        source_root=str(source_path),
+        catalog_relative_path=plan_catalog,
+        manifest_relative_path=manifest,
+        human_root=human_edition_root,
+        ai_root=ai_edition_root,
+        edition_manifest_relative_path=edition_manifest,
+        refresh_indexes=True,
     )
     plan = preview_translation_plan(
         source_root=str(source_path),
         catalog=plan_catalog,
         translation_root=str(translation_path),
         manifest=manifest,
+        source_edition=source_edition,
+        ai_edition_root=selected_ai_edition_root,
+        edition_manifest=edition_manifest,
+    )
+    active_manifest = (
+        edition_manifest if selected_ai_edition_root is not None else manifest
+    )
+    pre_translation_freshness = _refresh_downstream_freshness_snapshot(
+        source_root=source_path,
+        translation_root=translation_path,
+        manifest_relative_path=active_manifest,
+        workspace_dir=workspace_dir,
+        plan=plan,
     )
     if approval_receipt is None:
         status = (
@@ -579,9 +889,62 @@ def run_workflow(
                 if uses_discovered_catalog
                 else None
             ),
+            "source_editions": edition_report,
+            "pre_translation_freshness": pre_translation_freshness,
             "plan": plan,
         }
     approval = verify_approval_receipt(approval_receipt, plan)
+    chapter_map = [
+        {
+            "raw_file": episode["source_file"],
+            "source_input_file": episode["source_input_file"],
+            "source_sha256": episode["source_sha256"],
+            "translation_file": episode["translation_file"],
+            "tm_key": episode["tm_key"],
+            "source_version_id": episode["source_version_id"],
+            "chapter_position": episode["position"],
+        }
+        for episode in plan["episodes"]
+    ]
+    Config.CHAPTER_MAP = chapter_map
+
+    summary_path = getattr(Config, "STORY_SUMMARY_PATH", None)
+    try:
+        if not isinstance(summary_path, str) or not summary_path:
+            raise ValueError("A reviewed full-book summary is required.")
+        load_reviewed_story_summary(
+            summary_path,
+            str(source_path),
+            Config.SOURCE_MANIFEST_PATH,
+            require_full_book_coverage=True,
+            expected_sources=[
+                {
+                    "filename": chapter["raw_file"],
+                    "source_version_id": chapter["source_version_id"],
+                    "source_input_file": chapter["source_input_file"],
+                    "source_sha256": chapter["source_sha256"],
+                }
+                for chapter in chapter_map
+            ],
+            source_input_root=selected_ai_edition_root,
+            source_input_map={
+                chapter["raw_file"]: {
+                    "source_version_id": chapter["source_version_id"],
+                    "source_input_file": chapter["source_input_file"],
+                    "source_sha256": chapter["source_sha256"],
+                }
+                for chapter in chapter_map
+                if isinstance(chapter.get("source_input_file"), str)
+            },
+        )
+    except (OSError, ValueError):
+        return {
+            "status": "full_book_knowledge_required",
+            "reason": "missing_or_invalid_reviewed_summary",
+            "work_id": work_id,
+            "translation_plan_sha256": plan["plan_sha256"],
+            "pre_translation_freshness": pre_translation_freshness,
+        }
 
     pipeline = TranslationPipeline()
     tm_data = pipeline.rag.tm_data
@@ -603,6 +966,7 @@ def run_workflow(
             target,
             chapter,
             tm_data,
+            ai_edition_root=selected_ai_edition_root,
         )
         if (
             (output_path.exists() or target["tm_key"] in tm_chapters)
@@ -614,6 +978,13 @@ def run_workflow(
             )
 
     asyncio.run(pipeline.run_all())
+    post_translation_freshness = _refresh_downstream_freshness_snapshot(
+        source_root=source_path,
+        translation_root=translation_path,
+        manifest_relative_path=active_manifest,
+        workspace_dir=workspace_dir,
+        plan=plan,
+    )
     return {
         "status": "complete",
         "work_id": work_id,
@@ -628,6 +999,9 @@ def run_workflow(
         "discovery_fingerprint": (
             discovery.source_fingerprint if discovery is not None else None
         ),
+        "source_editions": edition_report,
+        "pre_translation_freshness": pre_translation_freshness,
+        "post_translation_freshness": post_translation_freshness,
         "episodes": [
             {
                 "episode_id": target["episode_id"],
@@ -664,6 +1038,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--translation-root", required=True)
     parser.add_argument(
+        "--source-edition",
+        choices=("ai", "normalized_source"),
+        default="ai",
+        help=(
+            "Translation input edition. Defaults to the AI-cleaned edition; "
+            "normalized_source is an explicit compatibility override."
+        ),
+    )
+    parser.add_argument(
+        "--ai-edition-root",
+        help=(
+            "Override the default sibling RAWs_AI directory for the AI "
+            "translation input edition."
+        ),
+    )
+    parser.add_argument(
+        "--edition-manifest",
+        default="source_editions_manifest.json",
+        help=(
+            "Edition provenance manifest relative to --source-root; used "
+            "by the default AI translation input edition."
+        ),
+    )
+    parser.add_argument(
         "--config",
         help="Existing project JSON configuration; provider settings stay local.",
     )
@@ -672,7 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Read an existing --catalog and source manifest, then print a "
-            "provider-free chapter mapping preview."
+            "provider-free chapter mapping preview. The AI edition is "
+            "verified and selected by default."
         ),
     )
     parser.add_argument(
@@ -718,6 +1117,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--plan-only requires --catalog.")
         if args.plan_output is not None and not args.plan_output.strip():
             parser.error("--plan-output must be a non-empty path.")
+        if args.plan_output:
+            try:
+                _validate_plan_output_location(
+                    args.source_root,
+                    args.plan_output,
+                )
+            except (OSError, ValueError) as exc:
+                parser.error(str(exc))
     elif not args.config:
         parser.error("--config is required unless --plan-only is set.")
     elif not args.approval_receipt:
@@ -735,6 +1142,9 @@ def main(argv: list[str] | None = None) -> int:
                 catalog=args.catalog,
                 translation_root=args.translation_root,
                 manifest=args.manifest,
+                source_edition=args.source_edition,
+                ai_edition_root=args.ai_edition_root,
+                edition_manifest=args.edition_manifest,
             )
             if args.plan_output:
                 report["filesystem_writes"] = 1
@@ -749,6 +1159,9 @@ def main(argv: list[str] | None = None) -> int:
                 approval_receipt=args.approval_receipt,
                 discovered_catalog=args.discovered_catalog,
                 manifest=args.manifest,
+                source_edition=args.source_edition,
+                ai_edition_root=args.ai_edition_root,
+                edition_manifest=args.edition_manifest,
                 checkpoint=args.checkpoint,
                 max_archive_bytes=args.max_archive_bytes,
                 max_episodes=args.max_episodes,

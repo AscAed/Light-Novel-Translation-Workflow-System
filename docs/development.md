@@ -1,5 +1,335 @@
 # 开发与验证
 
+## 2026-11-17 当前工作树审查与完整回归
+
+- 验证基线：`main` 的 HEAD 为 `e2fe611258532c9f0bab3672eda52cf928102b1a`；覆盖该基线上的现有工作树改动和本节列出的本地修复。工作区仍有多项未提交实现、测试、配置和文档文件；根目录存在未纳入仓库的本地 freshness JSON，未读取其正文，也未纳入变更。
+- 修复：`source_editions._resolve_roots()` 现在在 `resolve()` 前检查用户提供的 AI/人读输出根是否为符号链接，避免解析后路径检查失效。回归测试通过模拟 `Path.is_symlink()` 验证拒绝行为，因此不依赖 Windows 创建链接权限。
+- 清理：移除 `tests/test_source_editions.py` 中重复定义的测试方法和重复 `patch` 导入；在 freshness CLI 测试辅助函数中隔离 `pipeline.Config.AI_EDITION_ROOT`，避免 mock 配置加载后继承前序测试的全局状态。
+- `tests.test_source_editions`：23 项通过；`tests.test_downstream_freshness_snapshot`：9 项通过。此前一次完整运行发现 summary fixture 受全局配置污染；修复测试隔离后复跑通过。
+- 全量非 E2E：动态发现 `tests/test_*.py` 并排除仓库 runner 专用的 `tests/test_e2e.py`，514 项运行、0 失败、4 项跳过。命令：
+
+  ```powershell
+  $testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName })
+  .\.venv\Scripts\python.exe -m unittest @testModules -q
+  ```
+
+- 4 项跳过已通过 `tests.test_security_path_traversal -v` 分类：3 项符号链接用例因普通 Windows 会话返回 `WinError 1314`，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo`。当前执行会话尝试启动管理员 PowerShell 时被自动执行策略拦截，没有绕过策略；因此本轮没有管理员权限下的当前工作树验证。可在管理员 PowerShell 中运行：
+
+  ```powershell
+  Set-Location -LiteralPath 'D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System'
+  .\.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v
+  ```
+
+  用户另行提供的 `-q` 输出为 9 项运行、3 项跳过，但未包含逐项结果或 Git SHA；当前工作树详细运行发现 11 项、7 项通过、4 项跳过，二者分别记录，不合并计数。
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 全部通过，224.381 秒，退出码 0。runner 请求仅发往其启动的 loopback mock server；输出中的 content-filter、段落契约和注入故障来自负向 fixture，不代表真实 Provider 失败或成功。
+- `py_compile` 覆盖本轮修改的源码与测试通过，`git diff --check` 通过。该结果仅验证当前本地代码与模拟服务；没有执行真实 Provider、真实新话采集、Notion、EPUB 阅读器、部署或人工翻译/格式验收。
+
+## 2026-11-17 本轮收尾：RAWs_AI 正文与归档职责
+
+- 当前约定：`RAWs_AI/` 是翻译系统默认 AI 原文的实际读取位置；`SourceArchive/` 只保存来源/派生归档文件和归档清单、catalog、采集状态及校验元数据。待审计划与审批回执位于项目 `Workflow/Plans/`、`Workflow/Approvals/`，不写入归档目录。
+- 项目模式映射以 `source_input_file`/`source_sha256` 指向并校验 `RAWs_AI/` 正文；`raw_file`/`source_version_id` 仅用于归档 provenance、lineage 与登记摘要比对。正文缺失、超限或 hash 不符时失败关闭，不改读归档正文或人读版。运行时只读归档清单/catalog 元数据；需要重新核对归档实字节时，使用显式来源/双版本验证器。
+- 当前工作树非 E2E 回归动态发现 `tests/test_*.py` 并排除由仓库 runner 执行的 `tests/test_e2e.py`：513 项运行，0 失败、4 项因 Windows 符号链接/FIFO 能力跳过。命令：
+
+  ```powershell
+  $testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName })
+  .\.venv\Scripts\python.exe -m unittest @testModules -q
+  ```
+
+- 仓库 mock runner 定向 E2E `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项通过，仅使用 loopback mock server。该用例和单元测试使用合成内容，不证明真实 Provider 翻译或人工清洗质量。
+- 受影响 Python 源码/测试 `py_compile`、`git diff --check` 均通过。对 README 与 8 份相关文档检查 169 个本地 `.md` 链接目标，缺失 0。未调用外部服务；真实计划映射/双版本人工验收、审核知识包、匹配计划审批回执及真实翻译仍待处理。
+
+## 2026-11-17 RAWs AI 作为默认翻译输入
+
+- 用户明确：翻译系统默认从 `RAWs_AI` 读取 AI 清洗版原文；`SourceArchive` 只存放归档文件和清单。此前把归档路径直接作为正文读取路径的说法和实现均以本记录为准更正。
+- 章节映射保留两个独立用途：`raw_file` 与 `source_version_id` 标识 `SourceArchive` 中的不可变版本，供来源 lineage、TM provenance 和一致性校验使用；`source_input_file` 与 `source_sha256` 标识 `RAWs_AI` 中的实际正文文件。AI 镜像缺失、大小超限或与清洗索引/归档哈希不一致时停止，不改读归档文件或人读版。
+- Kakuyomu 计划审批摘要现绑定 AI 输入相对路径和 SHA-256；计划 schema 升至 v2，旧 v1 计划不能作为当前审批映射加载。通用项目模式、正式翻译、章节对齐、知识抽取和下游快照路径解析均传递 AI 根。正文文件由统一的哈希校验读取函数从 `RAWs_AI` 打开。
+- Kakuyomu 编排器现在在作品目录发现或章节正文请求之前，对 `SourceArchive`、人读版根、AI 版 `RAWs_AI` 根和译文根执行两两隔离检查。显式 `--ai-edition-root` 或 `workflow_paths.json` 若把任一派生目录放进归档根、或让这些数据根彼此重叠，会在任何采集写入前失败；归档版本只用于 lineage/哈希校验，AI 正文仍从 `RAWs_AI` 打开。
+- 通用项目模式使用的共享 `verify_ai_edition_index()` 也会先解析并拒绝重叠的归档根/`RAWs_AI` 根，包括相同根和嵌套根，因此 `pipeline.py --project` 不会因为镜像路径别名而把归档目录当作 AI 工作副本。
+- **实施阶段：**1) 分离映射字段与项目 AI 根；2) 接通翻译、知识抽取、章节对齐和 freshness 输入解析；3) 将输入路径/哈希纳入计划审批并同步当前文档。三个实现阶段已完成；完整验证结果在下方随测试执行记录更新。
+- **验收标准：**映射同时暴露归档 provenance 和 AI 镜像路径；镜像篡改/缺失被拒绝；正式翻译读取内容来自 `RAWs_AI`；审批摘要对输入路径/哈希敏感；所有受影响的定向回归及仓库 E2E runner 通过。
+- **本轮验收：**综合定向回归 `.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_knowledge_extraction_unit tests.test_downstream_freshness_snapshot tests.test_align_chapters_unit tests.test_source_pipeline_linkage -q`：226 项通过。`tests.test_pipeline_contracts.TestTestWorkspaceConfiguration.test_bound_ai_source_reader_uses_raws_ai_mirror` 用不同的合成归档/AI 正文确认翻译读取器返回 `RAWs_AI` 内容；知识抽取、对齐和 E2E fixture 也分别按 AI 输入路径读取。
+- `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项本地 mock E2E 通过。该用例的计划/TM 原文核对覆盖完整编排；无 Kakuyomu 或真实 Provider 请求。
+- `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_workflow.KakuyomuWorkflowTests.test_archive_overlapping_edition_roots_fail_before_discovery tests.test_pipeline_contracts.TestTestWorkspaceConfiguration.test_bound_ai_source_reader_uses_raws_ai_mirror -q`：2 个用例方法通过；根目录隔离用例含 AI 根、人读根两种误配子场景，且正文读取器从 `RAWs_AI` 返回内容。
+- `.venv\Scripts\python.exe -m unittest tests.test_source_editions.SourceEditionsTests.test_ai_index_verification_rejects_overlapping_archive_and_ai_roots -q`：1 项通过；共享 AI 索引校验器拒绝相同、嵌套及包含归档根的 AI 根。
+- 2026-11-17 再核对用户强调的目录职责：`SourceArchive/` 根仅见来源/派生版本目录、catalog/checkpoint、manifest 与下游新鲜度快照；未发现计划或审批回执。`RAWs_AI/` 有 88 个单话 Markdown。当前 `source_manifest.json` 356/356、`source_editions_manifest.json` 532/532 文件校验通过。三项回归 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestParagraphContracts.test_bound_ai_source_reader_uses_raws_ai_mirror tests.test_source_editions.SourceEditionsTests.test_ai_index_verification_does_not_read_archived_episode_bodies tests.test_kakuyomu_translation_plan.KakuyomuTranslationPlanTests.test_ai_edition_plan_uses_raws_ai_and_tracks_archive_provenance -q` 通过；其中归档正文与 AI 镜像使用不同合成内容，翻译读取结果断言为 `RAWs_AI`。
+- 真实项目只读映射核验得到 88 项：archive root 为 `projects\祝福のネトラレラ\SourceArchive`，AI root 为 `projects\祝福のネトラレラ\RAWs_AI`；首项 `raw_file` 为 archive 下 `editions/ai-efficient-v1/...`，`source_input_file` 为 `RAWs_AI/chapters/.../episodes/...`，并绑定 SHA-256。只输出计数、路径和哈希，没有输出正文或调用 Provider。
+- 待审计划与审批状态文件使用项目 `Workflow/Plans/`、`Workflow/Approvals/`，不得放入 `SourceArchive/`。来源版本、manifest、采集 catalog/checkpoint 与不可变来源校验快照仍属于归档数据。
+- 相关 Python 源码和测试 `py_compile` 通过；README 与 8 份相关文档共 182 个本地 Markdown 链接目标存在；本轮 `git diff --check` 与相关差异复核通过。既存工作区改动均保留，未暂存或提交。
+- 2026-11-17 再次按用户更正落实目录边界：从 `SourceArchive/` 移出 5 份历史计划至 `Workflow/Plans/`；随后生成当前 schema v2 计划 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-17.json`。`translation_plan_approval.load_translation_plan` 复核其摘要为 `331013b8fdaab3195d30e640bc737029cea0408adc6d7b42554ebbc8486b5d1f`，状态 `ready_for_review`、88/88 AI 输入有效、0 问题；0 网络、0 Provider、1 次计划文件写入。归档内计划/回执计数均为 0，计划目录现有 6 份。
+- 计划 CLI 与审批 CLI 都拒绝在计划绑定的 `SourceArchive` 根内写工作流文件；回归覆盖计划输出及审批回执输出拒绝。`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts -q`：162 项通过。`git diff --check` 通过。真实人类审阅、审批回执及 Provider 翻译仍未发生。
+
+## 2026-11-17 当前工作树全量回归与试点门槛
+
+- 当前 checkout 为 `main`，HEAD `e2fe611258532c9f0bab3672eda52cf928102b1a`，工作区有既存未提交改动；验证覆盖当前工作树，未暂存或提交。
+- 动态发现 `tests/test_*.py` 并排除必须通过仓库 mock runner 执行的 `tests/test_e2e.py` 后，运行 505 项，0 失败、4 跳过。命令：
+
+  ```powershell
+  $testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName })
+  .\.venv\Scripts\python.exe -m unittest @testModules -q
+  ```
+
+- 4 项跳过原因已单独复核 `tests.test_security_path_traversal -v`：3 个符号链接 fixture 因 Windows 普通权限创建链接返回 `WinError 1314`，1 个 FIFO fixture 因 Windows 无法创建 FIFO；其余该模块路径边界用例通过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，317.260 秒，退出码 0。请求仅发往 runner 启动的 loopback mock server；content-filter、段落错配及故障注入日志属于负向 fixture，不表示测试失败。
+- 通过 `Config.load_config(project="祝福のネトラレラ")` 只读取运行时解析状态并仅输出非秘密字段：三阶段模型为 `gpt-6-Luna`，JOJO/JYQF 所需职责类别 allowlist 已加载；两家 API key 均未配置，环境未显式覆盖两家 Base URL。没有输出 `.env` 内容或密钥。
+- 根目录隔离增量后再次只读调用项目配置加载，返回 88 话映射，归档根为 `projects\祝福のネトラレラ\SourceArchive`，AI 输入根为 `projects\祝福のネトラレラ\RAWs_AI`；共享索引验证器成功接受这对互不重叠的真实根目录。命令仅输出映射计数和路径，无 Provider 调用或正文输出。
+- 当前试点来源重验：`.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json` 为 356/356；同命令检查 `source_editions_manifest.json` 为 532/532。`.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI` 返回 `verified`、88 话；source 793,183 bytes、AI 774,253 bytes、人读 799,293 bytes。均为只读验证，无 Provider 调用和正文输出。
+- 试点没有 `Knowledge/STORY_SUMMARY_reviewed.json` 或 `Knowledge/Glossary_reviewed.json`；仓库文件中未发现可供全书抽取命令使用的 `tokenizer.json`。全书知识抽取还要求与当前模型匹配的 tokenizer 文件及经核实的 context/message 预算，因此本轮没有读取全书生成候选或调用 Provider。
+- 当前 schema v2 计划仍是人工映射审阅入口；本地测试和 `ready_for_review` 状态不构成映射、清洗语义或翻译质量批准。仍需人工验收 88 话 AI/人读版本与映射、审核并发布 AI 来源绑定的概要/术语表、创建匹配计划摘要的审批回执；之后才能在有效凭据和模型预算可用时进行受控首话翻译。未调用真实 Provider、Notion、Kakuyomu 或阅读器。
+
+## 2026-11-17 续接时当前 AI 来源复核
+
+- 以当前工作区重新核验 `.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json`：356/356 个文件通过；同命令指定 `source_editions_manifest.json`：532/532 个文件通过。
+- `.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI` 返回 `verified`、88 话；source 793,183 bytes、AI 774,253 bytes、人读 799,293 bytes。
+- 当时未指定 `--source-edition` 的 schema v1 默认计划预览为 `ready_for_review`，88/88 归档 provenance 有效；每话的 `RAWs_AI` 镜像路径/哈希另行绑定。摘要为 `22db616990740a39427146717945deb62ea3841a508af2ac7a2b701630293299`。该旧 schema 计划已由本页后续记录的 schema v2 计划取代；它的历史 stdout 预览为 0 网络、0 Provider、0 文件写入。
+- 定向 mock E2E `.\.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项通过。当时该 E2E 验证 TM 原文等于计划绑定的不可变 AI 归档内容；由于归档版本和 `RAWs_AI` 镜像字节相同，这条旧断言本身不能证明读取发生在哪个根目录。当前直接从 `RAWs_AI` 读取的回归见本页顶部新记录。`git diff --check` 通过。上述检查不构成真实 Provider 翻译或人工清洗验收。
+- I5 离线 EPUB candidate 子项复核：`.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v` 为 23 项通过；`py_compile` 与 `scripts\build_epub_candidate.py --help` 通过。仅用合成章节调用 Pandoc；没有试点译文、EPUBCheck 或目标阅读器验证，因此 I5 整体仍为`部分实现`。
+- 新增 `kakuyomu_html_archive.py` / `scripts/validate_kakuyomu_html_archive.py`，先统计全部历史和当前 `raw_page_html` 文件大小，超出默认 1 GiB 上限时在任何 artifact 哈希扫描前拒绝；通过预检后只读检查 source manifest 全部文件哈希，并验证每个最新 HTML artifact 的 episode metadata、当前 raw lineage、标题与 parser v4 重放正文哈希；摘要不含正文。对试点运行返回 `verified`、356 个文件哈希有效、88/88 最新 HTML 正文一致，读取 HTML 4,814,835 bytes 并重放 793,183 body bytes。历史 HTML 仅核验 manifest 哈希；回放按 UTF-8 解码，因为清单未保存 HTTP Content-Type。当前 HTML 正文结构计数为 `div=88`、`p=17096`、`br=10202`、`ruby/rb/rt=51`、`rp=102`；没有 `em.emphasisDots` 或 `img`。计数不代表人工语义或阅读器验收。
+- 新验证器回归：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_html_archive tests.test_source_ingestion -q`：50 项通过；新增模块 8 项通过，覆盖成功重放、损坏/错配、旧 lineage、标题不符、含历史版本的总字节上限和不回显正文。`.venv\Scripts\python.exe -m py_compile kakuyomu_html_archive.py scripts\validate_kakuyomu_html_archive.py tests\test_kakuyomu_html_archive.py` 与 CLI `--help` 通过。真实归档命令：`.venv\Scripts\python.exe scripts\validate_kakuyomu_html_archive.py --source-root projects\祝福のネトラレラ\SourceArchive`。
+
+## 2026-11-17 项目模式已审核术语表门禁
+
+- `Config.load_config(project=...)` 固定将 `GLOSSARY_PATH` 指向 `Knowledge/Glossary_reviewed.json`，并启用 `REQUIRE_REVIEWED_GLOSSARY`。项目模式不再把旧式 `Glossary.json` 当作已审核术语；显式 JSON 配置仍保留调用者指定的兼容格式。
+- `RAGEngine(require_reviewed_glossary=True)` 在初始化时通过常规文件句柄读取并验证 reviewed bundle 的 schema、批准集合、术语摘要和来源版本；缺失、旧式、损坏或 stale bundle 均失败关闭。后续每次术语检索也会重新核验来源新鲜度。
+- 当前试点 `Knowledge/` 只有 `Glossary.json`，没有 `Glossary_reviewed.json`。通用项目默认流程将在已有概要门禁通过后于 RAG 初始化阶段停止；本次未读术语正文，也未调用 Provider。
+- `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_knowledge_review tests.test_kakuyomu_workflow tests.test_kakuyomu_translation_plan tests.test_story_summary_review -q`：194 项通过。覆盖默认项目路径选择、旧式 glossary 拒绝、有效 reviewed bundle 加载和 stale 来源启动拒绝。该测试集使用合成数据，不表示当前试点已审核术语或真实翻译已完成。
+
+## 2026-11-17 当前工作集完整本地回归
+
+- 本次复核时当前未提交工作集动态发现 26 个 `tests/test_*.py` 模块（排除必须通过仓库 mock runner 执行的 `tests/test_e2e.py`），共运行 498 项，0 失败、4 跳过。可复现命令：
+
+  ```powershell
+  $testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName })
+  .\.venv\Scripts\python.exe -m unittest @testModules -q
+  ```
+
+- 4 个跳过均为当前 Windows 普通权限限制：3 个符号链接用例因创建链接返回 `WinError 1314`，1 个 FIFO 用例因 `os.mkfifo` 不可用。其余路径遍历与常规文件边界用例通过；链接专门语义未在本次普通权限运行中覆盖。
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 全部通过，202.879 秒，退出码 0。runner 仅启动 loopback mock server；输出中的 content-filter、段落错配和故障堆栈来自预期负向 fixture。未调用真实 Provider、Kakuyomu 或 Notion。
+- 该回归验证当前工作树中的合成契约和 mock 流程，不构成真实翻译质量、人工映射/格式、Provider 端点、Notion、EPUB 阅读器或部署验收。`git diff --check` 在本记录补充后复核。
+
+## 2026-11-17 默认 AI 翻译输入复核
+
+- 用户明确 AI 清洗版必须作为翻译系统默认的待译干净原文；人读版只供人类阅读。当前代码满足该内容选择规则：Kakuyomu CLI 默认 `source_edition="ai"`，通用项目模式从 `ai-efficient-v1` 建立版本绑定章节映射；AI 输入缺失、过期或不完整时失败关闭。
+- 真实项目只读加载 `Config.load_config(project="祝福のネトラレラ")` 并解析章节映射，得到 88 话、`source_editions_manifest.json`、归档路径 `editions/ai-efficient-v1/...` 和独立 `RAWs_AI` 输入路径。`raw_file`/`source_version_id` 用于归档 lineage 和版本校验；`source_input_file`/`source_sha256` 指定实际正文文件，pipeline 直接从 `RAWs_AI` 读取，并将镜像字节哈希与归档 manifest 登记的 artifact digest 元数据比较。翻译运行时不打开归档章节正文；人读版目录不参与默认翻译输入。
+- 当时用当前 catalog 运行默认 `--plan-only`，schema v1 摘要复算为 `22db616990740a39427146717945deb62ea3841a508af2ac7a2b701630293299`；该旧计划已被 schema v2 当前计划取代。此前预览的 `ready_for_review` 与零网络/Provider/写入是该历史检查点结果，不代替当前计划审阅。
+- `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts -q`：121 项通过，覆盖 AI 默认选源、项目模式 AI 映射和缺失/过期输入失败关闭。
+- `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项本地 mock E2E 通过；断言计划 profile 为 `ai-efficient-v1`，并确认写入 TM 的原文逐字节对应计划选中的 AI 来源。此测试未调用 Kakuyomu 或真实 Provider。
+- 真实项目映射仍要求人工审核当前计划、审核并发布匹配 AI 版本的全书概要，以及有效 Provider 配置后才可正式翻译。作品授权已确认，不是当前阻塞；本次未创建审批回执或发起真实翻译。
+- `git diff --check` 通过；本次只读配置检查未修改书籍数据。当前 checkout 原有未提交代码、测试、配置和文档改动均予保留。
+- 2026-11-17 输入边界复核：pipeline、已审核概要、reviewed glossary 与 reviewed TM 的项目运行时读取 `RAWs_AI` 正文，并只从 `SourceArchive` 读取清单/catalog 元数据核对版本 lineage 和登记 digest；归档正文的物理字节重验由显式来源/双版本 validator 执行。概要/知识 provenance 的换行规范化文本哈希与 `source_input_sha256` 的镜像原始字节哈希是不同字段口径。
+
+## 2026-11-17 原始 HTML 归档与默认 AI 计划复核
+
+- `FetchedEpisode.page_html` 让页面 adapter 可把原始 HTTP 响应体字节交给采集器。Kakuyomu adapter 返回实际解析的同一份 response bytes；`source_ingestion.py` 将其追加为独立 `raw_page_html` artifact，父版本绑定 episode metadata 和对应 `raw_source`。正文解析及 AI/人读清洗仍消费可见 UTF-8 `raw_source`，AI 清洗版是翻译系统默认输入，人读版只用于阅读体验；页面 HTML 不直接进入翻译。HTML 计入 `--max-archive-bytes` 前置预算，空或超限响应会在 manifest 更新前拒绝。若原始正文未变但 HTML 响应变化，只追加 HTML 版本。
+- 对授权试点执行显式全量刷新，命令调用内按本机要求设置 HTTP/HTTPS/SOCKS 代理：
+
+  ```powershell
+  $env:http_proxy = 'http://127.0.0.1:7897'; $env:https_proxy = 'http://127.0.0.1:7897'; $env:all_proxy = 'socks5://127.0.0.1:7897'; .\.venv\Scripts\python.exe scripts\ingest_kakuyomu_pages.py --project 祝福のネトラレラ --source-root projects\祝福のネトラレラ\SourceArchive --work-url https://kakuyomu.jp/works/16817330668011048405 --discovered-catalog source_catalog.raw-html-2026-11-17.json --refresh-from-catalog source_catalog.append-2026-11-17.json --refresh-from-checkpoint source_checkpoint.append-2026-11-17.json --checkpoint source_checkpoint.raw-html-refresh-2026-11-17.json --output-root projects\祝福のネトラレラ\SourceArchive --max-archive-bytes 1073741824 --request-delay-seconds 2
+  ```
+
+- 实际结果：`status=complete`、主页公开目录 88/88、完成 88/88、待处理 0；正文 hash 88 个未变，新增 `raw_page_html` 88 个。manifest 校验为 356/356，88 个 HTML artifact 都有 episode metadata 和同话 `raw_source` 父版本。合并 `source_editions_manifest.json` 校验为 532/532。双版本索引刷新创建 0、更新 2、复用 353 个字节一致文件；AI/人读 Markdown 字节与清洗产物均未变化。
+- 只读 HTML 回放审计：重新核验 356 个来源文件型 artifact 哈希，并对 88 个最新 `raw_page_html` 使用 parser v4 重抽正文；88/88 均只有一个正文区域、父版本指向当前对应 `raw_source`，且重抽正文 SHA-256 与归档正文一致。只在 episode 正文区域计数得到 `p=17096`、`ruby=51`、`rt=51`、`rp=102`、`em.emphasisDots=0`、`img=0`。这是结构和字节一致性证据，不验证特殊标记的人工语义或阅读器显示效果。
+- 采集之后的只读验证命令：
+
+  ```powershell
+  .\.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json
+  .\.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_editions_manifest.json
+  .\.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root ..\祝福のネトラレラ(祝福的寝取系女主)\生肉 --ai-root projects\祝福のネトラレラ\RAWs_AI
+  ```
+
+- 双版本 validator 返回 `verified`、88 话，读取 source 793,183 bytes 并重算出 AI 774,253 bytes、人读 799,293 bytes；未输出正文或改写清洗文件。默认 `--plan-only` 选中 `ai-efficient-v1`，88/88 `RAWs_AI` 正文与对应归档 provenance 有效、0 问题、0 网络请求、0 Provider 调用、0 写入、`source_text_included=false`。当时人工审阅计划位于 `Workflow/Plans/translation_plan_review_ai_raw_html_2026-11-17.json`，为 schema v1 且已被后续 schema v2 计划取代。计划不含章节正文，88 个 episode ID 和译文目标均唯一。
+- 合成回归：`.venv\Scripts\python.exe -m unittest tests.test_source_manifest tests.test_source_ingestion tests.test_kakuyomu_page_source tests.test_source_editions tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_downstream_freshness_snapshot -q`，150 项通过；当时的 `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation` 1 项通过，核对 TM 内容与 AI 归档字节一致；因归档和镜像相同，它不是运行时路径的独立证据。当前 `RAWs_AI` 读取证据及本轮 E2E 见本页顶部记录。`--help`、受影响 Python 文件 `py_compile` 及 `git diff --check` 均通过；README 与 6 份活动文档中的 132 个本地文件链接目标通过检查。真实 Provider、Notion、AI/人读人工语义验收及目标阅读器视觉验收未执行。历史未保存的 HTML 不可恢复；本次留存页面响应不证明其正文解析或清洗语义完整。
+
+## 2026-11-17 Kakuyomu 追加无变化复查与 AI 默认输入
+
+- 按仓库网络要求在同一 PowerShell 调用中配置本地代理后，使用 `scripts/ingest_kakuyomu_pages.py --project 祝福のネトラレラ` 从作品主页重新发现目录，并以 2026-11-16 刷新 catalog/checkpoint 为追加基线。结果为 `status=complete`、发现 88 话、完成 88 话、待处理 0、追加 0、复用 88；因目录末尾没有新话，本轮没有请求 episode 正文。它验证了真实目录无变化路径，不验证新增话目的正文抓取。
+- 该次项目采集快照指出 AI 索引尚未指向新增 catalog 路径。随后以 `scripts/export_source_editions.py --refresh-indexes` 安全刷新索引：更新 2 个索引、复用 353 个已存在且字节一致的文件、创建 0 个文件，AI/人读章节 Markdown 字节和清洗 manifest 哈希均未改变。基础 `source_manifest.json` 再次通过 268/268 artifact SHA-256 校验。
+- 刷新后使用默认参数执行 Kakuyomu `--plan-only`，未传 `--source-edition`：结果 `ready_for_review`、88/88 归档 provenance 有效、0 问题；计划将各话 `RAWs_AI` 镜像路径/哈希与对应 `ai-efficient-v1` 版本分开记录。计划只读输出为 stdout，没有网络请求、Provider 调用或文件写入。当前直接读取实现由本页顶部章节及 `test_bound_ai_source_reader_uses_raws_ai_mirror` 回归确认；`normalized_source` 只在显式覆盖时使用。
+- 追加来源时生成的内容寻址快照保留了当时的 AI 索引状态；索引刷新后另行生成的下游快照显示 TM 有 19 条 `unindexed` 记录、已审核全书概要缺失而为 `unverified`。该快照只记录 TM 和概要状态；当前 AI 索引新鲜度由刷新后的 `--plan-only` 重新核验。正式翻译仍未运行。
+- 回归：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_source_editions tests.test_downstream_freshness_snapshot -q`，56 项通过，覆盖采集、索引刷新和新鲜度快照。`git diff --check` 与 Markdown 本地链接检查在文档更新后另行执行。
+- 未完成：真实新增话目的正文请求仍需实际目录出现新话才能 live 验证；试点 88 话映射/清洗仍待人工验收，`STORY_SUMMARY_reviewed.json`、计划审批回执及本地 Provider 凭据仍未具备；没有调用 Provider、没有生成译文。作品授权和无需官方澄清均已由用户确认，不再列为阻塞。
+
+## 2026-11-17 追加 catalog 后刷新 AI 审阅计划
+
+- 追加复查和索引刷新后，旧计划 `translation_plan_review_ai_default_2026-11-17.json` 仍绑定 `source_catalog.refresh-2026-11-16.json` 与旧 AI 索引摘要，已不适合作为当前审批对象；文件保留作历史记录。
+- 以当前 `source_catalog.append-2026-11-17.json` 和 AI 索引生成新计划：`projects\祝福のネトラレラ\Workflow\Plans\translation_plan_review_ai_append_2026-11-17.json`。`translation_plan_approval.load_translation_plan` 验证摘要为 `1d7ae1cef2a318d79fccb9948b4e2de79799b9d087978922f08592a4b7a79283`；状态 `ready_for_review`，88 话/88 个 AI 正文及对应归档 provenance 有效，profile 为 `ai-efficient-v1`，0 问题，计划不含正文。
+- 本次计划写入 1 个仅含映射/来源元数据的 JSON 文件；0 网络请求、0 Provider 调用。新摘要仍需人工审阅，未经明确批准不得创建回执或执行翻译。当前人工审阅入口见[试点映射人工审阅](handoffs/2026-11-16-pilot-plan-review.md)。
+
+## 2026-11-17 试点数据落点与目录复核
+
+- 只读解析 `projects/祝福のネトラレラ/workflow_paths.json`，确认 `human_edition_root` 和 `output_dir` 解析到用户指定的括号版外部 `生肉`、`熟肉` 目录；两个路径均存在。人读根包含 `SOURCE_MAP.json` 和 3 个章节目录，Markdown 话数分别为 30、40、18，共 88；译文根当前为空。
+- `RAWs_AI/` 当前有 88 个单话 Markdown 与 `catalog.json`。该历史检查点中 `SourceArchive/` 下的 `source_manifest.json` 校验为 268/268，`source_editions_manifest.json` 校验为 444/444；当时目录文件计数还包含后来迁出的计划 JSON 与其他非 Markdown artifact。计划迁出后，`SourceArchive/` 不存计划或审批回执；文件总数不替代 manifest 校验结果。
+- 使用当前 `source_catalog.append-2026-11-17.json` 执行默认 AI `--plan-only`，没有指定 `--source-edition` 或 `--plan-output`：退出码 0，`ready_for_review`，88 话/88 个来源有效，0 问题；stdout JSON 不含原文。此项只读核验未生成译文或审批回执。
+- 命令：`.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json` 与同路径的 `--manifest source_editions_manifest.json`，分别返回 268/268 和 444/444。只读 plan-only 命令为 `scripts\run_kakuyomu_workflow.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.append-2026-11-17.json --translation-root <用户指定熟肉路径> --plan-only`。
+
+## 2026-11-17 AI 与人读版清洗产物可重复验证
+
+- 新增只读入口 `scripts/validate_source_editions.py`，以当前 catalog 和 manifest 中的 raw_source 字节重新运行 AI/人读两套 cleaning profile，再比较两份索引、不可变 edition archive 与 AI/人读镜像文件。它验证的内容比 manifest 哈希更完整：可发现清洗器输出与当前 profile 不一致，即使索引、归档和镜像文件彼此哈希一致。
+- 对当前试点执行 88 话核验，结果 `status=verified`，`episode_count=88`，累计 raw 输入 793,183 bytes，AI 输出 774,253 bytes，人读输出 799,293 bytes。所有 raw lineage、目录映射、索引字段、归档/镜像字节与重算清洗结果一致；stdout 仅有计数和摘要哈希，无原文，未写入项目或书籍数据。
+- 随后不传 `--source-edition` 重跑默认 Kakuyomu `--plan-only`：`ready_for_review`，88/88 来源有效；计划绑定 `ai-efficient-v1`，首话 `source_file` 位于 `editions/ai-efficient-v1/`。网络请求、Provider 调用、文件写入均为 0，计划没有原文内容。
+- 复现命令（从仓库根目录运行）：
+
+  ```powershell
+  .\.venv\Scripts\python.exe scripts\validate_source_editions.py `
+    --source-root projects\祝福のネトラレラ\SourceArchive `
+    --catalog source_catalog.append-2026-11-17.json `
+    --human-root ..\祝福のネトラレラ(祝福的寝取系女主)\生肉 `
+    --ai-root projects\祝福のネトラレラ\RAWs_AI
+  ```
+
+- 合成回归：`.venv\Scripts\python.exe -m unittest tests.test_source_editions -q`，19 项通过；另有本脚本及关联模块的 `py_compile` 与 CLI `--help` 通过。该检查确认 profile 的逐字节可重复性，不替代章节语义、目录映射或目标阅读器视觉效果的人工验收，也不验证真实 Provider 翻译。
+
+## 2026-11-17 试点 Provider 阶段模型配置
+
+- `pipeline.py::Config.load_config` 现支持 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 环境变量覆盖；环境变量优先于 JSON 配置，未设置时保留既有代码默认值。`.env.example` 给出可选模型字段，不启用任何授权或网络请求。
+- 当前被 `.gitignore` 排除的根 `.env` 已按用户既有决定配置试点：三阶段主模型为 JOJO `gpt-6-Luna`，JOJO 阶段失败时允许一次 JYQF `deepseek-v4.1-flash` 回退；类别 allowlist 仅含两者职责所需的 `source_text`、`translation_text`、`book_knowledge`。未授权 `evaluation_samples`、Gemini 或 Notion。配置不含 API key。
+- 本地只读 `Config.load_config(project="祝福のネトラレラ")` 解析出上述模型、回退和类别策略，并得到 88 条经 AI 版本清单绑定的章节映射。Process/User/Machine 与 `.env` 均未配置 JOJO/JYQF key 或 `BASE_URL` 覆盖；代码中存在候选默认 URL。模型 ID、服务账号、端点连通性/协议兼容、费用和真实质量仍未验证，没有调用 Provider。
+- `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts -q`：105 项通过，覆盖新环境变量优先于 JSON 配置及现有 provider/model 路由契约。另行只读加载试点项目得到 88 条 AI 映射和预期模型/allowlist；调用 provider preflight 后按预期以 `Missing required provider credentials: JOJO_API_KEY, JYQF_API_KEY` 停止，没有发出请求。真实翻译仍受缺少凭据、人工计划审批和 AI 版本绑定的已审核全书概要限制。
+- 后续合并回归：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts -q`：121 项通过，覆盖 AI 版默认计划、项目模式归档 provenance/输入映射和 Provider 配置/路由；该历史检查点的正文读取仍使用归档路径，当前镜像读取由本页顶部更新。预期故障注入日志不代表真实服务请求。未调用 Provider。
+
+## 2026-11-17 独立 Kakuyomu 采集的项目新鲜度留档
+
+- `scripts/ingest_kakuyomu_pages.py` 新增显式 `--project <项目名>`。该模式在发出请求前校验 `--source-root` 与 `--output-root` 都是所选项目的 `SourceArchive/`，且只接受默认 `source_manifest.json`；路径不匹配时不创建 adapter、不请求页面。未传 `--project` 时保持原有 source-only 行为。
+- 项目模式在采集返回后，将当前 `source_manifest.json` 的全部历史合并到 `source_editions_manifest.json`，保留已有 AI/人读 edition artifacts，不重跑清洗器、不改写清洗 Markdown 或 `RAWs_AI/catalog.json`。随后以合并清单为锚，追加内容寻址的 downstream freshness schema v2 快照；报告只含 manifest/输入哈希、状态和详情，不含正文。
+- 快照新增 `ai_edition_index` consumer：对照当前 source manifest、edition manifest、catalog 路径/摘要和完整话目映射。清单或 catalog 前进后将旧索引记为 `stale`；首次采集或缺少索引记为 `unverified`；索引结构/归档校验失败记为 `invalid`。若 AI 索引过期，已审核全书概要同时记为 `stale`。旧 TM/知识记录仍按其已归档的 AI 版本核验；AI 索引状态明确表示默认翻译输入尚未刷新，项目翻译配置本身也会因过期索引失败关闭。
+- 该入口不自动运行 AI/人读双版本清洗，也不更新索引或重建译文/知识/概要。需要完成整条采集到双版本清洗和 AI 默认翻译输入时，使用 `scripts/run_kakuyomu_workflow.py`；来源变更后旧译文仍保留，待新的 AI 版本及审核映射就绪后再按现有门禁处理。
+- 合成验证：`.venv\Scripts\python.exe -m unittest tests.test_source_editions -q`，14 项通过；`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source -q`，33 项通过。覆盖来源历史合并/幂等、现有 AI 索引在来源前进后变为 stale、无索引的首次项目采集快照，以及错误项目根在请求前失败。`.venv\Scripts\python.exe -m py_compile source_editions.py scripts\ingest_kakuyomu_pages.py tests\test_source_editions.py tests\test_kakuyomu_page_source.py` 与 `git diff --check` 通过。未访问真实站点、Provider、Notion 或真实书籍数据。
+
+## 2026-11-17 采集后双版本自动清洗与 AI 默认输入
+
+- `scripts/run_kakuyomu_workflow.py::run_workflow` 在来源采集完整且所有话目 `normalized_source` 物化后，先调用 `prepare_source_editions` 生成 AI/人读两版，再生成默认 AI 版计划。采集未完成时不清洗、不生成计划。正式执行同样使用这次生成并通过索引/清单/哈希/lineage 校验的 AI 版。
+- 项目 `workflow_paths.json` schema v1 保留必需 `output_dir` 并允许 `human_edition_root`。相对路径按项目根解析；没有该项时人读根默认为 `<项目>/生肉`。试点本地忽略配置继续指向用户指定外部 `熟肉`，并新增外部 `生肉` 人读根；两者与 AI 目录/SourceArchive 分离。实书只读配置核验得到 88 条 AI 映射，首话输入为 `editions/ai-efficient-v1/`，两个用户指定外部路径匹配且人读/译文根不重叠；未写入书籍目录或调用 Provider。
+- `source_editions.py::_index_refresh_is_safe` 允许索引在来源/清洗清单哈希更新、catalog 路径变化、作品公开话数递增时刷新，但要求旧话目逐项元数据/来源版本保持一致，旧章节顺序与边界保持稳定，变化只能是原末卷尾部扩展或追加新卷。既有清洗文件仍须逐字节匹配，用户改写的 Markdown 或旧话来源变化会拒绝刷新。
+- 回归：`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`：177 项通过。仓库 E2E runner 定向命令 `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项通过，使用合成 Kakuyomu 页面和本地 mock Provider；TM 中逐段原文与 AI 版归档内容一致。未访问 Kakuyomu 或真实 Provider。
+- 未完成：真实目录增量采集、试点 88 话 AI/人读结果的人工内容/阅读器验收、真实 Provider 单话翻译仍待独立验证。
+
+### 2026-11-17 历史代码审阅项复核
+
+- 复核此前 PR #58 快照中记录的两个实现风险。当前工作树中的 `kakuyomu_page_source.py` 将 `http.client.IncompleteRead` 映射为可暂停的 `SourceUnavailable`；采集器持久化 checkpoint 后可重试续跑。当前 `epub_builder.py` 同时把带目录的相对路径解析为绝对路径，并在版本探测前用 `shutil.which` 将裸命令名固定为绝对路径，保证切换到临时 `cwd` 后仍调用同一 Pandoc executable。
+- 定向回归命令 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source.KakuyomuPageAdapterTests.test_incomplete_response_and_timeout_pause_collection_and_can_resume tests.test_epub_builder.PandocExecutableResolutionTests tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts.TestTestWorkspaceConfiguration -q`：43 项通过。
+- CLI `--help` 明确显示默认输入为 AI 清洗版，`normalized_source` 是显式兼容覆盖。当前试点只读 `--plan-only` 复核为 `ready_for_review`、`ai-efficient-v1`、88/88 来源有效、0 问题、0 网络请求、0 Provider 调用、0 文件写入，且报告不含原文。复核仅读取当前 catalog、manifest、清洗索引及版本文件；未生成计划文件或译文。
+- 以上只验证本地实现、合成回归和当前文件一致性，不验证站点新增正文、翻译质量或人读版视觉效果。88 话映射/清洗验收、AI 来源绑定的全书概要审核、有效 Provider 凭据及受控首话翻译仍待完成。
+
+### 2026-11-17 当前工作树补充
+
+- 重跑历史审查项的精确聚焦集合：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source.KakuyomuPageAdapterTests.test_incomplete_response_and_timeout_pause_collection_and_can_resume tests.test_epub_builder.PandocExecutableResolutionTests tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts.TestTestWorkspaceConfiguration -q`，45 项通过。另单跑 `tests.test_epub_builder` 为 24 项通过。Pandoc 回归覆盖裸命令名 PATH 解析和相对 executable 的预检/转换一致性；HTTP 回归覆盖不完整响应暂停及恢复。
+- 本次完整非 E2E 回归动态发现测试模块运行 513 项，0 失败、4 项因 Windows 符号链接/FIFO 能力跳过。测试使用本地合成数据；未调用真实 Provider、Notion 或站点。
+- 本次仅追加 Pandoc 可执行文件解析用例和代码修复，并更新本交接与验证记录；其余工作区变更保留，未暂存、提交或清理。
+
+## 2026-11-17 Kakuyomu 编排自动记录下游新鲜度
+
+- 完整采集、双版本清洗和计划生成后，`scripts/run_kakuyomu_workflow.py` 会审计当前项目已存在的 TM、`KNOWLEDGE_PROVENANCE_draft.json` 和已审核 JSON 概要，并在 `SourceArchive/` 下以内容寻址方式追加只读快照。成功完成翻译后再审计一次，记录运行后状态；如果没有下游文件，则报告 `not_needed`。审计无法安全完成时，工作流报告 `unavailable`，不伪称已记录。
+- 快照 schema v2 绑定 source manifest SHA-256、TM/知识 JSON 的规范化内容 SHA-256、已审核概要 SHA-256 和状态详情；不写入原文、译文或概要正文。相同来源和消费者状态重跑会复用既有快照；状态变化会创建新文件，不覆盖旧快照或消费者数据。`scripts/ingest_kakuyomu_pages.py --project` 也会在项目采集后自动记录来源及下游状态；source-only Kakuyomu 模式与本地导入 CLI 仍需显式调用快照命令。快照不替代消费者自己的运行时来源门禁，也不自动重建下游。
+- `.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot tests.test_kakuyomu_workflow tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`：186 项通过。`.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过（226.138 秒）。E2E 覆盖原有主页到翻译链路；本轮新快照侧车同时由单测覆盖。未请求真实 Kakuyomu 或 Provider。相关源码/测试 `py_compile`、`git diff --check` 和 8 份主要文档本地链接检查均通过，后者不校验锚点。
+- 2026-11-17 I4 当前工作集复核：`.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot tests.test_pipeline_contracts tests.test_story_summary_review tests.test_tm_provenance_unit tests.test_tm_review tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_kakuyomu_workflow tests.test_source_editions -q`，200 项通过。覆盖 TM/知识/概要/AI 索引审计、manifest 绑定快照追加与复用、损坏快照拒绝、审计期间 manifest 变化拒绝及采集/编排接入；仅运行合成单测，没有访问 Kakuyomu 或真实 Provider。
+
+## 2026-11-17 默认 AI 清洗版翻译输入
+
+- 本节记录的早期接入检查点中，Kakuyomu 与通用项目模式都将不可变 AI 归档版本作为实际正文读取路径；这一实现与用户后续明确的目录职责不符，已由本页顶部“RAWs_AI 作为默认翻译输入”记录更正。当前模式仍验证 AI 索引、对应 catalog 摘要、完整 episode 元数据、清洗清单、归档哈希和来源 lineage，但翻译正文必须从 `RAWs_AI` 读取。
+- 若没有选中项目且未提供 JSON 配置，通用流水线现直接报错，不再静默退回仓库根目录的 `生肉/`。显式 JSON 配置仍是旧项目指定其他来源的兼容入口。
+- 当时工作树的默认参数 `--plan-only` 预览曾生成 `projects\祝福のネトラレラ\SourceArchive\translation_plan_review_ai_default_2026-11-17.json`。计划摘要 `8a5679563c376f3ed9dcfdcd5115db77149cf77189c46c5e544eb215c4dcd4d7` 重算一致；状态 `ready_for_review`，88/88 话的 `RAWs_AI` 正文与对应归档 provenance 有效、0 问题，episode ID/位置/译文目标/TM key 各自唯一，88 个译文目标均不存在。计划不含正文；生成时 0 网络请求、0 Provider 调用、1 次文件写入（仅计划 JSON）。该计划后来因 catalog 追加和 AI 索引刷新而过期；历史计划文件已移至 `Workflow/Plans/`，当前审阅计划见本页“追加 catalog 后刷新 AI 审阅计划”。`SourceArchive/` 只存来源归档和校验材料。
+- 回归：`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`，166 项通过。覆盖默认选 AI、AI 不可用时阻断、显式 normalized_source 兼容覆盖、参数冲突拒绝、审批摘要绑定和 pipeline 来源版本复核。
+- 默认输入 fail-closed 回归：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts.TestTestWorkspaceConfiguration -q`，23 项通过。新增测试确认没有可选项目时不回退仓库根 `生肉/`；唯一项目下无参数自动发现、AI 索引失效阻断和显式 JSON 兼容均有独立覆盖。
+- 默认输入修复后的完整非 E2E 回归：
+
+  ```powershell
+  .\.venv\Scripts\python.exe -m unittest `
+    tests.test_align_chapters_unit tests.test_epub_builder tests.test_kakuyomu_catalog_diff tests.test_kakuyomu_page_source `
+    tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_knowledge_batching tests.test_knowledge_extraction_unit `
+    tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_local_source_ingestion_cli tests.test_pipeline_contracts `
+    tests.test_rag_engine_unit tests.test_scratch_filter tests.test_security_path_traversal tests.test_source_ingestion `
+    tests.test_source_manifest tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_story_summary_review `
+    tests.test_tm_provenance_unit tests.test_tm_review tests.test_translation_plan_approval -q
+  ```
+
+  449 项运行、445 项通过、4 项跳过、0 项失败；3 个符号链接用例因普通 Windows 权限下创建链接返回 `WinError 1314` 而跳过，1 个 FIFO 用例因 Windows 不支持 `os.mkfifo` 而跳过。输出中的磁盘写入、Provider 错误和无效响应日志来自预期负向 fixture。该回归使用合成数据，不代表真实 Provider 或翻译质量验收。
+- E2E：`.venv\Scripts\python.exe tests\run_tests.py`，本地 mock runner 7 项通过（229.541 秒，退出码 0）。该历史检查点的端到端 fixture 覆盖主页目录发现、归档、双版本清洗、默认 AI 输入、AI 来源概要/计划审批及 mock 翻译；TM 保存的原文与计划绑定的 AI 归档内容一致，但因归档与镜像相同，该断言不单独证明运行时读取根目录。其他错误/拦截日志来自预期负向 fixture。
+- CLI `--help` 显示 `--source-edition` 默认 AI，`--plan-only` 默认核验并选用 AI；计划摘要绑定 AI profile、索引和版本清单哈希。未生成译文或调用真实 Provider。当前计划需人工审阅，后续正式执行仍需 AI 版本对应的已审核全书概要、匹配的审批回执和本地 Provider 授权/配置。
+- 通用项目模式早期回归使用合成 `SourceArchive/RAWs_AI` 项目验证 AI 版本映射、catalog 摘要、完整 episode 元数据、译文路径/TM 键和 AI 版本 ID；该旧测试检查点读取归档文件，不等同于当前 `RAWs_AI` 直接读取契约。AI 索引、catalog 过期或 AI 版缺失时均不回退到人读版。显式 JSON 配置仍可指定其他输入目录。
+- 2026-11-17 通用入口早期验证：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow -q`：131 项通过。只读配置解析返回 88 项版本映射，核验了 archive root 和 `editions/ai-efficient-v1/` provenance；该记录未分别输出 `RAWs_AI` 输入路径，不能作为直接读取位置的证据。译文根解析为用户指定外部 `熟肉`；没有调用 Provider 或写出译文。
+- 通用入口变更后的 `.venv\Scripts\python.exe tests\run_tests.py`：7 个本地 mock E2E 测试通过，240.957 秒，退出码 0；negative fixture 的 content filter/段落契约日志属于预期失败覆盖。`.venv\Scripts\python.exe -m py_compile pipeline.py tests\test_pipeline_contracts.py`、`git diff --check` 均通过；14 份 Markdown 检查 183 个本地文件链接，0 个目标缺失。验证未调用真实 Provider、Kakuyomu、Notion 或阅读器。
+- 2026-11-17 项目默认翻译入口的全书概要门禁：`Config.load_config(project=...)` 固定启用 `REQUIRE_REVIEWED_STORY_SUMMARY` 并将路径设为 `Knowledge/STORY_SUMMARY_reviewed.json`。`TranslationPipeline` 先按默认 AI `CHAPTER_MAP` 构造完整有序文件名/`source_version_id` 集，再验证 approved bundle 的全书覆盖和版本；概要缺失、未批准、过期或映射不符时，在读取作品信息、构造 RAG 或调用 Provider 前停止。显式 JSON 配置仍保留旧 Markdown 概要兼容路径。
+- 回归：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_story_summary_review tests.test_kakuyomu_workflow tests.test_source_editions -q`：142 项通过。新增配置断言确认 `--project` 同时选择 AI 清洗来源并强制 reviewed 全书概要。
+- 真实项目只读复核：`Config.load_config(project="祝福のネトラレラ")` 解析为 `SourceArchive`、88 条 AI 映射，首话位于 `editions/ai-efficient-v1/`；当前 `Knowledge/` 仅有旧 `STORY_SUMMARY.md`，无 `STORY_SUMMARY_reviewed.json`。创建 `TranslationPipeline` 按预期以“requires an approved full-book story summary”失败，尚未加载知识、构造 RAG 或调用 Provider。当前不能开始正式翻译；需先按 AI 版完整映射生成概要候选、人工审核并发布匹配 bundle。
+- 代码改动后的 `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，221.968 秒，runner 退出码 0。runner 中可见的内容拦截和段落数量异常来自预期负向 fixture；没有连接真实 Provider。`.venv\Scripts\python.exe -m py_compile pipeline.py tests\test_pipeline_contracts.py`、`git diff --check` 与 9 份更新 Markdown 的 128 个本地文件链接目标检查均通过。
+- 该历史复核点曾把 `raw_file` 指向 `SourceArchive/editions/ai-efficient-v1/` 并直接读取归档文件；用户之后明确 AI 版实际文件应从 `RAWs_AI` 读取。当前映射字段已拆分：`raw_file`/`source_version_id` 只记录归档来源，`source_input_file`/`source_sha256` 指向镜像正文。`--ai-edition-root` 覆盖 AI 根；仅显式 `--source-edition normalized_source` 才切换为采集器规范化文本。
+- 无参数项目选择现仅在存在唯一非示例项目时自动发现；同时存在多个项目时 fail-closed，要求 `--project` 或 `TRANSLATOR_PROJECT`，避免按文件系统顺序选错书。回归覆盖多项目拒绝和排除 `example/`。
+- 本次历史复核：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_pipeline_contracts tests.test_source_pipeline_linkage -q`，137 项通过；指定本地 mock E2E 1 项通过。E2E 验证 TM 原文与当时计划绑定的 AI 归档字节一致；该相等性没有区分相同字节的 `RAWs_AI` 镜像路径。此后的直接镜像读取契约见本页顶部。
+- 用户再次强调：AI 版原文就是翻译系统默认读取的干净原文，双版本清洗的 AI 分支直接服务后续翻译。2026-11-17 该历史回归 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts -q` 为 120 项通过；当时覆盖计划预览默认选择 AI 版、项目模式读取已验证 AI 归档，以及 AI 版不可用时失败关闭。当前 `RAWs_AI` 实读由单独使用不同合成归档/镜像内容的回归验证；没有调用 Provider 或写出译文。
+
+## 2026-11-17 I4 版本化译文复用保护
+
+- 通用版本化翻译入口之前会在目标文件存在时直接跳过，无法区分当前来源版本的有效译文与旧版/未索引译文。现在 `pipeline.py::run_chapter` 对带 `source_version_id` 的章节检查既有输出和 TM：只有原文版本、输出字节、TM 段落配对和来源 provenance 全部吻合当前映射时才跳过；任何已有输出或 TM 不匹配时抛出 `FileExistsError` 并保留原字节，不覆盖人工译文或 TM。
+- `chapter_transaction.py::is_chapter_translation_committed` 复用逐章提交所用的规范化段落和 provenance 结构执行该检查。无版本 ID 的旧式显式目录保持原兼容行为；Kakuyomu 计划和正式入口本已有自己的既有译文冲突门禁。
+- 回归新增当前 source version 匹配时跳过、来源版本过期时保留并阻断两项；正向复用测试含多段译文，在 Windows CRLF 写盘后验证按统一换行读取仍可正确识别已提交结果。`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_downstream_freshness_snapshot -q`：139 项通过。`.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，223.785 秒、退出码 0。`.venv\Scripts\python.exe -m py_compile chapter_transaction.py pipeline.py tests\test_pipeline_contracts.py` 和 `git diff --check` 通过。
+- 本书只读 `Config.load_config(project="祝福のネトラレラ")` 返回 88 条 AI 归档映射，首条带 AI `source_version_id`。没有生成译文或调用真实 Provider。
+- 在本增量形成时，`scripts/snapshot_downstream_freshness.py` 需要显式运行，尚未接入原文刷新路径。后续 Kakuyomu 编排和 `ingest_kakuyomu_pages.py --project` 已自动追加 manifest 绑定快照；这只持久化独立审计结果，不把 `stale` 写回译文、TM、知识或概要，也不自动重建派生物。source-only 与本地导入路径仍需显式审计；其他路径是否需要自动触发及是否需要消费者状态写回，需按其数据契约另行定义，不能由快照代替。
+
+## 2026-11-17 I4 已审核全书概要新鲜度
+
+- `scripts/snapshot_downstream_freshness.py` 新增 `--story-summary`，并要求同时传入 `--project` 或 `--config`。脚本通过当前版本化章节映射核对来源根目录、manifest 和全书文件/版本覆盖，再验证概要已批准、全书覆盖完整，且每个来源版本仍然有效。
+- 快照只记录概要文件名、SHA-256、状态和校验详情，不写入摘要正文；当前概要可记为 `verified`，来源 raw 版本推进后可记为 `stale`。原始 manifest 在审计期间变化时仍拒绝生成快照，输出文件已存在时不覆盖。
+- `.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot -v`：7 项通过，包含概要 verified/stale、正文不进入快照和既有消费者审计回归。
+- 合并定向回归 `.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot tests.test_pipeline_contracts tests.test_story_summary_review tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow -q`：163 项通过。只读解析真实项目默认配置得到 88 条映射，来源根为 `SourceArchive`，清单为 `source_editions_manifest.json`，首话来自 `editions/ai-efficient-v1/` 并绑定 AI 版本 ID；默认译文根为指定外部 `熟肉`。未调用 Provider、未生成译文。
+- 该增量验证的是操作者显式运行的只读审计快照。后续 Kakuyomu 完整编排与 `ingest_kakuyomu_pages.py --project` 已自动追加快照，但快照仍不修改译文、TM、知识或概要，也不重建派生物；这些消费者通过自己的运行时来源门禁阻断过期输入。
+
+## 2026-11-17 双版本原文清洗与试点导出
+
+- 试点归档库位于 `projects\祝福のネトラレラ\SourceArchive`；该位置只保留 catalog、checkpoint、metadata、raw/normalized/清洗版本 artifacts、manifest 和来源校验快照。AI 清洗版位于项目 `projects\祝福のネトラレラ\RAWs_AI`，是翻译正文的实际读取位置。计划报告与审批回执分别放在 `Workflow/Plans/`、`Workflow/Approvals/`，不得放入归档库；此前误放的 5 份计划已迁出。用户指定的外部 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 专用于人类阅读版，译文根为同书外部 `熟肉`。旧的仓库内默认 `生肉`、`熟肉` 不作为本书目标。
+- `scripts\export_source_editions.py` 直接读取当前 manifest 验证过的 `raw_source`；每话先核验 normalized→raw lineage，再要求 normalized bytes 与 raw bytes 完全一致，之后才分别执行 `ai-efficient-v1` 和 `human-reading-v1`。同一份完整采集原文因此只采集一次、清洗分成两路：AI 版优先提高识别效率，统一 LF、去除每段一个 U+3000、ruby 转为 `基字《读音》`、旁点转 Markdown 强调；人读版优先改善阅读呈现，统一 LF、保留 U+3000，以 HTML Ruby 和 CSS `text-emphasis` 呈现振假名/旁点。人读文件路径为 `<章节名>\<话名.md>`；AI 版按章节序号/ID 与 episode ID 分层。两种索引记录共同 raw 输入版本、normalized 来源版本、输入哈希、profile 与输出哈希。归档源文件只读，既有不匹配导出文件会导致停止，不会覆盖。
+- 实际命令使用 `--edition-manifest source_editions_manifest.json --refresh-indexes`。完成 88 话、3 个章节分组；新增 176 个不可变 AI/人读归档版本和独立版本清单，按白名单更新 `catalog.json` 与 `SOURCE_MAP.json`。首次导出报告 `created_files=177`、`reused_files=176`、`updated_files=2`；两根目录原有 176 个 Markdown 均与生成字节一致。输入 793,183 bytes，AI 版 774,253 bytes，人读版 799,293 bytes。基础采集清单 `source_manifest.json` 保持 268 个文件型 artifact；`source_editions_manifest.json` 合并来源历史和 176 个派生版本，共 444 个文件型 artifact。
+- `.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`：162 项通过，覆盖导出/幂等、AI 计划选源、目录缺话与文件篡改拒绝、pipeline 版本绑定、运行入口选用 AI 清单、审批摘要绑定 profile/索引/清单哈希，以及来源链接和全书概要门禁。
+- `.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json`：268/268 文件通过；同命令校验 `source_editions_manifest.json` 为 444/444。实际 AI `--plan-only` 返回 `ready_for_review`、88/88 `RAWs_AI` 正文与对应归档 provenance 有效、0 问题、0 网络/Provider/文件写入且不含正文；人读索引、镜像和版本归档 88/88 哈希匹配。幂等重跑 `created_files=0`、`updated_files=0`、`reused_files=355`。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，236.923 秒，runner 退出码 0。请求只发送到 runner 启动的 loopback mock server；输出中的内容拦截和段落契约错误来自预期负向 fixture。
+- `py_compile`、编排器和导出器 CLI `--help`、`git diff --check` 通过。翻译入口现在默认从 `--source-root` 同级 `RAWs_AI` 使用 AI 清洗版本；`--ai-edition-root` 仅覆盖目录，只有显式指定 `--source-edition normalized_source` 才选择采集器规范化版本。AI 计划摘要绑定 profile、索引哈希、版本清单哈希及逐话归档路径/版本，pipeline 从 `source_editions_manifest.json` 再校验文件。没有创建译文或调用 Provider。映射/输出路径仍待人工审阅，全文概要需绑定 AI 版本后才能通过正式运行门禁；HTML/Ruby 在目标阅读器中的实际渲染、全书人工逐段保真仍待用户验收。`raw_source` 是 collector 提取的 UTF-8 可见文本，不是原始 HTML。
+
+## 2026-11-17 Token预算分批全书知识预读
+
+- `scripts/auto_extract_knowledge.py --full-book` 现在要求显式提供 `--tokenizer-json`、`--context-window-tokens`、`--max-output-tokens`、`--safety-margin-tokens` 和 `--message-overhead-tokens`，并保留全书 `--max-input-characters` 总字符上限。tokenizer JSON 必须对应 `Config.PROOFREAD_MODEL`；代码不猜测模型的 tokenizer 或上下文容量。`requirements.txt` 增加 `tokenizers`，本机 `.venv` 安装并验证的版本为 0.23.3。
+- 本地预算按 system/user 两段文本分别计 tokenizer tokens，再加调用者给定的消息开销；每请求输入上限为 `context_window_tokens - max_output_tokens - safety_margin_tokens`，且请求显式设置 `max_tokens`。若服务返回 `usage.prompt_tokens` 且超出上限，则拒绝生成草稿。未验证端点 tokenizer、服务端 chat template/开销、context 参数或 `max_tokens` 兼容性；这些必须与实际 `Config.PROOFREAD_MODEL` 配套核定。
+- 全部章节按配置顺序拆分成段落，给每段分配本地稳定 ID（章节序号+段落序号；不是 Kakuyomu DOM 的 `p` ID），每段只进入一个请求。每批最多 500 段，最多 100 次 Provider 调用；单段超预算、批次数超限、超大响应或任一请求失败时不写知识草稿。全书字符预算、每章 16 MiB 读取上限及 16 MiB 草稿文件上限仍生效。
+- 每批只允许输出当前批次引用的 glossary、summary、worldbuilding、narrative_voice 候选；缺少来源 ID、跨批引用、术语未出现在引用段落、冲突译名、被截断的响应均失败关闭。全部批次成功后按源顺序确定性合并，并记录 tokenizer SHA-256、每批输入/响应哈希与估算/Provider 回报 token、逐段覆盖和结论级来源位置。概要审核规范会保留这些字段，并核对段落覆盖、批次归属、位置与候选文本哈希。
+- 跨批汇总目前是按来源顺序排列的候选集合，不调用第二次模型做全书综合，不能称为具备完整跨章因果梳理的连贯概要。Kakuyomu 正式翻译入口仍要求 approved 全书概要来源与当前 `CHAPTER_MAP` 一致；本增量未修改该门禁，也未调用真实 Provider、Kakuyomu、Notion 或真实书籍正文。
+- 定向验证：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_batching tests.test_knowledge_extraction_unit tests.test_story_summary_review tests.test_knowledge_review tests.test_kakuyomu_workflow -q`，75 项通过；覆盖 tokenizer 文件解析、预算边界、完整段落分批、跨批 claim 证据、审核保留与失败不写草稿。
+- 完整回归：23 个模块 `.venv\Scripts\python.exe -m unittest tests.test_align_chapters_unit tests.test_epub_builder tests.test_kakuyomu_catalog_diff tests.test_kakuyomu_page_source tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_knowledge_batching tests.test_knowledge_extraction_unit tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_local_source_ingestion_cli tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_scratch_filter tests.test_security_path_traversal tests.test_source_ingestion tests.test_source_manifest tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_story_summary_review tests.test_tm_provenance_unit tests.test_tm_review tests.test_translation_plan_approval -q`：431 项运行、427 项通过、4 项因 Windows 符号链接/FIFO 能力跳过、0 项失败。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，220.525 秒，退出码 0。请求只发送到 runner 启动的 loopback mock server；输出中 content-filter、段落契约和 Provider 失败堆栈来自负向 fixture。
+- 修改文件 `py_compile`、知识抽取/概要审核 CLI `--help`、`.venv\Scripts\python.exe -m pip check`、`git diff --check` 通过；对 9 份改动 Markdown 的本地链接目标检查均存在（不校验标题锚点）。验证未调用真实 Provider、Notion、Kakuyomu 或真实书籍正文；未验证真实 tokenizer 与目标模型/端点匹配、全书候选语义或人工质量。
+
+## 2026-11-17 试点来源与运行配置复核
+
+- 本节较早的路径检查按 `生肉`/`熟肉` 命名暂记录为原文根/译文根。用户后续明确：外部 `生肉` 专用于人类阅读版，外部 `熟肉` 专用于译文；采集归档已搬至项目 `SourceArchive`，AI 清洗版位于项目 `RAWs_AI`。因此不能把外部生肉目录当采集版本归档根。最终目标与导出结果见[双版本原文清洗与试点导出](#2026-11-17-双版本原文清洗与试点导出)。
+- `.venv\Scripts\python.exe scripts\validate_source_manifest.py --root <活动来源根> --manifest source_manifest.json` 返回 `schema_version=1 artifacts=268 files_verified=268`。只读计划命令 `scripts\run_kakuyomu_workflow.py --source-root <活动来源根> --catalog source_catalog.discovered.json --translation-root <活动译文根> --plan-only` 返回 `ready_for_review`、88 episodes、88 verified sources、0 issues，网络/Provider/写入计数均为 0，`source_text_included=false`。这两个命令读取源文件以核对哈希，但没有输出正文；计划预览不是人工批准或文本格式验收。
+- 本节的 Provider 存在性检查发生在本机试点 `.env` 创建前，是该先前检查点的历史快照：当时根 `.env` 不存在且 Process/User/Machine 未配置相关变量。当前模型/allowlist 设置及最新 key/endpoint 状态见[试点 Provider 阶段模型配置](#2026-11-17-试点-provider-阶段模型配置)。
+- 迁移前 plan-only 曾使用外部 `生肉` 作为 `--source-root`；该路径角色已被用户后续明确为人读版。当前 plan-only 以项目 `SourceArchive` 为来源、外部 `熟肉` 为译文根，最终结果见本节首段链接。
+
+## 2026-11-16 全书知识预读输入模式
+
+- `scripts/auto_extract_knowledge.py` 增加显式全书运行参数：`.\.venv\Scripts\python.exe scripts\auto_extract_knowledge.py --full-book --max-input-characters <正整数>`。脚本依当前 `CHAPTER_MAP` 顺序或目录扫描顺序读取全部配置章节，最多 1000 章；任一章节超过 16 MiB 或整份提示词样本超过字符预算时，在 Provider 客户端创建及草稿写入前停止，不截断后继续调用。
+- 全书提示要求返回 `glossary`、`summary`、`worldbuilding`、`narrative_voice`。provenance `input_coverage` 记录 `all_configured_chapters`、配置/实际覆盖章节数、Unicode 字符数和显式上限；`source_files` 覆盖每个配置章节（包括空章节），列出源哈希、实际输入范围/哈希和段落数。语义证据仍限于术语精确子串定位，不为概要、世界观或叙述习惯逐条归因。
+- 下游知识/概要审核现支持最多 1000 个来源；逐源校验仍受每文件 16 MiB、累计 128 MiB 上限约束。provenance 的全书计数在审核发布前会与实际 source_files 数核对，空正文话目可作为 0 字符/0 段落来源保留。该实现不自动证明配置章节集等于完整公开目录；输入上限不等于 tokenizer token 数或 Provider 上下文容量，且没有系统提示/回复预算计算、分批抽取或跨章合并。首个试点翻译第 1 话前仍须人工确认 88 话映射覆盖，并核定实际模型容量。未执行真实 Provider、Notion、Kakuyomu 请求或真实正文抽取。
+- Kakuyomu 正式翻译入口 `scripts/run_kakuyomu_workflow.py` 现要求已批准的全书概要 bundle，并核对其全书覆盖及有序文件名/来源版本与本次完整 `CHAPTER_MAP` 一致；缺失或不匹配时返回 `full_book_knowledge_required`，在创建翻译管线或调用 Provider 前停止。直接调用通用 `TranslationPipeline` 的路径不受此入口门禁约束。
+- 第 1 话正式翻译前仍须人工确认 88 话映射覆盖，并核定实际模型容量。尚未实现目录完整性证明、tokenizer-aware 预算、分批抽取、结论级证据和跨章合并。没有执行真实 Provider、Notion、Kakuyomu 请求或真实正文抽取。
+- 定向回归：`.venv\Scripts\python.exe -m unittest tests.test_story_summary_review tests.test_kakuyomu_workflow -q`：27 项通过，覆盖全书 bundle 校验、Kakuyomu 入口在缺少/不匹配审核概要时阻断，以及审核概要通过后继续执行。
+- 相关单测：22 个模块运行 423 项，419 项通过、4 项因 Windows 普通权限无法创建符号链接/不支持 FIFO 跳过，0 项失败。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，219.088 秒，退出码 0。Kakuyomu 首页→目录→普通 episode URL→归档→来源版本化概要审批→mock 翻译路径通过；所有网络请求仅发往本机 loopback mock server。负向 fixture 输出的拦截/段落异常是预期行为。
+- `.venv\Scripts\python.exe -m py_compile pipeline.py rag_engine.py scripts\auto_extract_knowledge.py scripts\apply_knowledge_review.py scripts\run_kakuyomu_workflow.py story_summary_review.py tests\test_e2e.py tests\test_kakuyomu_workflow.py tests\test_knowledge_extraction_unit.py tests\test_knowledge_review.py tests\test_pipeline_contracts.py tests\test_rag_engine_unit.py tests\test_story_summary_review.py tests\test_tm_review.py`、两个 CLI 的 `--help` 与 `git diff --check`：通过。验证使用合成 fixture，未调用真实 Provider、Notion 或 Kakuyomu。
+
+## 2026-11-16 TM 默认审核门禁
+
+- `RAGEngine` 默认只使用显式配置且通过当前 manifest、原文、译文来源核验的 TM 审核快照。未配置快照时，检索集合为空，不请求 embedding；流水线仍把合格的新原译对写入完整 `TM_PATH` 候选库，便于后续审核。
+- 兼容配置 `ALLOW_UNREVIEWED_TM` 默认关闭，可由环境变量或配置 JSON 显式开启；环境变量优先。测试工作区只接受显式环境变量。`TM_REVIEWED_PATH` 有值时审核快照始终优先，即使兼容开关开启。该开关不改变审核状态，也不追溯批准旧条目。
+- 定向验证：`.venv\Scripts\python.exe -m unittest tests.test_rag_engine_unit tests.test_pipeline_contracts tests.test_tm_review -q`，122 项通过。覆盖默认不检索/不生成 embedding、环境变量和 JSON 配置覆盖、候选写入保持、以及审核快照高于兼容开关。
+- 完整回归：22 个模块的 `.venv\Scripts\python.exe -m unittest tests.test_align_chapters_unit tests.test_epub_builder tests.test_kakuyomu_catalog_diff tests.test_kakuyomu_page_source tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_knowledge_extraction_unit tests.test_knowledge_provenance_audit tests.test_knowledge_review tests.test_local_source_ingestion_cli tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_scratch_filter tests.test_security_path_traversal tests.test_source_ingestion tests.test_source_manifest tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_story_summary_review tests.test_tm_provenance_unit tests.test_tm_review tests.test_translation_plan_approval -q`：413 项运行、409 项通过、4 项跳过、0 项失败。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，232.976 秒，runner 退出码 0。输出中的 content-filter 与段落契约异常为负向 fixture；请求只发往 runner 启动的 loopback mock server。本轮没有访问 Kakuyomu、真实 Provider 或 Notion。
+- 采集需求复核：主页目录发现、`publicEpisodeCount` 对账、普通 episode URL、1.5–3 秒串行延迟、ruby/旁点/NBSP/U+3000 parser fixture 和有序全书正文导出已有代码/测试/历史运行证据；本轮没有重新抓取站点。原文中的 U+3000 保留，不原地 `lstrip`。
+- 当时记录的后续计划为翻译前全书预读；2026-11-17 已实现本地 tokenizer/context 预算分批、段落覆盖和批次内结论引用。配置章节集与公开目录的一致性、tokenizer/template 与真实端点容量匹配、跨批模型级综合、候选语义和人工审核质量仍待核验。Gemini/Claude 示例不代表已授权接收方。详见[采集与出版计划](source-ingestion-and-publication-plan.md#kakuyomu-页面结构与文本提取2026-11-16)及[路线图阶段 2](roadmap.md#阶段-2书籍知识审核闭环)。
+
+## 2026-11-16 合并后文档复核
+
+- 该只读复核快照的 `main` HEAD 为 `e2fe611`（PR #70），当时工作区干净。当前续接开始时 HEAD 仍为 `e2fe611`，但四份项目文档已有未提交改动，均予以保留。下节合并前工作集的测试属于历史记录，本续接未重跑；不能用依赖检查替代真实服务或测试验收。
+- 本地 `.venv\Scripts\python.exe --version` 为 Python 3.14.7，`-m pip check` 返回 `No broken requirements found.`，不代表服务或部署就绪。
+- 对试点原文根目录执行 `scripts\validate_source_manifest.py --root <原文根目录> --manifest source_manifest.json`：`schema_version=1 artifacts=268 files_verified=268`。仅验证清单引用文件的当前字节哈希，不验证来源许可、文本语义或站点目录完整性。
+- 使用现有 catalog 和译文根目录运行 `scripts\run_kakuyomu_workflow.py --source-root <原文根目录> --catalog source_catalog.discovered.json --translation-root <译文根目录> --plan-only`，未指定输出文件，返回 `ready_for_review`、88 项、88 项来源验证、0 问题、`source_text_included=false`，报告网络请求、Provider 调用和文件写入均为 0。这不是人工审批，也不是翻译质量验收；本轮未访问站点、Provider 或 Notion。
+
 ## 2026-11-16 当前实现工作集回归
 
 - 复核基线：实现前 `main` 为 `a3813c3`；以下验证针对该基线上的当前工作集，覆盖目录 schema v2/v3、作品元数据版本归档、catalog 差异/纯追加/正文刷新、normalized 来源新鲜度门禁及其消费端。
@@ -287,7 +617,7 @@
 显式 JSON 配置可通过 `CHAPTER_MAP` 为每章指定原文相对路径、译文相对路径及唯一 TM 键。映射使用 `/` 分隔，只接受根目录内 Markdown 文件；源文件与输出父目录必须存在。流水线、对齐、知识抽取和 TM 溯源核验共用此清单；没有清单时保留平铺扫描，不创建目录或推测卷/章节关系。
 
 - 推荐项目数据布局：`projects/<项目名>/生肉/`、`熟肉/`、`Knowledge/`。
-- 项目名模式与显式 `--config` JSON 模式均由 `Config.load_config` 处理。项目名模式只接受 `生肉/`、`熟肉/` 直接包含章节文件的布局；若这两个目录含子目录，程序拒绝按枚举顺序自动选择，并要求 JSON 显式设置 `RAW_DIR`、`OUTPUT_DIR`。这避免把任意卷目录或 EPUB 目录当作工作路径。
+- 项目名模式与显式 `--config` JSON 模式均由 `Config.load_config` 处理。项目名模式要求成对的 `SourceArchive/` 与 `RAWs_AI/`，从归档 manifest 核验来源版本，从 `RAWs_AI/catalog.json` 生成完整映射；`raw_file`/`source_version_id` 保留 archive provenance，实际 AI 正文由 `source_input_file`/`source_sha256` 指向 `RAWs_AI`。目录缺失或清单/索引核验失败即停止，绝不扫描人读版 `生肉/`。项目根可选 `workflow_paths.json`（schema v1）设置已存在的 `output_dir` 和可选 `human_edition_root`，路径可相对项目根或使用绝对路径，且不能覆盖原文根/章节映射或令译文根与来源目录重叠；没有该配置时，默认 `熟肉/` 含子目录仍要求显式 JSON 配置。显式 `--config` 可指定自己的 `RAW_DIR`、`OUTPUT_DIR` 和 `CHAPTER_MAP`。
 - `pipeline.py` 会加载仓库根目录 `.env`，并读取相应环境变量；`.env*` 默认被忽略。
 - `projects/*` 默认忽略，`projects/example/` 例外。运行前确认目标项目路径，避免写入错误书籍目录。
 - 进程环境变量优先于根目录 `.env`；API key 按 Provider 专属变量读取。只有 loopback OpenAI-compatible endpoint 允许使用本地占位 key。

@@ -31,6 +31,11 @@ def make_client(response_text):
     return client
 
 
+class CharacterTokenizer:
+    def encode(self, text):
+        return SimpleNamespace(ids=list(text))
+
+
 class TestKnowledgeExtractionUnit(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -50,6 +55,20 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "サンプル語はテスト用語です。\n\n第二段落です。",
             encoding="utf-8",
         )
+        self.full_book_budget = {
+            "tokenizer_json": "synthetic-tokenizer.json",
+            "context_window_tokens": 100000,
+            "max_output_tokens": 2048,
+            "safety_margin_tokens": 512,
+            "message_overhead_tokens": 128,
+            "max_provider_calls": 100,
+        }
+        tokenizer_patch = patch(
+            "scripts.auto_extract_knowledge.load_tokenizer_json",
+            return_value=(CharacterTokenizer(), "a" * 64),
+        )
+        tokenizer_patch.start()
+        self.addCleanup(tokenizer_patch.stop)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -80,6 +99,124 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "source-version-1",
         )
         self.assertEqual(provenance["producer"]["provider_id"], "synthetic-provider")
+
+    def test_mapped_ai_knowledge_input_reads_raws_ai_mirror(self):
+        source_root = self.root / "SourceArchive"
+        ai_root = self.root / "RAWs_AI"
+        translation_root = self.root / "translations"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        content = "Synthetic AI-cleaned source."
+        content_bytes = content.encode("utf-8")
+        digest = hashlib.sha256(content_bytes).hexdigest()
+        raw_path = source_root / "raw" / "episode.txt"
+        archive_path = (
+            source_root
+            / "editions"
+            / "ai-efficient-v1"
+            / "episode-1"
+            / "ai-version-1.md"
+        )
+        mirror_path = ai_root / "episodes" / "episode-1.md"
+        raw_path.parent.mkdir()
+        archive_path.parent.mkdir(parents=True)
+        mirror_path.parent.mkdir(parents=True)
+        raw_path.write_bytes(content_bytes)
+        archive_path.write_bytes(content_bytes)
+        mirror_path.write_bytes(content_bytes)
+        (source_root / "source_editions_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifacts": [
+                        {
+                            "artifact_id": "synthetic-raw",
+                            "version_id": "raw-version-1",
+                            "kind": "raw_source",
+                            "content_sha256": digest,
+                            "relative_path": "raw/episode.txt",
+                            "parent_version_ids": [],
+                        },
+                        {
+                            "artifact_id": "synthetic-ai-edition",
+                            "version_id": "ai-version-1",
+                            "kind": "normalized_source",
+                            "content_sha256": digest,
+                            "relative_path": (
+                                "editions/ai-efficient-v1/episode-1/"
+                                "ai-version-1.md"
+                            ),
+                            "parent_version_ids": ["raw-version-1"],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        chapter_map = [
+            {
+                "raw_file": (
+                    "editions/ai-efficient-v1/episode-1/ai-version-1.md"
+                ),
+                "source_input_file": "episodes/episode-1.md",
+                "source_sha256": digest,
+                "translation_file": "episode-1.md",
+                "tm_key": "episode-1",
+                "source_version_id": "ai-version-1",
+                "chapter_position": 1,
+            }
+        ]
+        client = make_client(
+            json.dumps(
+                {
+                    "glossary": [],
+                    "summary": "Synthetic summary.",
+                },
+                ensure_ascii=False,
+            )
+        )
+        reader = auto_extract_knowledge._read_source_chapter
+
+        with (
+            patch.object(Config, "CHAPTER_MAP", chapter_map),
+            patch.object(Config, "OUTPUT_DIR", str(translation_root)),
+            patch.object(
+                Config,
+                "SOURCE_MANIFEST_PATH",
+                "source_editions_manifest.json",
+            ),
+            patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+            patch(
+                "scripts.auto_extract_knowledge.get_openai_client",
+                return_value=client,
+            ),
+            patch(
+                "scripts.auto_extract_knowledge._read_source_chapter",
+                wraps=reader,
+            ) as read_source,
+        ):
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(source_root),
+                    str(self.output_dir),
+                )
+            )
+
+        self.assertEqual(
+            read_source.call_args.args[:2],
+            (str(ai_root), "episodes/episode-1.md"),
+        )
+        provenance = json.loads(
+            (self.output_dir / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            provenance["source_files"][0]["filename"],
+            chapter_map[0]["raw_file"],
+        )
+        self.assertEqual(provenance["source_files"][0]["source_sha256"], digest)
 
     def test_bounded_source_read_accepts_limit_and_normalizes_newlines(self):
         source_path = self.raw_dir / "第1話.md"
@@ -319,6 +456,395 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             data_categories={"source_text"},
         )
         client.chat.completions.create.assert_awaited_once()
+
+    def test_full_book_reads_every_configured_chapter_and_records_coverage(self):
+        chapter_texts = {
+            "第2話.md": "Synthetic chapter two.",
+            "第3話.md": "Synthetic chapter three.",
+            "第4話.md": "Synthetic chapter four.",
+        }
+        for filename, content in chapter_texts.items():
+            (self.raw_dir / filename).write_text(content, encoding="utf-8")
+        (self.raw_dir / "第5話.md").write_text("", encoding="utf-8")
+        response = {
+            "glossary": [
+                {
+                    "src": "サンプル語",
+                    "dst": "示例词",
+                    "info": "synthetic",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "summary_claims": [
+                {
+                    "text": "Synthetic whole-book summary.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "worldbuilding_claims": [
+                {
+                    "text": "Synthetic world setting.",
+                    "evidence_ids": ["C0002P00001"],
+                }
+            ],
+            "narrative_voice_claims": [
+                {
+                    "text": "Synthetic first-person voice.",
+                    "evidence_ids": ["C0003P00001"],
+                }
+            ],
+        }
+        client = make_client(json.dumps(response, ensure_ascii=False))
+
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client",
+            return_value=client,
+        ):
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(self.raw_dir),
+                    str(self.output_dir),
+                    full_book=True,
+                    max_input_characters=10000,
+                    **self.full_book_budget,
+                )
+            )
+
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1][
+            "content"
+        ]
+        prompt_sample = json.loads(prompt.split("[原文段落 JSON]\n", 1)[1])
+        source_pairs = {
+            (record["filename"], record["text"])
+            for record in prompt_sample
+        }
+        self.assertIn(
+            ("第1話.md", "サンプル語はテスト用語です。"),
+            source_pairs,
+        )
+        self.assertIn(("第1話.md", "第二段落です。"), source_pairs)
+        for filename, content in chapter_texts.items():
+            self.assertIn((filename, content), source_pairs)
+        self.assertNotIn(
+            ("第5話.md", ""),
+            source_pairs,
+        )
+        self.assertEqual(client.chat.completions.create.await_count, 1)
+        self.assertEqual(
+            client.chat.completions.create.call_args.kwargs["max_tokens"],
+            self.full_book_budget["max_output_tokens"],
+        )
+
+        provenance = json.loads(
+            (self.output_dir / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            provenance["input_coverage"]["scope"],
+            "all_configured_chapters",
+        )
+        self.assertIs(
+            provenance["input_coverage"]["complete_for_configured_chapters"],
+            True,
+        )
+        self.assertEqual(
+            provenance["input_coverage"]["configured_chapter_count"], 5
+        )
+        self.assertEqual(
+            provenance["input_coverage"]["included_chapter_count"], 5
+        )
+        self.assertLessEqual(
+            provenance["input_coverage"]["input_characters"], 10000
+        )
+        self.assertEqual(
+            provenance["input_coverage"]["input_character_limit"], 10000
+        )
+        self.assertEqual(
+            [item["filename"] for item in provenance["source_files"]],
+            [
+                "第1話.md",
+                "第2話.md",
+                "第3話.md",
+                "第4話.md",
+                "第5話.md",
+            ],
+        )
+        self.assertEqual(
+            provenance["source_files"][-1]["included_characters"], 0
+        )
+        self.assertEqual(provenance["token_budget"]["provider_call_count"], 1)
+        self.assertEqual(len(provenance["claim_evidence"]), 3)
+        summary = (self.output_dir / "STORY_SUMMARY_draft.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Synthetic world setting.", summary)
+        self.assertIn("Synthetic first-person voice.", summary)
+
+    def test_full_book_requires_explicit_budget_before_source_read(self):
+        with patch(
+            "scripts.auto_extract_knowledge._read_source_chapter"
+        ) as source_reader:
+            with patch(
+                "scripts.auto_extract_knowledge.get_openai_client"
+            ) as client_factory:
+                with self.assertRaisesRegex(ValueError, "requires a positive"):
+                    asyncio.run(
+                        auto_extract_knowledge.extract_knowledge(
+                            str(self.raw_dir),
+                            str(self.output_dir),
+                            full_book=True,
+                            **self.full_book_budget,
+                        )
+                    )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_full_book_budget_overflow_fails_before_provider_creation(self):
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client"
+        ) as client_factory:
+            with self.assertRaisesRegex(
+                auto_extract_knowledge._KnowledgeInputBudgetError,
+                "character limit",
+            ):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        max_input_characters=10,
+                        **self.full_book_budget,
+                    )
+                )
+
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_full_book_chapter_count_overflow_fails_before_source_read(self):
+        with patch(
+            "scripts.auto_extract_knowledge.get_chapters",
+            return_value=[f"第{index}話.md" for index in range(1, 1002)],
+        ):
+            with patch(
+                "scripts.auto_extract_knowledge._read_source_chapter"
+            ) as source_reader:
+                with patch(
+                    "scripts.auto_extract_knowledge.get_openai_client"
+                ) as client_factory:
+                    with self.assertRaisesRegex(
+                        auto_extract_knowledge._KnowledgeChapterCountLimitError,
+                        "source limit",
+                    ):
+                        asyncio.run(
+                            auto_extract_knowledge.extract_knowledge(
+                                str(self.raw_dir),
+                                str(self.output_dir),
+                                full_book=True,
+                                max_input_characters=10000,
+                                **self.full_book_budget,
+                            )
+                        )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_full_book_requires_worldbuilding_and_narrative_voice(self):
+        response = {
+            "glossary": [],
+            "summary_claims": [
+                {
+                    "text": "Synthetic whole-book summary.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "worldbuilding_claims": [],
+        }
+        client = make_client(json.dumps(response, ensure_ascii=False))
+
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client",
+            return_value=client,
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid JSON field set"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        max_input_characters=10000,
+                        **self.full_book_budget,
+                    )
+                )
+
+        self.assertFalse(
+            (self.output_dir / "Glossary_draft.json").exists()
+        )
+        self.assertFalse(
+            (self.output_dir / "KNOWLEDGE_PROVENANCE_draft.json").exists()
+        )
+
+    def test_full_book_batches_cover_all_paragraphs_and_bind_claim_evidence(self):
+        source_paragraphs = ["a" * 700, "b" * 700, "c" * 700]
+        (self.raw_dir / "第1話.md").write_text(
+            "\n\n".join(source_paragraphs),
+            encoding="utf-8",
+        )
+        client = make_client("{}")
+        batch_number = 0
+
+        async def response_for_batch(**kwargs):
+            nonlocal batch_number
+            batch_number += 1
+            prompt = kwargs["messages"][1]["content"]
+            source_rows = json.loads(
+                prompt.split("[原文段落 JSON]\n", 1)[1]
+            )
+            source_id = source_rows[0]["source_id"]
+            response = {
+                "glossary": [],
+                "summary_claims": [
+                    {
+                        "text": f"Synthetic summary claim {batch_number}.",
+                        "evidence_ids": [source_id],
+                    }
+                ],
+                "worldbuilding_claims": [],
+                "narrative_voice_claims": [],
+            }
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(response, ensure_ascii=False)
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=1300),
+            )
+
+        client.chat.completions.create.side_effect = response_for_batch
+        token_budget = {
+            **self.full_book_budget,
+            "context_window_tokens": 1700,
+            "max_output_tokens": 200,
+            "safety_margin_tokens": 100,
+            "message_overhead_tokens": 100,
+            "max_provider_calls": 5,
+        }
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client",
+            return_value=client,
+        ):
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(self.raw_dir),
+                    str(self.output_dir),
+                    full_book=True,
+                    max_input_characters=10000,
+                    **token_budget,
+                )
+            )
+
+        provenance = json.loads(
+            (self.output_dir / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        batches = provenance["token_budget"]["batches"]
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(
+            provenance["token_budget"]["provider_call_count"],
+            client.chat.completions.create.await_count,
+        )
+        self.assertTrue(
+            all(
+                row["estimated_input_tokens"]
+                <= provenance["token_budget"]["max_input_tokens_per_request"]
+                for row in batches
+            )
+        )
+        source_ids = [source_id for batch in batches for source_id in batch["source_ids"]]
+        self.assertEqual(
+            source_ids,
+            ["C0001P00001", "C0001P00002", "C0001P00003"],
+        )
+        self.assertEqual(
+            [item["claim_id"] for item in provenance["claim_evidence"]],
+            [
+                "B0001-summary-0001",
+                "B0002-summary-0001",
+                "B0003-summary-0001",
+            ],
+        )
+        summary = (self.output_dir / "STORY_SUMMARY_draft.md").read_text(
+            encoding="utf-8"
+        )
+        for batch_index in range(1, 4):
+            self.assertIn(f"Synthetic summary claim {batch_index}.", summary)
+
+    def test_full_book_batch_failure_writes_no_partial_drafts(self):
+        source_paragraphs = ["a" * 700, "b" * 700, "c" * 700]
+        (self.raw_dir / "第1話.md").write_text(
+            "\n\n".join(source_paragraphs),
+            encoding="utf-8",
+        )
+        first_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "glossary": [],
+                                "summary_claims": [
+                                    {
+                                        "text": "Synthetic summary claim.",
+                                        "evidence_ids": ["C0001P00001"],
+                                    }
+                                ],
+                                "worldbuilding_claims": [],
+                                "narrative_voice_claims": [],
+                            }
+                        )
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        client = make_client("{}")
+        client.chat.completions.create.side_effect = [
+            first_response,
+            RuntimeError("synthetic provider failure"),
+        ]
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client",
+            return_value=client,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic provider failure"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        max_input_characters=10000,
+                        **{
+                            **self.full_book_budget,
+                            "context_window_tokens": 1700,
+                            "max_output_tokens": 200,
+                            "safety_margin_tokens": 100,
+                            "message_overhead_tokens": 100,
+                            "max_provider_calls": 5,
+                        },
+                    )
+                )
+
+        self.assertGreater(client.chat.completions.create.await_count, 1)
+        self.assertFalse(self.output_dir.exists())
 
     def test_extraction_uses_the_configured_model_provider_route(self):
         routes = (

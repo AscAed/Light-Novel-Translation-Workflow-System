@@ -2,3 +2,4 @@ aiohttp
 google-genai
 numpy
 openai
+tokenizers
