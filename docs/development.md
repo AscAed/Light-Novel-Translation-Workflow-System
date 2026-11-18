@@ -1,5 +1,71 @@
 # 开发与验证
 
+## 2026-11-18 CodeRabbit 未提交差异复核
+
+- 复核范围覆盖当前 `07efed2` 基线上的未提交工作树；CodeRabbit 多轮报告的有效问题均逐项对照代码处理，审查快照误报（当前源码签名已支持的 TM 参数）未采纳。
+- 修复 reviewed TM 在 Kakuyomu 运行时把 `Workflow/Runs/<run_id>/Drafts/` 误作正式译文根的问题：新草稿目录继续作为 `Config.OUTPUT_DIR`，TM 来源核验另传发布根目录。
+- 修复安全续跑门禁：仅当问题集合精确对应已存在目标、仍有未完成目标且来源全部核验通过时，才进入审批回执验证；其余阻断计划保持 `translation_plan_blocked`。
+- 修复局部术语冲突判断：按共享别名及解析后的目标译名比较，说明文本差异不再误报；不同译名仍 fail closed。对同一目标译名保留双方说明字段。
+- 修复 `require_aligned_paragraphs` 对 CRLF/CR 内换行的规范化；单话知识草稿目录加入 bundle-set 哈希前缀，bundle 更新可生成新候选而不覆盖旧审核目录，加载器优先选择当前 bundle。
+- 修正文档锚点和 Kakuyomu 单话门禁适用范围，并让 CLI 将成功生成 `review_pending` 草稿返回为退出码 `0`。
+- 受影响定向回归通过；全量非 E2E：`559` 项通过、`4` 项因 Windows 符号链接/FIFO 能力跳过、`0` 失败。最新 `.venv\Scripts\python.exe tests\run_tests.py`：`7` 项本地 mock E2E 通过，退出码 `0`。
+- 本轮仍未调用真实 Provider，未生成真实作品知识或译文，未完成 88 话人工映射/清洗验收、真实 tokenizer/template/模型质量、reviewer 身份、独立终审和有限返工链。
+
+## 2026-11-18 最终续接验证
+
+- 单话 reviewed summary 已接入 Kakuyomu 翻译：翻译开始前预检所有待处理非空章节；每章构造上下文时重新核验来源版本、AI 输入映射和当前整书 bundle。可选 reviewed chapter glossary 合并到 RAG 术语结果；与全局术语同词或别名译名冲突时停止。
+- 修复 Kakuyomu workflow 的章节知识门禁全局配置残留：开关仅在该次 pipeline 初始化、预检和执行期间启用，并在成功或异常退出时恢复。修复局部术语冲突检测误伤旧全局 glossary 的行为：全局 glossary 仍保留原有多条匹配语义，只对新增局部词条参与的冲突失败关闭。
+- 跨模块定向回归：`.venv\Scripts\python.exe -m unittest tests.test_story_summary_review tests.test_knowledge_review tests.test_rag_engine_unit tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q`：197 项通过。
+- 全量非 E2E 回归使用下方 PowerShell 动态发现命令：本轮最终 `559` 项通过、4 项因 Windows 符号链接/FIFO 能力跳过、0 项失败；此前较早检查点的 551/556 项不代表本轮最终计数。
+- `.venv\Scripts\python.exe tests\run_tests.py`：最新运行 `7` 项本地 mock E2E 通过，退出码 `0`。覆盖 Kakuyomu、SourceArchive、本地 archive 与通用流水线路径；负向 fixture 打印的 content-filter、段落对齐和故障注入堆栈是预期结果。请求仅发往 runner 启动的 loopback mock server。
+- 本轮未调用真实 Provider，没有生成或批准试点书的全书/单话知识，也没有生成译文草稿或发布到 `熟肉`。真实 tokenizer/template/模型质量、88 话人工映射与清洗验收、reviewer 身份认证、有限返工链和次数、目录外完整性、多进程/断电恢复仍未验证或实现。
+
+## 2026-11-18 单话审核知识接入翻译上下文
+
+- 单话候选复用现有 `apply_story_summary_review.py` 与 `apply_knowledge_review.py`：概要审核产物放回对应 `Knowledge/ChapterDrafts/episode-<position>-<episode-id>-<source-version-hash>-bundle-<bundle-key>/STORY_SUMMARY_reviewed.json`；局部术语表可选，使用同目录的 `Glossary_reviewed.json`。两个发布器都要求人工填写并明确批准，绑定候选字节哈希与来源版本，并排他新建产物。
+- `TranslationPipeline._load_reviewed_chapter_knowledge` 按当前 `CHAPTER_MAP` 的话目位置、归档来源版本、AI 输入路径/哈希和 `EXPECTED_BOOK_BUNDLE` 加载局部概要；若存在局部术语表，还校验其唯一来源与当前章节一致。局部词条与全书 reviewed glossary 合并；同词或别名解析冲突时停止。
+- `run_all` 在逐章翻译前预检所有需要模型处理的非空章节，缺少、歧义、损坏或过期回执会在第一条模型调用前失败；空章、已有输出或已有 TM 项沿用既有跳过/冲突路径。构建每章上下文时会再次核验对应回执，局部概要放入 `<CHAPTER_KNOWLEDGE>`。现有全书 reviewed 概要与全书 reviewed glossary 门禁仍保留。
+- 章节局部回执操作：在抽取完成后，对具体 `ChapterDrafts` 目录分别用 `--create-template` 创建概要/术语待审回执；人工填写批准决定后，分别用 `--review <回执>` 和 `--output STORY_SUMMARY_reviewed.json` / `--output Glossary_reviewed.json` 发布。命令使用当前项目 `SourceArchive` 与 `source_editions_manifest.json`；拒绝覆盖既有产物。
+- 定向验证：流水线上下文注入、全章节预检阻断、空章跳过、来源/整书 bundle 绑定及 RAG 合并冲突测试通过；`tests.test_story_summary_review` 25 项通过。后续跨模块 197 项、完整非 E2E 551 项（4 项 Windows 能力跳过）和合成 Kakuyomu mock E2E 7 项均通过，详见[最终续接验证](#2026-11-18-最终续接验证)。未调用真实 Provider，也未生成或批准试点书知识。
+- 剩余限制：88 话候选尚未真实抽取和人工审核；回执不认证 reviewer 身份/独立性或语义质量；全局和局部知识的实质冲突治理仍只覆盖相同词项/别名译文冲突。
+
+## 2026-11-18 单话知识候选草稿（审核接入前检查点）
+
+- `scripts/auto_extract_knowledge.py` 增加互斥 `--chapter-position <N>`。它要求当前 verified AI bundle、版本化章节映射和 `source_text`/`book_knowledge` 授权预检；只将所选 episode 的 bundle 正文送入同一套 tokenizer/context 预算分批抽取与候选综合流程。
+- 单话草稿写入 `Knowledge/ChapterDrafts/episode-<position>-<episode-id>-<source-version-hash>-bundle-<bundle-key>/`，provenance 记录话目位置、归档版本、AI 输入路径/哈希和 bundle 身份；重跑拒绝覆盖同一路径已有草稿，bundle 更新时使用新目录保留旧候选。摘要明确标为“当前话候选”。
+- 验证：`.venv\Scripts\python.exe -m unittest discover -s tests -p test_knowledge_extraction_unit.py -q`：37 项通过。新增用例验证双话 bundle 只向 Provider 提交选中话、授权不足时在 bundle 加载前失败、重复运行不覆盖草稿，以及无效位置/互斥模式在 Provider 预检前失败。
+- 集成回归：动态发现并排除 E2E runner 的非 E2E 测试 542 项通过、4 项因 Windows 能力跳过；本次没有重跑长时 mock E2E，因为修改只增加知识候选 CLI 和隔离目录，不改翻译编排/发布入口。CLI `--help` 显示参数组互斥；`--full-book --chapter-position 2` 被 argparse 拒绝。
+- 当时尚未实现单话候选审核/发布回执及批准局部知识的上下文注入；后续增量已接通概要/可选术语回执和翻译前预检，见[单话审核知识接入翻译上下文](#2026-11-18-单话审核知识接入翻译上下文)。与全书知识的语义冲突治理、版本失效传播仍未完成；未对真实书籍调用 Provider。
+
+## 2026-11-18 整书快照与审核发布门禁
+
+- 基线为分支 `codex/translation-workflow-audit-20261117`、HEAD `07efed2af6504cd1e3dd3c17b2a8dee6b69bc60a`；本轮未提交。保留起始工作区中的既有文档修改和根目录未跟踪 freshness JSON；没有读取该 JSON 正文。
+- 新增 `book_bundles.py` 与 `scripts/export_book_bundles.py`：依据 catalog、checkpoint、source/edition manifest 和 AI/人读索引，按内容摘要生成 raw JSON、AI JSON v2、人读 Markdown 及最后写入的 bundle-set marker。loader 在知识抽取/编排前重新校验 bundle 字节哈希、当前来源和逐话映射。试点 88 话 source snapshot 为 `source-v1-1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d`，AI bundle 为 `ai-v1-a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27`，AI bundle SHA-256 为 `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`。marker：`projects/祝福のネトラレラ/SourceArchive/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json`，SHA-256 `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`。本地 exporter 与 loader 均返回完整/`verified`，覆盖 catalog 声明的 88 话，不推断目录外完整性。
+- `scripts/auto_extract_knowledge.py --full-book` 现在要求并消费当前 verified AI bundle；章节文本进入分批输入前经过 Provider 数据授权预检，provenance 记录 bundle-set/AI bundle 身份。新增集成测试验证 prompt 使用 bundle 正文。没有对真实作品调用 Provider，也没有生成真实知识候选。
+- Kakuyomu workflow 将 approved 全书概要绑定到当前 bundle，译文输出改进 `Workflow/Runs/<run_id>/Drafts/` 并写 run manifest；项目 pipeline 要求活动 run 与匹配 bundle。新增 `translation_review.py` 和两个 CLI 生成逐话八项人工检查清单，只有草稿/源版本仍匹配、所有检查通过、无 issues 才能 create-only 发布。
+- E2E 调试修复了 run manifest 把 AI edition ID 当 normalized-source ID 校验的问题，并让 `split_paragraphs` 识别 LF/CRLF/CR，避免 Windows 持久化译文的段落边界误判。端到端 fixture 现验证 bundle 绑定摘要、draft 隔离、人工审核回执和正式目标 create-only 发布。
+- 定向回归：`.venv\Scripts\python.exe -m unittest tests.test_book_bundles tests.test_knowledge_extraction_unit tests.test_story_summary_review tests.test_translation_review tests.test_kakuyomu_workflow tests.test_pipeline_contracts -q`：183 项通过（中间检查点）；最终全量非 E2E 回归见下方。
+- 最终非 E2E 回归通过 534 项、跳过 4 项、失败 0。PowerShell 命令：
+
+  ```powershell
+  $testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName })
+  .\.venv\Scripts\python.exe -m unittest @testModules -q
+  ```
+
+- `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，486.466 秒，runner 退出码 0。另定向运行 Kakuyomu catalog、单页 archive、本地 archive 三条路径：3 项通过，8.769 秒。请求只到 runner 自启的 loopback mock server；预期负向 fixture 会打印 content-filter、段落不匹配和故障注入堆栈。
+- 新增/修改 Python 文件的 `py_compile`、`.venv\Scripts\python.exe -m pip check`（`No broken requirements found`）及 `git diff --check` 通过。最终 E2E 前的 py_compile 已通过；全量单测/E2E 随后均成功导入并运行本轮改动。
+- 未验证：真实 Provider 请求、全书知识语义质量与真实端点下的跨批综合效果、已授权模型 tokenizer/context 预算、真实译文质量、人工审核者身份、有限返工版本链/次数、88 话清洗和映射的人类验收、目录之外完整性、并发或断电恢复。没有生成真实作品的知识草稿、译文草稿或 `熟肉` 成果；没有部署或启动服务。
+
+## 2026-11-18 全书跨批候选综合
+
+- 在原文分批抽取完成后加入 token-budgeted 的分层综合。综合请求仅接收结构化候选，不重复发送全书原文；远端调用预检要求 `source_text` 与 `book_knowledge` 均获该 Provider 授权。合成输出只能引用本组候选已有的段落 ID，术语还须能在所引原文段落中精确找到；未知/越界证据、遗漏候选类别、冲突译名、截断、预算或总调用次数超限均停止草稿写入。
+- `max_provider_calls` 现在涵盖原文抽取与综合请求。多批输入至少预留一次综合调用；候选过大时按 tokenizer 预算递归综合，若综合没有缩小候选集合或负载到可合并状态，或预算耗尽，则失败关闭。各轮输入/输出候选 ID、token 估算、Provider 回报 token 及 prompt/response 摘要写入 provenance；原始批次 claim/evidence 与最终综合 claim/evidence 分别保留。
+- `story_summary_review.py` 校验新 provenance 中原始候选、每轮候选 lineage、综合调用数、token 总量及最终 claim 可引用的原文段落；旧版单批/分批 provenance 仍可读取。获批摘要继续绑定原文版本和 AI bundle。
+- 定向验证：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_unit tests.test_knowledge_batching tests.test_story_summary_review -q`：63 项通过。覆盖分层综合、token/call 上限、越界证据、授权失败时不读原文、无部分草稿，以及综合 claim 经概要审核发布后保留段落 lineage。
+- 完整回归：动态发现并排除 `test_e2e.py` 的非 E2E 命令运行 539 项，4 项因 Windows 符号链接/FIFO 能力跳过，0 项失败；`.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 7 项通过，506.419 秒，退出码 0。E2E 输出中的 content-filter 与段落不匹配堆栈来自预期负向 fixture，请求仅到 runner 启动的 loopback mock server。
+- 受影响 Python 文件 `py_compile`、`.venv\Scripts\python.exe -m pip check`（`No broken requirements found`）、`git diff --check` 通过；9 份活动 Markdown 的 190 个本地链接目标存在，未检查标题锚点。
+- 本地 synthetic fixture 只证明调用编排和结构/来源约束；未调用真实 Provider，也未验证真实 tokenizer、服务端消息模板、候选压缩质量、全书因果/人物连续性或人工摘要质量。综合模型仍可能生成语义不正确但有合法引用的候选，必须由审核流程判定。
+
 ## 2026-11-17 当前工作树审查与完整回归
 
 - 验证基线：变更基于 `main` HEAD `e2fe611258532c9f0bab3672eda52cf928102b1a`，实现和测试提交为 `a8d056d355c4c03c643192296a859893c92539d9`，分支为 `codex/translation-workflow-audit-20261117`。提交后仅剩根目录的本地 freshness JSON 未跟踪；未读取其正文，也未纳入变更。

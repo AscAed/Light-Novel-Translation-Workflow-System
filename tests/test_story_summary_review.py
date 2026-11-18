@@ -33,7 +33,7 @@ class StorySummaryReviewTests(unittest.TestCase):
         self.archive_root.mkdir()
         self.source_file = self.source_root / "chapter.txt"
         self.source_file.write_text(
-            "Synthetic source text.\r\nSecond paragraph.\r\n",
+            "Synthetic source text.\r\n\r\nSecond paragraph.\r\n",
             encoding="utf-8",
             newline="",
         )
@@ -297,6 +297,178 @@ class StorySummaryReviewTests(unittest.TestCase):
             "C0001P00001",
         )
 
+    def test_synthesized_claim_evidence_survives_summary_approval(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source_filename = self.artifact["relative_path"]
+        first_source_id = "C0001P00001"
+        second_source_id = "C0001P00002"
+        summary_text = "Synthetic cross-batch plot summary."
+        self.summary_bytes = (
+            f"# Story Summary (Draft)\n\n{summary_text}\n"
+        ).encode("utf-8")
+        (self.knowledge_root / "STORY_SUMMARY_draft.md").write_bytes(
+            self.summary_bytes
+        )
+        provenance["source_files"][0]["source_index"] = 1
+        provenance["source_files"][0]["included_paragraph_count"] = 2
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        provenance["token_budget"] = {
+            "tokenizer_sha256": "a" * 64,
+            "context_window_tokens": 4096,
+            "max_output_tokens_per_request": 512,
+            "safety_margin_tokens": 256,
+            "message_overhead_tokens": 32,
+            "max_input_tokens_per_request": 3328,
+            "max_provider_calls": 10,
+            "provider_call_count": 3,
+            "total_estimated_input_tokens": 150,
+            "extraction_provider_call_count": 2,
+            "synthesis_provider_call_count": 1,
+            "extraction_estimated_input_tokens": 100,
+            "synthesis_estimated_input_tokens": 50,
+            "synthesis_status": "completed",
+            "batches": [
+                {
+                    "batch_id": "B0001",
+                    "source_ids": [first_source_id],
+                    "estimated_input_tokens": 50,
+                    "reported_prompt_tokens": None,
+                    "user_message_characters": 100,
+                    "user_message_sha256": "b" * 64,
+                    "response_sha256": "c" * 64,
+                },
+                {
+                    "batch_id": "B0002",
+                    "source_ids": [second_source_id],
+                    "estimated_input_tokens": 50,
+                    "reported_prompt_tokens": None,
+                    "user_message_characters": 100,
+                    "user_message_sha256": "d" * 64,
+                    "response_sha256": "e" * 64,
+                },
+            ],
+            "synthesis_rounds": [
+                {
+                    "round": 1,
+                    "input_candidate_count": 2,
+                    "output_candidate_count": 1,
+                    "provider_call_count": 1,
+                    "batches": [
+                        {
+                            "batch_id": "R001B0001",
+                            "input_candidate_ids": [
+                                "B0001-summary-0001",
+                                "B0002-summary-0001",
+                            ],
+                            "output_candidate_ids": [
+                                "R001B0001-summary-0001"
+                            ],
+                            "estimated_input_tokens": 50,
+                            "reported_prompt_tokens": None,
+                            "user_message_characters": 100,
+                            "user_message_sha256": "f" * 64,
+                            "response_sha256": "0" * 64,
+                        }
+                    ],
+                }
+            ],
+        }
+        provenance["batch_candidate_evidence"] = [
+            {
+                "candidate_id": "B0001-summary-0001",
+                "evidence_ids": [first_source_id],
+            },
+            {
+                "candidate_id": "B0002-summary-0001",
+                "evidence_ids": [second_source_id],
+            },
+        ]
+        provenance["batch_claim_evidence"] = [
+            {
+                "claim_id": f"{batch_id}-summary-0001",
+                "category": "summary",
+                "batch_id": batch_id,
+                "claim_text": f"Synthetic batch {index} summary.",
+                "claim_sha256": hashlib.sha256(
+                    f"Synthetic batch {index} summary.".encode("utf-8")
+                ).hexdigest(),
+                "evidence": [
+                    {
+                        "source_id": source_id,
+                        "filename": source_filename,
+                        "paragraph_index": index,
+                    }
+                ],
+            }
+            for index, (batch_id, source_id) in enumerate(
+                (
+                    ("B0001", first_source_id),
+                    ("B0002", second_source_id),
+                ),
+                start=1,
+            )
+        ]
+        provenance["claim_evidence"] = [
+            {
+                "claim_id": "R001B0001-summary-0001",
+                "category": "summary",
+                "batch_id": "R001B0001",
+                "claim_text": summary_text,
+                "claim_sha256": hashlib.sha256(
+                    summary_text.encode("utf-8")
+                ).hexdigest(),
+                "evidence": [
+                    {
+                        "source_id": first_source_id,
+                        "filename": source_filename,
+                        "paragraph_index": 1,
+                    },
+                    {
+                        "source_id": second_source_id,
+                        "filename": source_filename,
+                        "paragraph_index": 2,
+                    },
+                ],
+            }
+        ]
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+
+        bundle = json.loads(self.output_path.read_text(encoding="utf-8"))
+        source_provenance = bundle["source_provenance"]
+        self.assertEqual(
+            source_provenance["token_budget"]["provider_call_count"], 3
+        )
+        self.assertEqual(
+            source_provenance["claim_evidence"][0]["batch_id"],
+            "R001B0001",
+        )
+        self.assertEqual(
+            {
+                item["source_id"]
+                for item in source_provenance["claim_evidence"][0]["evidence"]
+            },
+            {first_source_id, second_source_id},
+        )
+        self.assertEqual(len(source_provenance["batch_claim_evidence"]), 2)
+
     def test_token_batch_claim_cannot_cite_a_paragraph_outside_its_location(self):
         provenance = json.loads(
             (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
@@ -423,6 +595,60 @@ class StorySummaryReviewTests(unittest.TestCase):
                 ],
             )
 
+    def test_reviewed_summary_must_match_verified_bundle_identity(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+        provenance["book_bundle"] = {
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/snapshot/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/snapshot/ai/book.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": 1,
+        }
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+
+        expected = provenance["book_bundle"]
+        loaded = load_reviewed_story_summary(
+            str(self.output_path),
+            str(self.archive_root),
+            "source_manifest.json",
+            require_full_book_coverage=True,
+            require_book_bundle=True,
+            expected_book_bundle=expected,
+        )
+        self.assertIn("Synthetic plot summary.", loaded)
+
+        stale = dict(expected)
+        stale["ai_bundle_sha256"] = "e" * 64
+        with self.assertRaisesRegex(ValueError, "different AI book bundle"):
+            load_reviewed_story_summary(
+                str(self.output_path),
+                str(self.archive_root),
+                "source_manifest.json",
+                require_full_book_coverage=True,
+                require_book_bundle=True,
+                expected_book_bundle=stale,
+            )
+
     def test_publishes_approved_bundle_and_runtime_rechecks_sources(self):
         self._create_template()
         self._complete_receipt()
@@ -453,6 +679,7 @@ class StorySummaryReviewTests(unittest.TestCase):
             "input_characters": 1,
             "input_character_limit": 100,
         }
+        provenance["source_files"][0]["source_input_file"] = "episode.md"
         (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
             json.dumps(provenance, ensure_ascii=False),
             encoding="utf-8",
@@ -502,6 +729,127 @@ class StorySummaryReviewTests(unittest.TestCase):
             )
 
         self.assertEqual(summary, self.summary_bytes.decode("utf-8"))
+
+    def test_selected_chapter_summary_binds_position_source_and_book_bundle(self):
+        provenance = json.loads(
+            (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source_text = read_relative_text(
+            str(self.archive_root), self.artifact["relative_path"]
+        )
+        source_digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        provenance["source_files"][0].update(
+            {
+                "source_input_file": "episodes/episode-1.md",
+                "chapter_position": 1,
+            }
+        )
+        provenance["input_coverage"] = {
+            "scope": "selected_chapter",
+            "complete_for_configured_chapters": False,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": len(source_text),
+            "input_character_limit": max(1, len(source_text)),
+        }
+        provenance["chapter_local"] = {
+            "episode_id": "episode-1",
+            "position": 1,
+            "source_file": self.artifact["relative_path"],
+            "source_version_id": self.artifact["version_id"],
+            "source_input_file": "episodes/episode-1.md",
+            "source_sha256": source_digest,
+        }
+        provenance["book_bundle"] = {
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book-ai.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": 88,
+        }
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        ai_root = self.root / "RAWs_AI"
+        ai_input = ai_root / "episodes/episode-1.md"
+        ai_input.parent.mkdir(parents=True)
+        ai_input.write_bytes(
+            (self.archive_root / self.artifact["relative_path"]).read_bytes()
+        )
+        ai_digest = hashlib.sha256(ai_input.read_bytes()).hexdigest()
+        provenance["chapter_local"]["source_sha256"] = ai_digest
+        (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        # The provenance digest is bound by the review template after the final
+        # chapter-local identity has been written.
+        self._create_template()
+        self._complete_receipt()
+        self._publish()
+
+        expected_bundle = provenance["book_bundle"]
+        expected_chapter = provenance["chapter_local"]
+        source_input_map = {
+            self.artifact["relative_path"]: {
+                "source_version_id": self.artifact["version_id"],
+                "source_input_file": "episodes/episode-1.md",
+                "source_sha256": ai_digest,
+            }
+        }
+        loaded = load_reviewed_story_summary(
+            str(self.output_path),
+            str(self.archive_root),
+            "source_manifest.json",
+            expected_sources=[
+                {
+                    "filename": self.artifact["relative_path"],
+                    "source_version_id": self.artifact["version_id"],
+                    "source_input_file": "episodes/episode-1.md",
+                }
+            ],
+            source_input_root=str(ai_root),
+            source_input_map=source_input_map,
+            require_book_bundle=True,
+            expected_book_bundle=expected_bundle,
+            expected_chapter_local={
+                key: value
+                for key, value in expected_chapter.items()
+                if key != "episode_id"
+            },
+        )
+        self.assertEqual(loaded, self.summary_bytes.decode("utf-8"))
+
+        with self.assertRaisesRegex(ValueError, "different AI book bundle"):
+            load_reviewed_story_summary(
+                str(self.output_path),
+                str(self.archive_root),
+                "source_manifest.json",
+                expected_sources=[
+                    {
+                        "filename": self.artifact["relative_path"],
+                        "source_version_id": self.artifact["version_id"],
+                        "source_input_file": "episodes/episode-1.md",
+                    }
+                ],
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+                require_book_bundle=True,
+                expected_book_bundle={
+                    **expected_bundle,
+                    "ai_bundle_sha256": "e" * 64,
+                },
+                expected_chapter_local={
+                    key: value
+                    for key, value in expected_chapter.items()
+                    if key != "episode_id"
+                },
+            )
 
     def test_reviewed_summary_requires_json_output_name(self):
         self._create_template()

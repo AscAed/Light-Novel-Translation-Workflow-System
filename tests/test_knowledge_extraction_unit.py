@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -73,6 +73,173 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def _chapter_local_bundle_fixture(self):
+        source_root = self.root / "SourceArchive"
+        ai_root = self.root / "RAWs_AI"
+        source_root.mkdir()
+        ai_root.mkdir()
+        (source_root / "source_manifest.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        source_rows = [
+            (
+                "editions/ai-efficient-v1/episode-1.md",
+                "episodes/episode-1.md",
+                "ai-version-1",
+                "episode-one",
+                1,
+                "First chapter must stay out of the prompt.",
+            ),
+            (
+                "editions/ai-efficient-v1/episode-2.md",
+                "episodes/episode-2.md",
+                "ai-version-2",
+                "episode-two",
+                2,
+                "Selected second chapter paragraph.",
+            ),
+        ]
+        chapters = []
+        episodes = {}
+        artifacts = []
+        for raw_file, input_file, version_id, episode_id, position, text in source_rows:
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            chapters.append(
+                SimpleNamespace(
+                    raw_file=raw_file,
+                    source_input_file=input_file,
+                    source_version_id=version_id,
+                    source_sha256=digest,
+                    chapter_position=position,
+                    tm_key=f"episode-{position}",
+                )
+            )
+            episodes[input_file] = {
+                "source_file": raw_file,
+                "source_version_id": version_id,
+                "source_sha256": digest,
+                "position": position,
+                "episode_id": episode_id,
+                "source_text": text,
+            }
+            artifacts.append(
+                {
+                    "version_id": version_id,
+                    "kind": "normalized_source",
+                    "relative_path": raw_file,
+                    "content_sha256": digest,
+                }
+            )
+
+        bundle = {
+            "status": "verified",
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": len(episodes),
+            "episodes_by_source_input_file": episodes,
+        }
+        return source_root, ai_root, chapters, bundle, {"artifacts": artifacts}
+
+    def _enable_synthetic_verified_book_bundle(self, source_rows=None):
+        if source_rows is None:
+            source_rows = []
+            for path in sorted(self.raw_dir.glob("*.md")):
+                source_rows.append(
+                    (path.name, path.read_text(encoding="utf-8"))
+                )
+        source_manifest = self.raw_dir / "source_manifest.json"
+        source_manifest.write_text("{}", encoding="utf-8")
+        ai_root = self.root / "RAWs_AI_SyntheticBundle"
+        ai_root.mkdir(exist_ok=True)
+        chapters = []
+        episodes = {}
+        artifacts = []
+        chapter_map = []
+        for position, (raw_file, text) in enumerate(source_rows, start=1):
+            input_file = f"episodes/episode-{position}.md"
+            version_id = f"ai-version-{position}"
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            episode_id = f"episode-{position}"
+            chapters.append(
+                SimpleNamespace(
+                    raw_file=raw_file,
+                    source_input_file=input_file,
+                    source_version_id=version_id,
+                    source_sha256=digest,
+                    chapter_position=position,
+                    tm_key=f"episode-{position}",
+                )
+            )
+            chapter_map.append(
+                {
+                    "raw_file": raw_file,
+                    "source_input_file": input_file,
+                    "source_sha256": digest,
+                    "source_version_id": version_id,
+                    "chapter_position": position,
+                }
+            )
+            episodes[input_file] = {
+                "source_file": raw_file,
+                "source_version_id": version_id,
+                "source_sha256": digest,
+                "position": position,
+                "episode_id": episode_id,
+                "source_text": text,
+            }
+            artifacts.append(
+                {
+                    "version_id": version_id,
+                    "kind": "normalized_source",
+                    "relative_path": raw_file,
+                    "content_sha256": digest,
+                }
+            )
+        bundle = {
+            "status": "verified",
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": len(episodes),
+            "episodes_by_source_input_file": episodes,
+        }
+        stack = ExitStack()
+        stack.enter_context(patch.object(Config, "CHAPTER_MAP", chapter_map))
+        stack.enter_context(
+            patch.object(Config, "OUTPUT_DIR", str(self.root / "translations"))
+        )
+        stack.enter_context(
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json")
+        )
+        stack.enter_context(patch.object(Config, "AI_EDITION_ROOT", str(ai_root)))
+        stack.enter_context(
+            patch(
+                "scripts.auto_extract_knowledge.get_chapter_specs",
+                return_value=chapters,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "scripts.auto_extract_knowledge.load_manifest",
+                return_value={"artifacts": artifacts},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "scripts.auto_extract_knowledge.load_verified_ai_book_bundle",
+                return_value=bundle,
+            )
+        )
+        self.addCleanup(stack.close)
+        return chapters, bundle
+
     def test_knowledge_provenance_records_source_version_id(self):
         content = "Synthetic source paragraph."
         sample_text = f"\n\n--- source.md ---\n\n{content}"
@@ -99,6 +266,58 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "source-version-1",
         )
         self.assertEqual(provenance["producer"]["provider_id"], "synthetic-provider")
+
+    def test_verified_bundle_chapter_map_requires_exact_current_lineage(self):
+        chapter = SimpleNamespace(
+            raw_file="editions/ai/episode-1.md",
+            source_input_file="episodes/episode-1.md",
+            source_version_id="ai-version-1",
+            source_sha256="a" * 64,
+            chapter_position=1,
+        )
+        verified_bundle = {
+            "episodes_by_source_input_file": {
+                "episodes/episode-1.md": {
+                    "source_file": chapter.raw_file,
+                    "source_version_id": chapter.source_version_id,
+                    "source_sha256": chapter.source_sha256,
+                    "position": 1,
+                    "source_text": "Synthetic verified bundle text.\r\n",
+                }
+            }
+        }
+
+        self.assertEqual(
+            auto_extract_knowledge._verified_bundle_chapter_texts(
+                [chapter], verified_bundle
+            ),
+            {"episodes/episode-1.md": "Synthetic verified bundle text.\n"},
+        )
+
+        chapter.source_version_id = "stale-version"
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            auto_extract_knowledge._verified_bundle_chapter_texts(
+                [chapter], verified_bundle
+            )
+
+    def test_required_verified_bundle_arguments_fail_before_provider_check(self):
+        with patch(
+            "scripts.auto_extract_knowledge.resolve_openai_client_settings"
+        ) as provider_check:
+            with self.assertRaisesRegex(ValueError, "verified AI bundle set"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        **self.full_book_budget,
+                    )
+                )
+
+        provider_check.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
 
     def test_mapped_ai_knowledge_input_reads_raws_ai_mirror(self):
         source_root = self.root / "SourceArchive"
@@ -388,6 +607,300 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         client_factory.assert_not_called()
         self.assertFalse(self.output_dir.exists())
 
+    def test_full_book_requires_knowledge_authorization_before_source_read(self):
+        self._enable_synthetic_verified_book_bundle()
+        with patch.object(
+            Config, "DEEPSEEK_BASE_URL", "https://provider.example/v1"
+        ), patch.object(
+            Config,
+            "PROVIDER_DATA_POLICY",
+            {"deepseek": frozenset({"source_text"})},
+        ), patch(
+            "scripts.auto_extract_knowledge.get_api_key",
+            return_value="synthetic-key",
+        ), patch(
+            "scripts.auto_extract_knowledge._read_source_chapter"
+        ) as source_reader, patch(
+            "scripts.auto_extract_knowledge.get_openai_client"
+        ) as client_factory:
+            with self.assertRaisesRegex(PermissionError, "book_knowledge"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
+                        **self.full_book_budget,
+                    )
+                )
+
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_chapter_local_extraction_uses_only_selected_verified_episode(self):
+        source_root, ai_root, chapters, bundle, manifest = (
+            self._chapter_local_bundle_fixture()
+        )
+        response = {
+            "glossary": [],
+            "summary_claims": [
+                {
+                    "text": "Synthetic current chapter summary.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "worldbuilding_claims": [],
+            "narrative_voice_claims": [],
+        }
+        client = make_client(json.dumps(response, ensure_ascii=False))
+        bundle_dir = (
+            self.output_dir
+            / "ChapterDrafts"
+            / (
+                "episode-0002-episode-two-"
+                + hashlib.sha256(b"ai-version-2").hexdigest()[:16]
+                + "-bundle-"
+                + "c" * 16
+            )
+        )
+        with (
+            patch.object(
+                Config,
+                "CHAPTER_MAP",
+                [{"chapter_position": 1}, {"chapter_position": 2}],
+            ),
+            patch.object(Config, "OUTPUT_DIR", str(self.root / "translations")),
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+            patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+            patch(
+                "scripts.auto_extract_knowledge.get_chapter_specs",
+                return_value=chapters,
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.load_manifest",
+                return_value=manifest,
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.load_verified_ai_book_bundle",
+                return_value=bundle,
+            ) as bundle_loader,
+            patch(
+                "scripts.auto_extract_knowledge._read_source_chapter"
+            ) as source_reader,
+            patch(
+                "scripts.auto_extract_knowledge.get_openai_client",
+                return_value=client,
+            ) as client_factory,
+        ):
+            extraction = auto_extract_knowledge.extract_knowledge(
+                str(source_root),
+                str(self.output_dir),
+                chapter_position=2,
+                require_book_bundle=True,
+                max_input_characters=10000,
+                catalog_relative_path="catalog.json",
+                checkpoint_relative_path="checkpoint.json",
+                bundle_set_relative_path="bundle-set.json",
+                ai_book_bundle_path="collections/ai/book.json",
+                human_root=str(self.root / "human"),
+                **self.full_book_budget,
+            )
+            asyncio.run(extraction)
+            with self.assertRaises(FileExistsError):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(source_root),
+                        str(self.output_dir),
+                        chapter_position=2,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
+                        **self.full_book_budget,
+                    )
+                )
+            bundle_loader.return_value = {
+                **bundle,
+                "bundle_set_sha256": "e" * 64,
+            }
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(source_root),
+                    str(self.output_dir),
+                    chapter_position=2,
+                    require_book_bundle=True,
+                    max_input_characters=10000,
+                    catalog_relative_path="catalog.json",
+                    checkpoint_relative_path="checkpoint.json",
+                    bundle_set_relative_path="bundle-set.json",
+                    ai_book_bundle_path="collections/ai/book.json",
+                    human_root=str(self.root / "human"),
+                    **self.full_book_budget,
+                )
+            )
+            refreshed_bundle_dir = (
+                self.output_dir
+                / "ChapterDrafts"
+                / (
+                    "episode-0002-episode-two-"
+                    + hashlib.sha256(b"ai-version-2").hexdigest()[:16]
+                    + "-bundle-"
+                    + "e" * 16
+                )
+            )
+
+        provenance = json.loads(
+            (bundle_dir / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1][
+            "content"
+        ]
+        prompt_rows = json.loads(prompt.split("[原文段落 JSON]\n", 1)[1])
+        self.assertEqual(
+            [row["text"] for row in prompt_rows],
+            ["Selected second chapter paragraph."],
+        )
+        self.assertEqual(client.chat.completions.create.await_count, 2)
+        self.assertEqual(bundle_loader.call_count, 3)
+        self.assertEqual(client_factory.call_count, 2)
+        source_reader.assert_not_called()
+        self.assertEqual(
+            provenance["input_coverage"]["scope"], "selected_chapter"
+        )
+        self.assertEqual(
+            [row["filename"] for row in provenance["source_files"]],
+            ["editions/ai-efficient-v1/episode-2.md"],
+        )
+        self.assertEqual(
+            provenance["chapter_local"],
+            {
+                "episode_id": "episode-two",
+                "position": 2,
+                "source_file": "editions/ai-efficient-v1/episode-2.md",
+                "source_version_id": "ai-version-2",
+                "source_input_file": "episodes/episode-2.md",
+                "source_sha256": hashlib.sha256(
+                    b"Selected second chapter paragraph."
+                ).hexdigest(),
+            },
+        )
+        summary = (bundle_dir / "STORY_SUMMARY_draft.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("当前话剧情概要候选", summary)
+        self.assertIn("Synthetic current chapter summary.", summary)
+        self.assertTrue(bundle_dir.exists())
+        self.assertTrue(refreshed_bundle_dir.exists())
+        refreshed_provenance = json.loads(
+            (
+                refreshed_bundle_dir / "KNOWLEDGE_PROVENANCE_draft.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            refreshed_provenance["book_bundle"]["bundle_set_sha256"],
+            "e" * 64,
+        )
+
+    def test_chapter_local_requires_knowledge_authorization_before_bundle_load(self):
+        source_root, ai_root, chapters, bundle, manifest = (
+            self._chapter_local_bundle_fixture()
+        )
+        with (
+            patch.object(
+                Config,
+                "DEEPSEEK_BASE_URL",
+                "https://provider.example/v1",
+            ),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {"deepseek": frozenset({"source_text"})},
+            ),
+            patch.object(
+                Config,
+                "CHAPTER_MAP",
+                [{"chapter_position": 1}, {"chapter_position": 2}],
+            ),
+            patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+            patch(
+                "scripts.auto_extract_knowledge.get_api_key",
+                return_value="synthetic-key",
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.load_verified_ai_book_bundle"
+            ) as bundle_loader,
+            patch(
+                "scripts.auto_extract_knowledge._read_source_chapter"
+            ) as source_reader,
+            patch(
+                "scripts.auto_extract_knowledge.get_openai_client"
+            ) as client_factory,
+        ):
+            with self.assertRaisesRegex(PermissionError, "book_knowledge"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(source_root),
+                        str(self.output_dir),
+                        chapter_position=2,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
+                        **self.full_book_budget,
+                    )
+                )
+
+        bundle_loader.assert_not_called()
+        source_reader.assert_not_called()
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
+    def test_chapter_position_rejects_invalid_values_before_provider_preflight(self):
+        with patch(
+            "scripts.auto_extract_knowledge.resolve_openai_client_settings"
+        ) as provider_preflight:
+            for position in (0, True, 1.5):
+                with self.subTest(position=position):
+                    with self.assertRaisesRegex(
+                        ValueError, "positive catalog position"
+                    ):
+                        asyncio.run(
+                            auto_extract_knowledge.extract_knowledge(
+                                str(self.raw_dir),
+                                str(self.output_dir),
+                                chapter_position=position,
+                            )
+                        )
+
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        chapter_position=1,
+                        full_book=True,
+                    )
+                )
+
+        provider_preflight.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
+
     def test_valid_response_creates_only_non_overwriting_drafts(self):
         response = {
             "glossary": [
@@ -466,6 +979,7 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         for filename, content in chapter_texts.items():
             (self.raw_dir / filename).write_text(content, encoding="utf-8")
         (self.raw_dir / "第5話.md").write_text("", encoding="utf-8")
+        self._enable_synthetic_verified_book_bundle()
         response = {
             "glossary": [
                 {
@@ -505,7 +1019,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                     str(self.raw_dir),
                     str(self.output_dir),
                     full_book=True,
+                    require_book_bundle=True,
                     max_input_characters=10000,
+                    catalog_relative_path="catalog.json",
+                    checkpoint_relative_path="checkpoint.json",
+                    bundle_set_relative_path="bundle-set.json",
+                    ai_book_bundle_path="collections/ai/book.json",
+                    human_root=str(self.root / "human"),
                     **self.full_book_budget,
                 )
             )
@@ -581,7 +1101,181 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.assertIn("Synthetic world setting.", summary)
         self.assertIn("Synthetic first-person voice.", summary)
 
+    def test_required_full_book_extraction_uses_verified_bundle_text(self):
+        source_root = self.root / "SourceArchive"
+        ai_root = self.root / "RAWs_AI"
+        translation_root = self.root / "translations"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        text = "Synthetic verified bundle chapter."
+        source_bytes = text.encode("utf-8")
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        archive_file = "editions/ai-efficient-v1/episode-1.md"
+        mirror_file = "episodes/episode-1.md"
+        archive_path = source_root / archive_file
+        mirror_path = ai_root / mirror_file
+        archive_path.parent.mkdir(parents=True)
+        mirror_path.parent.mkdir(parents=True)
+        archive_path.write_bytes(source_bytes)
+        mirror_path.write_bytes(source_bytes)
+        raw_file = "raw/episode-1.txt"
+        raw_path = source_root / raw_file
+        raw_path.parent.mkdir(parents=True)
+        raw_path.write_bytes(source_bytes)
+        (source_root / "source_manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifacts": [
+                        {
+                            "artifact_id": "synthetic-raw",
+                            "version_id": "raw-version-1",
+                            "kind": "raw_source",
+                            "content_sha256": digest,
+                            "relative_path": raw_file,
+                            "parent_version_ids": [],
+                        },
+                        {
+                            "artifact_id": "synthetic-normalized",
+                            "version_id": "ai-version-1",
+                            "kind": "normalized_source",
+                            "content_sha256": digest,
+                            "relative_path": archive_file,
+                            "parent_version_ids": ["raw-version-1"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        chapter_map = [
+            {
+                "raw_file": archive_file,
+                "source_input_file": mirror_file,
+                "source_sha256": digest,
+                "translation_file": "episode-1.md",
+                "tm_key": "episode-1",
+                "source_version_id": "ai-version-1",
+                "chapter_position": 1,
+            }
+        ]
+        bundle_identity = {
+            "status": "verified",
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": 1,
+            "episodes_by_source_input_file": {
+                mirror_file: {
+                    "source_file": archive_file,
+                    "source_version_id": "ai-version-1",
+                    "source_sha256": digest,
+                    "position": 1,
+                    "source_text": text,
+                }
+            },
+        }
+        response = {
+            "glossary": [
+                {
+                    "src": "Synthetic",
+                    "dst": "synthetic translation",
+                    "info": "",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "summary_claims": [
+                {
+                    "text": "Synthetic plot claim.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "worldbuilding_claims": [
+                {
+                    "text": "Synthetic setting claim.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "narrative_voice_claims": [
+                {
+                    "text": "Synthetic voice claim.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+        }
+        client = make_client(json.dumps(response, ensure_ascii=False))
+
+        with (
+            patch.object(Config, "CHAPTER_MAP", chapter_map),
+            patch.object(Config, "OUTPUT_DIR", str(translation_root)),
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+            patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+            patch(
+                "scripts.auto_extract_knowledge.load_verified_ai_book_bundle",
+                return_value=bundle_identity,
+            ) as bundle_loader,
+            patch(
+                "scripts.auto_extract_knowledge._read_source_chapter"
+            ) as source_reader,
+            patch(
+                "scripts.auto_extract_knowledge.get_api_key",
+                return_value=None,
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.get_openai_client",
+                return_value=client,
+            ),
+        ):
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(source_root),
+                    str(self.output_dir),
+                    full_book=True,
+                    require_book_bundle=True,
+                    max_input_characters=10000,
+                    catalog_relative_path="catalog.json",
+                    checkpoint_relative_path="checkpoint.json",
+                    bundle_set_relative_path="bundle-set.json",
+                    ai_book_bundle_path="collections/ai/book.json",
+                    human_root=str(self.root / "human"),
+                    **self.full_book_budget,
+                )
+            )
+
+        bundle_loader.assert_called_once()
+        source_reader.assert_not_called()
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1][
+            "content"
+        ]
+        prompt_sample = json.loads(prompt.split("[原文段落 JSON]\n", 1)[1])
+        self.assertEqual(prompt_sample[0]["text"], text)
+        provenance = json.loads(
+            (self.output_dir / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            provenance["book_bundle"],
+            {
+                field: bundle_identity[field]
+                for field in (
+                    "source_snapshot_id",
+                    "ai_bundle_id",
+                    "bundle_set_relative_path",
+                    "bundle_set_sha256",
+                    "ai_bundle_relative_path",
+                    "ai_bundle_sha256",
+                    "episode_count",
+                )
+            },
+        )
+
     def test_full_book_requires_explicit_budget_before_source_read(self):
+        self._enable_synthetic_verified_book_bundle()
         with patch(
             "scripts.auto_extract_knowledge._read_source_chapter"
         ) as source_reader:
@@ -594,6 +1288,12 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                             str(self.raw_dir),
                             str(self.output_dir),
                             full_book=True,
+                            require_book_bundle=True,
+                            catalog_relative_path="catalog.json",
+                            checkpoint_relative_path="checkpoint.json",
+                            bundle_set_relative_path="bundle-set.json",
+                            ai_book_bundle_path="collections/ai/book.json",
+                            human_root=str(self.root / "human"),
                             **self.full_book_budget,
                         )
                     )
@@ -603,6 +1303,7 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.assertFalse(self.output_dir.exists())
 
     def test_full_book_budget_overflow_fails_before_provider_creation(self):
+        self._enable_synthetic_verified_book_bundle()
         with patch(
             "scripts.auto_extract_knowledge.get_openai_client"
         ) as client_factory:
@@ -615,7 +1316,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                         str(self.raw_dir),
                         str(self.output_dir),
                         full_book=True,
+                        require_book_bundle=True,
                         max_input_characters=10,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
                         **self.full_book_budget,
                     )
                 )
@@ -624,6 +1331,12 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.assertFalse(self.output_dir.exists())
 
     def test_full_book_chapter_count_overflow_fails_before_source_read(self):
+        self._enable_synthetic_verified_book_bundle(
+            [
+                (f"第{index}話.md", f"Synthetic chapter {index}.")
+                for index in range(1, 1002)
+            ]
+        )
         with patch(
             "scripts.auto_extract_knowledge.get_chapters",
             return_value=[f"第{index}話.md" for index in range(1, 1002)],
@@ -643,7 +1356,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                                 str(self.raw_dir),
                                 str(self.output_dir),
                                 full_book=True,
+                                require_book_bundle=True,
                                 max_input_characters=10000,
+                                catalog_relative_path="catalog.json",
+                                checkpoint_relative_path="checkpoint.json",
+                                bundle_set_relative_path="bundle-set.json",
+                                ai_book_bundle_path="collections/ai/book.json",
+                                human_root=str(self.root / "human"),
                                 **self.full_book_budget,
                             )
                         )
@@ -653,6 +1372,7 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         self.assertFalse(self.output_dir.exists())
 
     def test_full_book_requires_worldbuilding_and_narrative_voice(self):
+        self._enable_synthetic_verified_book_bundle()
         response = {
             "glossary": [],
             "summary_claims": [
@@ -675,7 +1395,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                         str(self.raw_dir),
                         str(self.output_dir),
                         full_book=True,
+                        require_book_bundle=True,
                         max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
                         **self.full_book_budget,
                     )
                 )
@@ -693,28 +1419,52 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "\n\n".join(source_paragraphs),
             encoding="utf-8",
         )
+        self._enable_synthetic_verified_book_bundle()
         client = make_client("{}")
         batch_number = 0
 
         async def response_for_batch(**kwargs):
             nonlocal batch_number
-            batch_number += 1
             prompt = kwargs["messages"][1]["content"]
-            source_rows = json.loads(
-                prompt.split("[原文段落 JSON]\n", 1)[1]
-            )
-            source_id = source_rows[0]["source_id"]
-            response = {
-                "glossary": [],
-                "summary_claims": [
-                    {
-                        "text": f"Synthetic summary claim {batch_number}.",
-                        "evidence_ids": [source_id],
-                    }
-                ],
-                "worldbuilding_claims": [],
-                "narrative_voice_claims": [],
-            }
+            if "[批次候选 JSON]\n" in prompt:
+                candidates = json.loads(
+                    prompt.split("[批次候选 JSON]\n", 1)[1]
+                )
+                source_ids = list(
+                    dict.fromkeys(
+                        source_id
+                        for candidate in candidates
+                        for source_id in candidate["evidence_ids"]
+                    )
+                )
+                response = {
+                    "glossary": [],
+                    "summary_claims": [
+                        {
+                            "text": "Synthetic cross-batch summary.",
+                            "evidence_ids": source_ids,
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                }
+            else:
+                batch_number += 1
+                source_rows = json.loads(
+                    prompt.split("[原文段落 JSON]\n", 1)[1]
+                )
+                source_id = source_rows[0]["source_id"]
+                response = {
+                    "glossary": [],
+                    "summary_claims": [
+                        {
+                            "text": f"Synthetic summary claim {batch_number}.",
+                            "evidence_ids": [source_id],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                }
             return SimpleNamespace(
                 choices=[
                     SimpleNamespace(
@@ -745,7 +1495,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                     str(self.raw_dir),
                     str(self.output_dir),
                     full_book=True,
+                    require_book_bundle=True,
                     max_input_characters=10000,
+                    catalog_relative_path="catalog.json",
+                    checkpoint_relative_path="checkpoint.json",
+                    bundle_set_relative_path="bundle-set.json",
+                    ai_book_bundle_path="collections/ai/book.json",
+                    human_root=str(self.root / "human"),
                     **token_budget,
                 )
             )
@@ -761,12 +1517,27 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             provenance["token_budget"]["provider_call_count"],
             client.chat.completions.create.await_count,
         )
+        self.assertEqual(
+            provenance["token_budget"]["extraction_provider_call_count"],
+            len(batches),
+        )
+        self.assertEqual(
+            provenance["token_budget"]["synthesis_provider_call_count"], 1
+        )
+        self.assertEqual(
+            provenance["token_budget"]["synthesis_status"], "completed"
+        )
+        self.assertEqual(len(provenance["token_budget"]["synthesis_rounds"]), 1)
         self.assertTrue(
             all(
                 row["estimated_input_tokens"]
                 <= provenance["token_budget"]["max_input_tokens_per_request"]
                 for row in batches
             )
+        )
+        self.assertLessEqual(
+            provenance["token_budget"]["provider_call_count"],
+            provenance["token_budget"]["max_provider_calls"],
         )
         source_ids = [source_id for batch in batches for source_id in batch["source_ids"]]
         self.assertEqual(
@@ -775,6 +1546,10 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         )
         self.assertEqual(
             [item["claim_id"] for item in provenance["claim_evidence"]],
+            ["R001B0001-summary-0001"],
+        )
+        self.assertEqual(
+            [item["claim_id"] for item in provenance["batch_claim_evidence"]],
             [
                 "B0001-summary-0001",
                 "B0002-summary-0001",
@@ -784,8 +1559,320 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
         summary = (self.output_dir / "STORY_SUMMARY_draft.md").read_text(
             encoding="utf-8"
         )
-        for batch_index in range(1, 4):
-            self.assertIn(f"Synthetic summary claim {batch_index}.", summary)
+        self.assertIn("Synthetic cross-batch summary.", summary)
+        self.assertNotIn("Synthetic summary claim 1.", summary)
+
+    def test_full_book_synthesis_rejects_evidence_outside_candidate_inputs(self):
+        (self.raw_dir / "第1話.md").write_text(
+            "a" * 700 + "\n\n" + "b" * 700,
+            encoding="utf-8",
+        )
+        self._enable_synthetic_verified_book_bundle()
+        client = make_client("{}")
+        extraction_count = 0
+
+        async def response_for_request(**kwargs):
+            nonlocal extraction_count
+            prompt = kwargs["messages"][1]["content"]
+            if "[批次候选 JSON]\n" in prompt:
+                response = {
+                    "glossary": [],
+                    "summary_claims": [
+                        {
+                            "text": "Synthetic invalid synthesis.",
+                            "evidence_ids": ["C9999P99999"],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                }
+            else:
+                extraction_count += 1
+                source_rows = json.loads(
+                    prompt.split("[原文段落 JSON]\n", 1)[1]
+                )
+                response = {
+                    "glossary": [],
+                    "summary_claims": [
+                        {
+                            "text": f"Synthetic batch {extraction_count}.",
+                            "evidence_ids": [source_rows[0]["source_id"]],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                }
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(response, ensure_ascii=False)
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.chat.completions.create.side_effect = response_for_request
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client",
+            return_value=client,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "invalid synthesis summary_claims evidence"
+            ):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
+                        **{
+                            **self.full_book_budget,
+                            "context_window_tokens": 1700,
+                            "max_output_tokens": 200,
+                            "safety_margin_tokens": 100,
+                            "message_overhead_tokens": 100,
+                            "max_provider_calls": 5,
+                        },
+                    )
+                )
+
+        self.assertGreaterEqual(extraction_count, 2)
+        self.assertFalse(self.output_dir.exists())
+
+    def test_full_book_synthesis_preserves_glossary_source_terms(self):
+        paragraphs = [
+            auto_extract_knowledge.SourceParagraph(
+                source_id="C0001P00001",
+                filename="chapter.md",
+                paragraph_index=1,
+                text="Alpha and Beta appear.",
+            )
+        ]
+        candidates = [
+            {
+                "candidate_id": "B0001-glossary-0001",
+                "kind": "glossary",
+                "src": "Alpha",
+                "dst": "阿尔法",
+                "info": "term",
+                "evidence_ids": ["C0001P00001"],
+            },
+            {
+                "candidate_id": "B0001-summary-0001",
+                "kind": "claim",
+                "category": "summary",
+                "text": "Synthetic summary.",
+                "evidence_ids": ["C0001P00001"],
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "source-term set"):
+            auto_extract_knowledge._validate_full_book_synthesis_result(
+                {
+                    "glossary": [],
+                    "summary_claims": [
+                        {
+                            "text": "Synthetic summary.",
+                            "evidence_ids": ["C0001P00001"],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                },
+                candidates,
+                {"C0001P00001": paragraphs[0]},
+                "R001B0001",
+            )
+
+    def test_full_book_synthesis_rejects_conflicting_duplicate_glossary_terms(self):
+        paragraph = auto_extract_knowledge.SourceParagraph(
+            source_id="C0001P00001",
+            filename="chapter.md",
+            paragraph_index=1,
+            text="Alpha appears.",
+        )
+        candidates = [
+            {
+                "candidate_id": "B0001-glossary-0001",
+                "kind": "glossary",
+                "src": "Alpha",
+                "dst": "阿尔法",
+                "info": "term",
+                "evidence_ids": ["C0001P00001"],
+            },
+            {
+                "candidate_id": "B0001-summary-0001",
+                "kind": "claim",
+                "category": "summary",
+                "text": "Synthetic summary.",
+                "evidence_ids": ["C0001P00001"],
+            },
+        ]
+        with self.assertRaisesRegex(ValueError, "conflicting translations"):
+            auto_extract_knowledge._validate_full_book_synthesis_result(
+                {
+                    "glossary": [
+                        {
+                            "src": "Alpha",
+                            "dst": "阿尔法",
+                            "info": "first",
+                            "evidence_ids": ["C0001P00001"],
+                        },
+                        {
+                            "src": "Alpha",
+                            "dst": "阿尔法二",
+                            "info": "second",
+                            "evidence_ids": ["C0001P00001"],
+                        },
+                    ],
+                    "summary_claims": [
+                        {
+                            "text": "Synthetic summary.",
+                            "evidence_ids": ["C0001P00001"],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                },
+                candidates,
+                {paragraph.source_id: paragraph},
+                "R001B0001",
+            )
+
+    def test_full_book_synthesis_uses_bounded_hierarchical_rounds(self):
+        paragraphs = [
+            auto_extract_knowledge.SourceParagraph(
+                source_id=f"C0001P{index:05d}",
+                filename="chapter.md",
+                paragraph_index=index,
+                text=f"Synthetic source paragraph {index}.",
+            )
+            for index in range(1, 5)
+        ]
+        candidates = [
+            {
+                "candidate_id": f"B{index:04d}-summary-0001",
+                "kind": "claim",
+                "category": "summary",
+                "text": f"Candidate {index}: " + ("x" * 600),
+                "evidence_ids": [paragraph.source_id],
+            }
+            for index, paragraph in enumerate(paragraphs, start=1)
+        ]
+        client = make_client("{}")
+        call_count = 0
+
+        async def response_for_synthesis(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            prompt = kwargs["messages"][1]["content"]
+            input_candidates = json.loads(
+                prompt.split("[批次候选 JSON]\n", 1)[1]
+            )
+            evidence_ids = list(
+                dict.fromkeys(
+                    source_id
+                    for candidate in input_candidates
+                    for source_id in candidate["evidence_ids"]
+                )
+            )
+            response = {
+                "glossary": [],
+                "summary_claims": [
+                    {
+                        "text": f"Synthetic synthesized result {call_count}.",
+                        "evidence_ids": evidence_ids,
+                    }
+                ],
+                "worldbuilding_claims": [],
+                "narrative_voice_claims": [],
+            }
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(response, ensure_ascii=False)
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        client.chat.completions.create.side_effect = response_for_synthesis
+        final_candidates, rounds, synthesis_calls = asyncio.run(
+            auto_extract_knowledge._synthesize_full_book_candidates(
+                client,
+                candidates,
+                paragraphs,
+                tokenizer=CharacterTokenizer(),
+                input_token_limit=2000,
+                message_overhead_tokens=50,
+                max_output_tokens=200,
+                max_provider_calls=10,
+                provider_calls_used=4,
+            )
+        )
+
+        self.assertEqual(len(rounds), 2)
+        self.assertEqual(synthesis_calls, call_count)
+        self.assertEqual(
+            call_count,
+            sum(round_record["provider_call_count"] for round_record in rounds),
+        )
+        self.assertGreaterEqual(call_count, 3)
+        self.assertEqual(len(final_candidates), 1)
+        self.assertEqual(
+            set(final_candidates[0]["evidence_ids"]),
+            {paragraph.source_id for paragraph in paragraphs},
+        )
+
+    def test_full_book_synthesis_call_budget_is_reserved_before_client_creation(self):
+        (self.raw_dir / "第1話.md").write_text(
+            "\n\n".join(("a" * 700, "b" * 700, "c" * 700)),
+            encoding="utf-8",
+        )
+        self._enable_synthetic_verified_book_bundle()
+        with patch(
+            "scripts.auto_extract_knowledge.get_openai_client"
+        ) as client_factory:
+            with self.assertRaisesRegex(
+                auto_extract_knowledge._KnowledgeBatchCountLimitError,
+                "reserve provider calls",
+            ):
+                asyncio.run(
+                    auto_extract_knowledge.extract_knowledge(
+                        str(self.raw_dir),
+                        str(self.output_dir),
+                        full_book=True,
+                        require_book_bundle=True,
+                        max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
+                        **{
+                            **self.full_book_budget,
+                            "context_window_tokens": 1700,
+                            "max_output_tokens": 200,
+                            "safety_margin_tokens": 100,
+                            "message_overhead_tokens": 100,
+                            "max_provider_calls": 3,
+                        },
+                    )
+                )
+
+        client_factory.assert_not_called()
+        self.assertFalse(self.output_dir.exists())
 
     def test_full_book_batch_failure_writes_no_partial_drafts(self):
         source_paragraphs = ["a" * 700, "b" * 700, "c" * 700]
@@ -793,6 +1880,7 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
             "\n\n".join(source_paragraphs),
             encoding="utf-8",
         )
+        self._enable_synthetic_verified_book_bundle()
         first_response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -831,7 +1919,13 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                         str(self.raw_dir),
                         str(self.output_dir),
                         full_book=True,
+                        require_book_bundle=True,
                         max_input_characters=10000,
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="checkpoint.json",
+                        bundle_set_relative_path="bundle-set.json",
+                        ai_book_bundle_path="collections/ai/book.json",
+                        human_root=str(self.root / "human"),
                         **{
                             **self.full_book_budget,
                             "context_window_tokens": 1700,

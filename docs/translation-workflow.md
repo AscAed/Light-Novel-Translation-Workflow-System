@@ -1,5 +1,7 @@
 # 翻译流程与 Agent 职责
 
+> 2026-11-18 用户目标：翻译前必须通读 AI 大合集并建立经审核的全书与局部知识；每话最终译文必须通过独立终审及有限返工后才发布。当前流程尚不具备完整门禁；目标契约见[全书到单话翻译目标方案](end-to-end-workflow-target.md)。
+
 ## 适用边界
 
 - 默认 `pipeline.py --project` 使用 AI 清洗版作为待译原文，并要求已审核、来源版本仍有效的全书概要与术语表。缺失或过期时停止；不会退回人读版或旧式 `Glossary.json`。显式 JSON 配置仍由调用者选择兼容格式。
@@ -67,6 +69,8 @@ python scripts/run_kakuyomu_workflow.py `
 
 - `作品基本信息.json`：标题、作者等项目元数据。
 - `Glossary_reviewed.json`：项目名模式使用的、绑定当前 AI 来源版本的已审核术语 bundle；缺失、过期或不匹配时停止。`Glossary.json` 仅保留为显式 JSON 配置的兼容输入，按当前章节原文启发式匹配，不等同于已审核术语。
+- `Knowledge/ChapterDrafts/episode-<position>-<episode-id>-<source-version-hash>-bundle-<bundle-key>/STORY_SUMMARY_reviewed.json`：单话已审概要；Kakuyomu 当前 run 对每个待翻译非空章节都要求其位置、当前来源版本、AI 输入路径/哈希和整书 bundle 身份匹配。缺失或过期时，流水线在任何章节模型调用前阻断；同一来源版本可在新 bundle 目录重新生成候选，旧审核产物保留。
+- 同一单话目录下的 `Glossary_reviewed.json` 可选；若存在，只注入当前章节来源验证通过的批准词条，并与全书 reviewed glossary 合并。相同来源词或别名解析出冲突译名时停止。无局部术语文件时继续使用全书已审核术语。
 - `guidelines.txt`：全局及章节指导；缺失章节会尝试语义匹配/邻章回退。
 - `STORY_SUMMARY.md`：按当前章节裁剪的故事概要。
 - `translation_memory.json`：相似段落译文示例的完整可写存储。新流水线/对齐写入会附带可选顶层 `source_provenance`（文件哈希与段落序号）；覆盖章节时若未提供新索引，会清除该章旧索引，避免其指向新条目。来源索引不是审核或批准状态。`scripts/apply_tm_review.py` 可为来源完整核验的原译对生成回执并发布 approved-only 快照；RAG 默认只检索显式配置且通过当前来源核验的 `TM_REVIEWED_PATH` 快照。没有快照时不检索候选 TM，也不生成查询 embedding；仅显式设置 `ALLOW_UNREVIEWED_TM=true` 才恢复完整 TM 的兼容检索，已配置快照始终优先。流水线仍向完整可写 TM 保存新候选。详情与限制见[知识库治理](knowledge-governance.md#tm-审核回执与显式检索快照局部实现)。
@@ -77,7 +81,7 @@ python scripts/run_kakuyomu_workflow.py `
 
 - 项目名模式及 Kakuyomu 编排器在版本化来源归档布局下都默认选用经验证的 AI 清洗版；显式 JSON `RAW_DIR`/`CHAPTER_MAP` 仍可配置其他来源。Kakuyomu adapter 可从作品主页发现按 `tableOfContentsV2` 分组排列的公开 episode ID/title，并读取 `Chapter` ID、标题和层级；discovered catalog schema v2 还保存每组 episode ID 和连续目录位置范围，schema v1 显式 catalog 继续兼容。发现时校验唯一条目数等于 `publicEpisodeCount` 后生成普通 episode URL，再逐话请求目录页面。用户是普通读者，主页发现是本试点要求的路径，不依赖作者 ZIP。`scripts/ingest_kakuyomu_pages.py --work-url` 可在无 Provider 配置时发现并归档原文；历史 source-only 运行已获取 88/88 个主页公开话目，生成 88 个单话 Markdown 和一份有序全书 export。`scripts/run_kakuyomu_workflow.py --work-url` 在采集完成后自动分别生成 AI 与人读版，之后默认从 `RAWs_AI` 读取 AI 清洗正文并形成确定性译文路径、TM 键和版本映射；映射以 `source_input_file`/`source_sha256` 指定实际正文，以 `raw_file`/`source_version_id` 记录 `SourceArchive` 归档来源。运行时检查 `robots.txt`，不登录、不跟随重定向、不访问 `/read`；站点目录/count 结构不符时停止。parser v4 保留段落、ruby、旁点及 U+3000；本地离线 catalog diff 可报告快照变化并排他导出新增/元数据更新子集。作品元数据可保存为带记录时间和父版本的 manifest `kind=work` artifact。Kakuyomu 来源 CLI 还支持绑定完整基线 catalog/checkpoint 的显式正文全量刷新：仅接受目录完全一致的快照，未变正文复用、变化正文追加 raw 版本并报告新旧哈希；需显式使用新 checkpoint。`SourceArchive` 将可见 UTF-8 原文保存为 `raw_source`，并另存精确页面响应字节为 `raw_page_html`；2026-11-17 对 88 个最新页面完成 parser v4 正文重放校验，历史未归档 HTML 无法恢复。独立清洗的 AI/人类 Markdown 已生成。Kakuyomu 完整编排及显式项目采集模式现自动持久化新鲜度快照；尚未实现将 stale 状态写回各 consumer 记录或自动重建概要/知识/译文。作品元数据对概要/知识的失效传播、人工格式/ruby/旁点验收和真实 Provider 翻译仍未完成。用户明确不要求官方澄清；平台规则风险另行记录，不代表平台背书或公开分发授权。采集范围不包括草稿/私有话，也不证明主页声明以外的完整性。详见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。
 - `scripts/export_source_editions.py` 可单独执行；Kakuyomu 编排器在完整采集后直接调用相同清洗器，从同一当前采集来源版本分别生成两种清洗结果。AI 版用于翻译输入，人读版用于阅读呈现。两版索引都记录来源与 raw 版本、输入哈希、清洗 profile 和输出哈希，不通过文件名推断来源关系。`scripts/validate_source_editions.py` 可从当前 raw 字节重算两版并逐字节核验归档和镜像，作为 manifest 哈希检查之外的 profile 一致性验证。项目可用 `workflow_paths.json` 的 `human_edition_root` 指向人读版目录；未配置时默认为项目 `生肉/`。当前版式和试点具体路径见[双版本清洗实施](source-ingestion-and-publication-plan.md#2026-11-17-双版本清洗实施)。
-- 全书预读和知识抽取是可选候选生成步骤；上下文超限时需分批并标明未整书输入，候选未审核前不得进入批准知识库。
+- `scripts/auto_extract_knowledge.py --chapter-position N` 可从已验证 AI bundle 为当前话生成来源版本隔离的局部候选。使用现有 `scripts/apply_story_summary_review.py` 明确批准后，发布器写出同目录 reviewed summary；局部术语候选可用 `scripts/apply_knowledge_review.py` 按词审核并发布。Kakuyomu 翻译在启动时预检所有待翻译非空章节的局部 reviewed summary，逐章上下文再复核；批准的局部概要和可选术语进入当前话上下文。`--full-book` 和单话候选都不证明目录映射或语义质量，未审核候选不会进入知识库。
 - Notion 备份与 EPUB 均为派生/副本路径，不替代本地权威内容。详细状态与依赖见[原文采集与成果归档方案](source-ingestion-and-publication-plan.md)。
 
 ## 目标流程约束（待落实）
@@ -87,6 +91,15 @@ python scripts/run_kakuyomu_workflow.py `
 3. 润色只优化中文表达；保留原文事实、角色声音、段落边界与已批准术语。
 4. `已实现` 最终保存前验证非空文本、段落映射及每段 `「」『』` 的种类/数量/顺序；`部分实现` D-11 逐章恢复日志可以在重跑时恢复匹配的输出/TM 更新，但不保证多进程或断电一致性；`计划` 术语一致性和知识变更状态仍需治理闭环。
 5. `已实现` 当前硬门禁失败时，不写该章节的译文或 TM；通过现有格式门禁仍不代表语义正确或 TM 已获审核。逐对审核回执/快照发布是`部分实现`；RAG 默认只检索已配置且来源核验通过的快照，无快照时不检索候选，`ALLOW_UNREVIEWED_TM=true` 是显式兼容覆盖。审核者身份可信度、风险分层、更正/废弃规则仍待设计。D-11 恢复边界见`部分实现`状态及[决策记录](decisions/README.md)。
+
+## 2026-11-18 受审草稿与发布
+
+- Kakuyomu 正式编排先导出并复核完整 raw/AI/human book bundle。full-book 知识 CLI 在 `--full-book` 模式要求当前 catalog、checkpoint、bundle-set、匹配 AI bundle、human root、tokenizer 和预算参数；授权预检通过后才读取 bundle 正文。`KNOWLEDGE_PROVENANCE_draft.json` 保存来源章节及 bundle-set/AI bundle 身份。该能力有合成数据验证，本轮没有对真实书籍调用 Provider。
+- 单话抽取使用同一 catalog/checkpoint/bundle-set/AI bundle/human root 与 tokenizer 预算参数，将 `--full-book` 换成互斥的 `--chapter-position <N>`。在输出的 `ChapterDrafts` 子目录分别创建概要/术语待审回执；补全人工决定后，使用 `scripts/apply_story_summary_review.py --knowledge-root <单话目录> --source-root <SourceArchive> --manifest source_editions_manifest.json --review <概要回执> --output STORY_SUMMARY_reviewed.json` 发布概要。若审核了术语，同样用 `scripts/apply_knowledge_review.py` 发布 `Glossary_reviewed.json`。两个发布器均拒绝覆盖；单话概要是正式 Kakuyomu 翻译的必需项，局部术语表为可选项。
+- 摘要审核必须声明 full-book coverage，并绑定与本次 workflow 相同的 bundle-set 与 AI bundle 哈希。`TranslationPipeline` 项目模式核对 `Config.EXPECTED_BOOK_BUNDLE`，同时要求完整版本映射；直接运行 `pipeline.py --project` 没有活动 run 状态时会被拒绝。
+- 完成翻译后，章节草稿和 `run.json` 位于 `Workflow/Runs/<run_id>/`；清单绑定计划、AI index、book bundle、每话来源及草稿 SHA-256。通过 `.venv\Scripts\python.exe scripts\prepare_translation_review.py --run-directory <run-dir>` 创建逐话 pending checklist。审核者填写 reviewer 声明、UTC 时间、独立性声明、八项检查、issues 和结论；`.venv\Scripts\python.exe scripts\publish_reviewed_translation.py --run-directory <run-dir> --episode-id <episode-id> --review <review.json>` 仅接受全部检查通过、没有 issues 且输入哈希仍有效的结果，并在目标不存在时排他新建译文。
+- checklist 的 reviewer/独立性字段未签名认证；本地回执只能绑定数据，不能证明审核者身份或审核质量。失败回执会阻止发布，但当前没有受控返工版本链或最大返工次数；正式门禁仍为`部分实现`。返工次数和终审质量阈值需要确认后实现。成功发布按单话进行，不提供整卷多文件事务。
+- 显式 `--source-edition normalized_source` 仍可用于计划预览；正式执行会返回 `reviewed_publication_requires_ai_edition`，不调用翻译模型。当前没有部署清单或 Web 应用，本实现是本地 CLI 工作流。
 
 ## Agent 输出契约
 

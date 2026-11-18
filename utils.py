@@ -316,6 +316,7 @@ def write_bytes_atomically(path: str, content: bytes) -> None:
 
 
 def split_paragraphs(text: str) -> List[str]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = []
     for paragraph in text.split("\n\n"):
         if not paragraph.strip():
@@ -421,6 +422,7 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
         normalized = paragraph.strip(" \t\r\n\f\v")
+        normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
         split_result = split_paragraphs(normalized)
         if len(split_result) != 1 or split_result[0] != normalized:
             raise ValueError(

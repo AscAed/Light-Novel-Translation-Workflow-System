@@ -23,6 +23,33 @@ from translation_plan_approval import translation_plan_sha256
 
 
 class KakuyomuWorkflowTests(unittest.TestCase):
+    def test_cli_reports_review_pending_drafts_as_success(self):
+        from scripts import run_kakuyomu_workflow
+
+        with (
+            patch(
+                "scripts.run_kakuyomu_workflow.run_workflow",
+                return_value={"status": "review_pending"},
+            ),
+            patch("builtins.print"),
+        ):
+            result = run_kakuyomu_workflow.main(
+                [
+                    "--source-root",
+                    "source",
+                    "--translation-root",
+                    "translation",
+                    "--catalog",
+                    "catalog.json",
+                    "--config",
+                    "config.json",
+                    "--approval-receipt",
+                    "approval.json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+
     def test_targets_use_explicit_episode_identity(self):
         episodes = (
             KakuyomuEpisodePage(
@@ -378,6 +405,9 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     CHAPTER_MAP=None,
                     SOURCE_MANIFEST_PATH=None,
                     STORY_SUMMARY_PATH=str(root / "STORY_SUMMARY_reviewed.json"),
+                    REQUIRE_REVIEWED_PUBLICATION=False,
+                    TRANSLATION_RUN_ID=None,
+                    EXPECTED_BOOK_BUNDLE=None,
                 ),
                 patch(
                     "scripts.run_kakuyomu_workflow.validate_provider_configuration"
@@ -646,7 +676,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             }
             plan["plan_sha256"] = translation_plan_sha256(plan)
             pipeline = Mock()
-            pipeline.rag.tm_data = tm_data
+            pipeline.rag.tm_data = {}
             pipeline.run_all = AsyncMock()
             workflow_events = []
             edition_report = {
@@ -655,13 +685,68 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 "created_files": 0,
                 "reused_files": 1,
             }
+            verified_bundle = {
+                "status": "verified",
+                "source_snapshot_id": "source-v1-" + "a" * 64,
+                "ai_bundle_id": "ai-v1-" + "b" * 64,
+                "bundle_set_relative_path": "collections/set/bundle-set.json",
+                "bundle_set_sha256": "c" * 64,
+                "ai_bundle_relative_path": "collections/ai/book-ai.json",
+                "ai_bundle_sha256": "d" * 64,
+                "episode_count": 2,
+            }
+            bundle_report = {
+                "status": "complete",
+                **verified_bundle,
+            }
+            expected_bundle = {
+                field: verified_bundle[field]
+                for field in (
+                    "source_snapshot_id",
+                    "ai_bundle_id",
+                    "bundle_set_relative_path",
+                    "bundle_set_sha256",
+                    "ai_bundle_relative_path",
+                    "ai_bundle_sha256",
+                    "episode_count",
+                )
+            }
             captured_chapter_maps = []
             captured_manifest_paths = []
+            captured_output_dirs = []
+            captured_expected_bundles = []
+            captured_reviewed_tm_roots = []
 
-            def make_pipeline():
+            def make_pipeline(*, reviewed_tm_translation_root=None):
                 captured_chapter_maps.append(Config.CHAPTER_MAP)
                 captured_manifest_paths.append(Config.SOURCE_MANIFEST_PATH)
+                captured_output_dirs.append(Config.OUTPUT_DIR)
+                captured_expected_bundles.append(Config.EXPECTED_BOOK_BUNDLE)
+                captured_reviewed_tm_roots.append(reviewed_tm_translation_root)
                 return pipeline
+
+            resumable_plan = {
+                **plan,
+                "status": "blocked",
+                "issues": [
+                    {
+                        "episode_id": "123456789",
+                        "code": "translation_target_exists",
+                    }
+                ],
+            }
+            blocked_plan = {
+                **plan,
+                "status": "blocked",
+                "issues": [
+                    {
+                        "episode_id": item["episode_id"],
+                        "code": "translation_target_exists",
+                    }
+                    for item in plan_episodes
+                ],
+            }
+            plan_results = [plan, plan, resumable_plan, blocked_plan]
 
             with (
                 patch.multiple(
@@ -674,6 +759,9 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     CHAPTER_MAP=None,
                     SOURCE_MANIFEST_PATH=None,
                     STORY_SUMMARY_PATH=str(root / "STORY_SUMMARY_reviewed.json"),
+                    REQUIRE_REVIEWED_PUBLICATION=False,
+                    TRANSLATION_RUN_ID=None,
+                    EXPECTED_BOOK_BUNDLE=None,
                 ),
                 patch(
                     "scripts.run_kakuyomu_workflow.validate_provider_configuration"
@@ -715,6 +803,22 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     ),
                 ) as edition_export,
                 patch(
+                    "scripts.run_kakuyomu_workflow.export_book_bundles",
+                    return_value=bundle_report,
+                ) as bundle_export,
+                patch(
+                    "scripts.run_kakuyomu_workflow.load_verified_ai_book_bundle",
+                    return_value=verified_bundle,
+                ) as verified_bundle_loader,
+                patch(
+                    "scripts.run_kakuyomu_workflow.build_translation_run_manifest",
+                    return_value={
+                        "schema_version": 1,
+                        "status": "review_pending",
+                        "plan_sha256": plan["plan_sha256"],
+                    },
+                ),
+                patch(
                     "scripts.run_kakuyomu_workflow.TranslationPipeline",
                     side_effect=make_pipeline,
                 ) as pipeline_factory,
@@ -722,7 +826,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     "scripts.run_kakuyomu_workflow.preview_translation_plan",
                     side_effect=lambda **_kwargs: (
                         workflow_events.append("plan")
-                        or plan
+                        or plan_results.pop(0)
                     ),
                 ) as plan_preview,
                 patch(
@@ -732,7 +836,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         "approved_by": "synthetic reviewer",
                         "approved_at_utc": "2026-11-16T00:00:00Z",
                     },
-                ),
+                ) as approval_verifier,
                 patch(
                     "scripts.run_kakuyomu_workflow.load_reviewed_story_summary",
                     return_value="Synthetic approved whole-book context.",
@@ -771,23 +875,52 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 completed_output.write_text(
                     "edited conflicting output", encoding="utf-8"
                 )
-                with self.assertRaisesRegex(FileExistsError, "does not match"):
-                    run_workflow(
-                        source_root=str(source_root),
-                        catalog="catalog.json",
-                        translation_root=str(translation_root),
-                        config_file=str(config_path),
-                        approval_receipt=str(root / "approval.json"),
-                        config_loader=lambda **_: None,
-                        adapter_factory=lambda *_args: object(),
-                    )
+                load_summary.side_effect = ValueError(
+                    "synthetic incomplete full-book summary"
+                )
+                resumed = run_workflow(
+                    source_root=str(source_root),
+                    catalog="catalog.json",
+                    translation_root=str(translation_root),
+                    config_file=str(config_path),
+                    approval_receipt=str(root / "approval.json"),
+                    config_loader=lambda **_: None,
+                    adapter_factory=lambda *_args: object(),
+                )
+                self.assertEqual(
+                    resumed["status"], "full_book_knowledge_required"
+                )
+                load_summary.side_effect = None
+                blocked_existing_output = run_workflow(
+                    source_root=str(source_root),
+                    catalog="catalog.json",
+                    translation_root=str(translation_root),
+                    config_file=str(config_path),
+                    approval_receipt=str(root / "approval.json"),
+                    config_loader=lambda **_: None,
+                    adapter_factory=lambda *_args: object(),
+                )
+                self.assertEqual(
+                    blocked_existing_output["status"],
+                    "translation_plan_blocked",
+                )
                 self.assertEqual(
                     completed_output.read_text(encoding="utf-8"),
                     "edited conflicting output",
                 )
+                self.assertEqual(approval_verifier.call_count, 3)
+                self.assertEqual(
+                    captured_reviewed_tm_roots,
+                    [str(translation_root)],
+                )
+                pipeline_factory.assert_called_once_with(
+                    reviewed_tm_translation_root=str(translation_root)
+                )
 
-        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["status"], "review_pending")
         self.assertEqual(result["source_editions"], edition_report)
+        self.assertEqual(bundle_export.call_count, 4)
+        self.assertEqual(verified_bundle_loader.call_count, 4)
         self.assertEqual(
             blocked["pre_translation_freshness"],
             {"status": "not_needed"},
@@ -800,8 +933,8 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             result["post_translation_freshness"],
             {"status": "not_needed"},
         )
-        self.assertEqual(freshness_snapshot.call_count, 4)
-        self.assertEqual(workflow_events, ["editions", "plan"] * 3)
+        self.assertEqual(freshness_snapshot.call_count, 5)
+        self.assertEqual(workflow_events, ["editions", "plan"] * 4)
         self.assertEqual(
             edition_export.call_args.kwargs["catalog_relative_path"],
             "catalog.json",
@@ -834,6 +967,16 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     ).hexdigest(),
                 },
             ],
+        )
+        self.assertTrue(load_summary.call_args.kwargs["require_book_bundle"])
+        self.assertEqual(
+            load_summary.call_args.kwargs["expected_book_bundle"],
+            expected_bundle,
+        )
+        self.assertEqual(captured_expected_bundles[0], expected_bundle)
+        self.assertIn(
+            str(root / "Workflow" / "Runs"),
+            captured_output_dirs[0],
         )
         self.assertEqual(
             [

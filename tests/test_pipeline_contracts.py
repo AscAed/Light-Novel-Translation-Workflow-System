@@ -111,6 +111,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             summary_path = Path(temporary) / "STORY_SUMMARY_reviewed.json"
             reviewed_tm_path = Path(temporary) / "translation_memory_reviewed.json"
             output_dir = Path(temporary) / "translated"
+            reviewed_tm_translation_root = Path(temporary) / "published"
             summary_path.write_text("{}", encoding="utf-8")
             events = []
             rag_kwargs = {}
@@ -146,7 +147,11 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                 patch("pipeline.load_json", side_effect=load_info),
                 patch("pipeline.RAGEngine", side_effect=build_rag),
             ):
-                translation_pipeline = TranslationPipeline()
+                translation_pipeline = TranslationPipeline(
+                    reviewed_tm_translation_root=str(
+                        reviewed_tm_translation_root
+                    )
+                )
 
         self.assertEqual(
             translation_pipeline.story_summary,
@@ -160,6 +165,10 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rag_kwargs["reviewed_tm_path"], str(reviewed_tm_path))
         self.assertEqual(rag_kwargs["translation_root"], str(output_dir))
+        self.assertEqual(
+            rag_kwargs["reviewed_tm_translation_root"],
+            str(reviewed_tm_translation_root),
+        )
         self.assertTrue(rag_kwargs["allow_unreviewed_tm"])
 
     def test_pipeline_rejects_invalid_reviewed_summary_before_loading_knowledge(self):
@@ -221,11 +230,21 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                 source_input_file="episodes/episode-1.md",
                 source_sha256=source_sha256,
             )
+            expected_bundle = {
+                "source_snapshot_id": "source-v1-" + "a" * 64,
+                "ai_bundle_id": "ai-v1-" + "b" * 64,
+                "bundle_set_relative_path": "collections/set.json",
+                "bundle_set_sha256": "c" * 64,
+                "ai_bundle_relative_path": "collections/ai/book.json",
+                "ai_bundle_sha256": "d" * 64,
+                "episode_count": 1,
+            }
             with (
                 patch.object(Config, "WORKSPACE_DIR", "configured"),
                 patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
                 patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
                 patch.object(Config, "REQUIRE_REVIEWED_STORY_SUMMARY", True),
+                patch.object(Config, "EXPECTED_BOOK_BUNDLE", expected_bundle),
                 patch.object(Config, "RAW_DIR", "SourceArchive"),
                 patch.object(Config, "OUTPUT_DIR", "external-translation-root"),
                 patch.object(
@@ -267,6 +286,8 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             "SourceArchive",
             "source_editions_manifest.json",
             require_full_book_coverage=True,
+            require_book_bundle=True,
+            expected_book_bundle=expected_bundle,
             expected_sources=[
                 {
                     "filename": "editions/ai/episode-1.md",
@@ -1372,6 +1393,7 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                 self.assertEqual(Config.AI_EDITION_ROOT, str(ai_root))
                 self.assertTrue(Config.REQUIRE_REVIEWED_STORY_SUMMARY)
                 self.assertTrue(Config.REQUIRE_REVIEWED_GLOSSARY)
+                self.assertTrue(Config.REQUIRE_REVIEWED_PUBLICATION)
                 self.assertEqual(
                     Config.GLOSSARY_PATH,
                     str(project_dir / "Knowledge" / "Glossary_reviewed.json"),
@@ -1423,6 +1445,21 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                     str(source_root),
                     "source_catalog.json",
                 )
+
+    def test_project_pipeline_cannot_write_without_an_active_review_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(workspace / "熟肉")),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "TRANSLATION_RUN_ID", None),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "run_kakuyomu_workflow.py",
+                ):
+                    TranslationPipeline()
 
     def test_project_output_override_keeps_ai_edition_as_translation_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1878,6 +1915,26 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             ["第一段", "第二段"],
         )
 
+    def test_split_paragraphs_normalizes_windows_and_classic_mac_newlines(self):
+        self.assertEqual(
+            split_paragraphs("第一段\r\n\r\n第二段\r内换行"),
+            ["第一段", "第二段\n内换行"],
+        )
+
+    def test_aligned_paragraphs_normalize_internal_line_endings(self):
+        from utils import require_aligned_paragraphs
+
+        target = ["first\r\nsecond"]
+        require_aligned_paragraphs(["source"], target, "synthetic stage")
+        self.assertEqual(target, ["first\nsecond"])
+
+        with self.assertRaisesRegex(ValueError, "multiple paragraphs"):
+            require_aligned_paragraphs(
+                ["source"],
+                ["first\r\n\r\nsecond"],
+                "synthetic stage",
+            )
+
     def test_chapter_map_preserves_catalog_position(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2016,6 +2073,240 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             "normalized/opaque-content-hash.md",
             current_raw_text="synthetic source",
             chapter_position=2,
+        )
+
+    async def test_context_includes_reviewed_chapter_summary_and_terms(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline.rag = SimpleNamespace(
+            get_partitioned_guidelines=Mock(return_value="chapter rules"),
+            query_translation_memory=AsyncMock(return_value=[]),
+            get_cleaned_glossary=Mock(return_value=[]),
+        )
+        pipeline.story_summary = "Whole-book summary."
+        pipeline.info = {}
+        chapter_knowledge = {
+            "summary": "Approved chapter fact.",
+            "terms": {"alpha": "阿尔法"},
+        }
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE", True),
+            patch.object(
+                pipeline,
+                "_load_reviewed_chapter_knowledge",
+                return_value=chapter_knowledge,
+            ) as load_chapter_knowledge,
+        ):
+            context = await pipeline._build_run_context(
+                "editions/ai/episode-2.md",
+                "alpha source text",
+                2,
+            )
+
+        load_chapter_knowledge.assert_called_once_with(
+            "editions/ai/episode-2.md",
+            2,
+        )
+        pipeline.rag.get_cleaned_glossary.assert_called_once_with(
+            "alpha source text",
+            additional_glossary={"alpha": "阿尔法"},
+        )
+        self.assertIn("<CHAPTER_KNOWLEDGE>\nApproved chapter fact.", context["static_context"])
+
+    async def test_run_all_checks_every_pending_chapter_before_translation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            ai_root.mkdir()
+            chapters = []
+            chapter_map = []
+            for position in (1, 2):
+                input_file = f"episodes/{position}.md"
+                source_path = ai_root / input_file
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(
+                    f"synthetic source {position}",
+                    encoding="utf-8",
+                )
+                source_hash = hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest()
+                raw_file = f"editions/ai/episode-{position}.md"
+                chapter_map.append(
+                    {
+                        "raw_file": raw_file,
+                        "translation_file": f"episode-{position}.md",
+                        "tm_key": f"episode:{position}",
+                        "source_version_id": f"version-{position}",
+                        "chapter_position": position,
+                        "source_input_file": input_file,
+                        "source_sha256": source_hash,
+                    }
+                )
+                chapters.append(
+                    ChapterSpec(
+                        raw_file=raw_file,
+                        translation_file=f"episode-{position}.md",
+                        tm_key=f"episode:{position}",
+                        source_version_id=f"version-{position}",
+                        chapter_position=position,
+                        source_input_file=input_file,
+                        source_sha256=source_hash,
+                    )
+                )
+
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(tm_data={"chapters": {}})
+            pipeline.run_chapter = AsyncMock()
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE", True),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(root / "Drafts")),
+                patch.object(Config, "RAW_DIR", str(root / "SourceArchive")),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", "manifest.json"),
+                patch.object(
+                    pipeline_module,
+                    "validate_provider_configuration",
+                ),
+                patch.object(
+                    pipeline_module,
+                    "get_chapter_specs",
+                    return_value=chapters,
+                ),
+                patch.object(
+                    pipeline,
+                    "_load_reviewed_chapter_knowledge",
+                    side_effect=[
+                        {"summary": "approved", "terms": {}},
+                        ValueError("missing reviewed chapter summary"),
+                    ],
+                ) as load_chapter_knowledge,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "missing reviewed chapter summary",
+                ):
+                    await pipeline.run_all()
+
+            self.assertEqual(load_chapter_knowledge.call_count, 2)
+            pipeline.run_chapter.assert_not_awaited()
+
+    async def test_chapter_knowledge_preflight_skips_empty_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            ai_root.mkdir()
+            source_path = ai_root / "episodes/empty.md"
+            source_path.parent.mkdir()
+            source_path.write_text("", encoding="utf-8")
+            source_hash = hashlib.sha256(b"").hexdigest()
+            chapter = ChapterSpec(
+                raw_file="editions/ai/empty.md",
+                translation_file="episode-empty.md",
+                tm_key="episode:empty",
+                source_version_id="empty-version",
+                chapter_position=1,
+                source_input_file="episodes/empty.md",
+                source_sha256=source_hash,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(tm_data={"chapters": {}})
+            pipeline._load_reviewed_chapter_knowledge = Mock()
+            (root / "Drafts").mkdir()
+
+            with (
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(root / "Drafts")),
+            ):
+                pipeline._preflight_reviewed_chapter_knowledge([chapter])
+
+            pipeline._load_reviewed_chapter_knowledge.assert_not_called()
+
+    def test_chapter_knowledge_loader_binds_current_map_and_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "project"
+            source_root = workspace / "SourceArchive"
+            ai_root = workspace / "RAWs_AI"
+            draft_root = workspace / "Knowledge" / "ChapterDrafts"
+            source_root.mkdir(parents=True)
+            ai_root.mkdir()
+            source_version_id = "current-ai-version"
+            source_version_key = hashlib.sha256(
+                source_version_id.encode("utf-8")
+            ).hexdigest()[:16]
+            source_hash = hashlib.sha256(b"current AI text").hexdigest()
+            expected_bundle = {
+                "source_snapshot_id": "source-v1-" + "a" * 64,
+                "ai_bundle_id": "ai-v1-" + "b" * 64,
+                "bundle_set_relative_path": "collections/set.json",
+                "bundle_set_sha256": "c" * 64,
+                "ai_bundle_relative_path": "collections/ai.json",
+                "ai_bundle_sha256": "d" * 64,
+                "episode_count": 88,
+            }
+            current_bundle_dir = (
+                f"episode-0002-episode-2-{source_version_key}-bundle-"
+                + expected_bundle["bundle_set_sha256"][:16]
+            )
+            (draft_root / current_bundle_dir).mkdir(parents=True)
+            (draft_root / f"episode-0002-episode-2-{source_version_key}").mkdir()
+            chapter_map = [
+                {
+                    "raw_file": "editions/ai/episode-2.md",
+                    "source_version_id": source_version_id,
+                    "source_input_file": "episodes/episode-2.md",
+                    "source_sha256": source_hash,
+                    "chapter_position": 2,
+                }
+            ]
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace()
+
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "RAW_DIR", str(source_root)),
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(
+                    Config,
+                    "SOURCE_MANIFEST_PATH",
+                    "source_editions_manifest.json",
+                ),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch.object(Config, "EXPECTED_BOOK_BUNDLE", expected_bundle),
+                patch(
+                    "pipeline.load_reviewed_story_summary",
+                    return_value="Approved chapter summary.",
+                ) as load_summary,
+            ):
+                result = pipeline._load_reviewed_chapter_knowledge(
+                    "editions/ai/episode-2.md",
+                    2,
+                )
+
+        self.assertEqual(result, {"summary": "Approved chapter summary.", "terms": {}})
+        self.assertEqual(
+            load_summary.call_args.args[0],
+            str(
+                draft_root
+                / current_bundle_dir
+                / "STORY_SUMMARY_reviewed.json"
+            ),
+        )
+        self.assertEqual(
+            load_summary.call_args.kwargs["expected_chapter_local"],
+            {
+                "position": 2,
+                "source_file": "editions/ai/episode-2.md",
+                "source_version_id": source_version_id,
+                "source_input_file": "episodes/episode-2.md",
+                "source_sha256": source_hash,
+            },
+        )
+        self.assertEqual(
+            load_summary.call_args.kwargs["expected_book_bundle"],
+            expected_bundle,
         )
 
     async def test_mapped_chapter_writes_nested_output_and_uses_tm_key(self):

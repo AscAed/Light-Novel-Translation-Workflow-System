@@ -1,5 +1,7 @@
 # 知识库治理
 
+> 全局知识分层、语义审核 AI、风险升级及翻译中知识变更闭环仍为`计划`；2026-11-18 已将全书 bundle 校验接入分批知识抽取，并将 bundle 身份绑定到概要和翻译入口。该增量不代表真实书籍知识已经生成或批准；跨系统契约见[全书到单话翻译目标方案](end-to-end-workflow-target.md#知识模型与审核)。
+
 ## 当前数据类型
 
 | 数据 | 当前路径/格式 | 当前用途 | 状态 |
@@ -10,7 +12,7 @@
 | 翻译指导 | `Knowledge/guidelines.txt` | 全局/章节风格与约束 | 文件存在；章节标记依赖约定文本 |
 | 故事概要 | `Knowledge/STORY_SUMMARY.md` | 按章节裁剪上下文 | 文件存在；来源和审核流程未定义 |
 | 翻译记忆 | `Knowledge/translation_memory.json` | 段落向量检索与 few-shot | 运行时自动写入候选并原子替换；默认只检索来源核验过的审核快照，未配置快照时不注入 TM 示例；`ALLOW_UNREVIEWED_TM=true` 可显式启用兼容检索；新条目有可选文件哈希/段落映射，旧条目无回填 |
-| 自动提取草稿 | `Glossary_draft.json`、`STORY_SUMMARY_draft.md`、`KNOWLEDGE_PROVENANCE_draft.json` | 实验性候选与输入来源核查 | 脚本校验响应并记录输入哈希、范围和术语出现段落；不构成批准或正式写入流程 |
+| 自动提取草稿 | 全书草稿位于 `Knowledge/`；单话草稿按来源版本与 bundle key 放在 `Knowledge/ChapterDrafts/` | 候选来源核查；单话候选可经人工回执发布并按当前章节进入翻译上下文 | 草稿不构成批准；概要审核、可选术语审核、bundle/source 绑定和翻译前全章节预检已接入。语义质量与审核者身份仍未验证 |
 
 ## 风险
 
@@ -31,7 +33,7 @@
 - 外部模型数据发送由 `PROVIDER_DATA_POLICY` 明确控制，默认空策略并拒绝远端请求。请求类别为 `source_text`、`translation_text`、`book_knowledge`、`evaluation_samples`；只要该调用包含的任一类别未获对应 Provider 授权，调用就在客户端边界失败。用户已授权 JOJO/JYQF 接收其职责所需的最小类别；默认空策略表示尚未在运行配置中显式启用，不是待用户补充授权。该决定不包括 Gemini embedding、Notion 或其他接收方。loopback OpenAI-compatible endpoint 与 RAG 直接使用的本地 HTTP mock 不属于外发授权判定；Gemini SDK 调用始终检查授权，E2E runner 为合成 fixture 显式配置测试 grant。
 - 流水线完成模型阶段并通过当前格式检查后会自动更新候选 TM；当前门禁拒绝空/非文本段落、段落数错配及逐段 `「」『』` 数量或顺序变化。未通过时不写译文或 TM。候选 TM 默认不参与检索；只有已加载的来源核验审核快照可进入提示词。通过格式门禁仍不等同于人工批准，也不能证明译文语义正确。
 - 章节对齐使用启发式方法。对齐结果需要保留来源并可审查；仅仅成功生成向量或写入 JSON，不构成高质量双语样本的验收。
-- `auto_extract_knowledge.py` 生成的是实验性草稿：写入前校验响应结构、必填字段和同一原词的冲突译名，并拒绝覆盖既有草稿。`KNOWLEDGE_PROVENANCE_draft.json` 记录实际输入章节范围/哈希、tokenizer 与每批输入/响应哈希、段落覆盖、术语精确匹配和概要/设定/叙述候选的段落级来源指针。全书 `input_coverage` 只证明当前配置章节集全覆盖，不证明该配置就是远端作品的完整目录。来源指针证明模型引用了哪段输入，不证明语义主张正确；其他知识与历史 TM 条目仍可能缺来源、置信度或审核状态。不得因结构校验或来源命中就将模型建议提升为已批准知识。
+- `auto_extract_knowledge.py` 生成的是实验性草稿：写入前校验响应结构、必填字段和同一原词的冲突译名，并拒绝覆盖既有草稿。`KNOWLEDGE_PROVENANCE_draft.json` 记录实际输入章节范围/哈希、tokenizer 与每批输入/响应哈希、段落覆盖、术语精确匹配和概要/设定/叙述候选的段落级来源指针。启用 `--full-book` 时，CLI 还要求当前 catalog、checkpoint、bundle-set、对应 AI bundle 和 human root；授权预检通过后复核 bundle 身份与逐话映射，再从 AI bundle 读取正文。`book_bundle` provenance 绑定来源快照 ID、AI bundle ID、bundle-set/AI 文件路径与哈希及 episode 数；摘要和翻译入口必须匹配当前同一组身份。全书 `input_coverage` 仍只证明已验证配置章节集覆盖，不证明其超出平台声明目录的完整性。来源指针证明模型引用了哪段输入，不证明语义主张正确；其他知识和历史 TM 条目仍可能缺来源、置信度或审核状态。不得因结构校验或来源命中就将模型建议提升为已批准知识。2026-11-18 试点 bundle loader 与合成消费路径通过；没有向真实 Provider 发送本书正文或生成真实候选。
 - 2026-11-15 新增运行时 fail-closed 子项：`RAGEngine` 拒绝将精确命名为 `Glossary_draft.json` 的文件作为术语输入；翻译流水线启动时拒绝将 `Glossary_draft.json` 或 `STORY_SUMMARY_draft.md` 配置为正式输入，且在读取项目知识前失败。现有 `Glossary.json`、`STORY_SUMMARY.md` 和旧项目格式保持兼容。该检查仅基于抽取脚本的约定文件名；改名后的草稿仍可能被当作正式文件，不构成审核记录、批准 schema 或完整知识状态机。
 - 流水线与章节对齐器新写 TM 时在顶层可选 `source_provenance` 中按章节记录原文/译文文本哈希及每个 TM 对应的 1-based 段落序号；哈希针对读取后的 Unicode 文本重新编码为 UTF-8（文本 I/O 会统一换行），不是原始文件字节哈希。显式 `source_version_id` 的原始字节完整性由来源 manifest 的 `content_sha256` 独立验证。对齐无法精确映射时记录 `partial`/`unmatched`，不伪造引用。覆盖章节但未提供新索引时会移除该章旧索引，保留其他章节索引，避免元数据误指向新条目。旧 TM 不迁移，既有无来源条目仍不可追溯。
 - Mock 和单元测试可验证本地数据流、格式与失败行为，不能验证真实模型输出或知识正确性。任何知识发布标准都应分别说明自动测试证据与人工/真实样本验收证据。
@@ -46,11 +48,12 @@
 - `glossary_evidence` 仅按原词精确子串匹配，段落序号从 `1` 开始；未找到时 `occurrences` 为空。它是定位线索，不判断该译名或模型说明是否正确。
 - `summary_source_chapters` 仅说明概要生成时纳入的章节范围，不给概要中的单条事实提供逐句证据。
 - `input_coverage` 记录输入范围标签、完整样本 Unicode 字符数/上限，以及实际列入清单的章节数。`all_configured_chapters` 表示脚本处理了其取得的完整配置章节列表，不等同于远端目录完整性证明。token-budgeted 全书模式另记录 tokenizer SHA-256、显式 context/output/safety/message 参数、各批 token 计数与 paragraph ID；预算可信度依赖操作者提供与 `Config.PROOFREAD_MODEL` 匹配的 tokenizer JSON、上下文容量和消息开销。
-- `claim_evidence` 仅将每条候选关联到当前请求批次内的一到多个本地段落 ID，并绑定候选文本哈希。审核器验证段落覆盖、批次归属和概要候选文本仍在摘要文件中；它不能自动证明候选事实由原文支持。模型未进行跨批全书综合，摘要只是按源顺序合并的分批候选。
+- `batch_claim_evidence` 保留原文批次候选及批次内段落引用；`claim_evidence` 保存最终单批或跨批综合候选及其原文引用。综合 provenance 记录每轮候选 lineage、输入/输出 ID、token 与内容摘要；概要审核器会校验候选只能继承输入候选已有的段落 ID、引用位置及调用/token 总数。该检查证明可追溯关系，不证明语义正确或引用足以支持整条主张。
 - 三份草稿逐文件写入；来源清单最后写入并将 `artifact_status` 设为 `complete`。缺少清单、状态不为 `complete` 或 JSON 无法解析时，整组草稿视为不完整，先人工检查残留文件。
 - 2026-11-15 输入/外发前置检查：`scripts/auto_extract_knowledge.py` 按 `Config.PROOFREAD_MODEL` 复用 `get_primary_provider_route`，在读取章节正文前解析匹配的 OpenAI-compatible base URL、Provider ID 和专属 API key，再检查该 Provider 的 `source_text` 授权；创建客户端时再次检查。未知模型名、未授权类别或缺少远端 key 时不读取章节、不创建客户端或草稿。旧模式最多读取前 3 个所选章节，每个文件最多 16 MiB；样本截到 20,000 个 Unicode 字符。字符数不是 token 估算。
 - 2026-11-16 全书输入模式（历史实现）：显式 `--full-book --max-input-characters N` 读取所有配置章节但以单请求字符预算执行；该历史实现已由 2026-11-17 token-budgeted 分批路径替代。
-- 2026-11-17 token-budgeted 全书模式：除全书字符上限外，CLI 还要求本地 tokenizer JSON、context/output/safety/message 参数；按段落拆成最多每批 500 段、最多 100 次串行 Provider 请求。超限段落、批次数、截断/结构无效回复或无效来源 ID 会阻止草稿发布。每批输出 glossary 和带段落 ID 的 summary/worldbuilding/narrative_voice 候选；全部成功后确定性合并，不做第二阶段叙事综合。真实 tokenizer、端点 chat template、上下文参数与模型质量尚未验收；细节及定向测试见[开发与验证](development.md#2026-11-17-token预算分批全书知识预读)。
+- 2026-11-17 token-budgeted 全书模式及 2026-11-18 综合增量：除全书字符上限外，CLI 还要求本地 tokenizer JSON、context/output/safety/message 参数。原文按段落分批，候选再按同一 tokenizer 预算作分层模型综合；原文抽取和综合合计最多 100 次串行 Provider 请求。综合只接收结构化候选，要求 `source_text` 与 `book_knowledge` 授权；引用只能来自当前综合输入候选，术语还须在引用原文段落中出现。超限段落、调用数/候选大小超限、截断/结构无效回复、冲突译名或无法在预算内完成综合时不写草稿。provenance 分别记录批次候选、最终综合 claim、段落覆盖、每轮候选 lineage、token 与输入/响应摘要。该逻辑由 synthetic fixture 验证；目标 tokenizer、端点 chat template、模型语义综合质量和候选正确性仍未验收，细节见[全书跨批候选综合](development.md#2026-11-18-全书跨批候选综合)。
+- 2026-11-18 全书 bundle 绑定：新增 `book_bundles.py` 和 bundle-set marker；full-book CLI 必须提供匹配的当前 catalog/checkpoint/AI bundle，不能回退到直接扫描 AI 镜像。`KNOWLEDGE_PROVENANCE_draft.json` 保留 bundle 身份，概要 loader 与 `TranslationPipeline` 项目模式核对当前 bundle 哈希。loader 返回 `verified` 只验证本地版本、文件及索引一致性，不证明目录以外覆盖、模型内容或知识质量。验证使用合成 provider response；未运行真实知识抽取。
 
 ## 知识候选来源新鲜度核验
 
@@ -74,8 +77,9 @@
 - `RAGEngine` 识别 `_knowledge_review_schema: 1` bundle，验证状态、批准集合、规范化术语摘要和来源新鲜度；加载这类 bundle 时必须提供 `source_root` 与 `source_manifest_path`。该术语摘要是格式/一致性检查，不是签名或防篡改证明。项目名模式自动将 `GLOSSARY_PATH` 固定为 `Knowledge/Glossary_reviewed.json` 并启用严格验证；只有显式 JSON 配置保留调用者指定的兼容格式。
 - 先创建模板：`python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --create-template review_receipt.json`。模板为每个术语预填 `pending`，并绑定候选文件原始字节哈希；它不含批准结论，不能直接发布。完成 reviewer 信息、UTC 时间、每项决定和理由后，再执行：`python scripts/apply_knowledge_review.py --knowledge-root <Knowledge目录> --source-root <原文数据根目录> --manifest source_manifest.json --review review_receipt.json --output Glossary_reviewed.json`。模板和 bundle 都是排他新建，既有文件不会覆盖；候选文件在审阅期间变化时，原哈希绑定会使发布失败。回执 schema、完整合成测试与限制见[开发与验证](development.md)。
 - 概要候选可使用 `scripts/apply_story_summary_review.py --knowledge-root <Knowledge目录> --create-template summary_review.json` 创建 `pending` 回执；补全 reviewer、UTC 时间、`approved`/`rejected`/`escalated` 决定和理由后，运行 `python scripts/apply_story_summary_review.py --knowledge-root <Knowledge目录> --source-root <原文数据根目录> --manifest source_manifest.json --review summary_review.json --output STORY_SUMMARY_reviewed.json`。发布器绑定概要和 provenance 候选哈希，只接受明确批准，并要求 `summary_source_chapters` 与带 `source_version_id` 的 provenance 来源顺序一致、manifest 中均为最新 `normalized_source`。输出不复制原文正文；候选哈希在发布时核验，概要 bundle 与来源新鲜度会在翻译流水线初始化时再次检查。Kakuyomu 编排器与 `pipeline.py --project <项目>` 都强制读取 `Knowledge/STORY_SUMMARY_reviewed.json`，要求 bundle 覆盖完整 AI 章节映射并匹配各 AI 来源文件名/版本；缺失、未批准、过期或覆盖不符时，在加载其他知识或启动翻译前失败。显式 JSON 配置仍可使用旧 Markdown 手工概要兼容路径，但该路径不提供审核/来源新鲜度证明。回执和 bundle 都是本地可编辑、未签名 JSON，哈希只检测未同步修改，不认证审核者或证明语义正确。
+- 单话抽取结果位于 `Knowledge/ChapterDrafts/episode-<position>-<episode-id>-<source-version-hash>-bundle-<bundle-key>/`；保留旧目录名兼容同一 bundle 的既有审核产物。复用概要审核命令，在该目录内创建并发布 `STORY_SUMMARY_reviewed.json`；局部术语表可用 `scripts/apply_knowledge_review.py` 发布为 `Glossary_reviewed.json`。对 AI 章节候选，两个发布命令都必须显式使用 `--source-root <SourceArchive> --manifest source_editions_manifest.json`，不能改用默认的 `source_manifest.json`。当前仅 `scripts/run_kakuyomu_workflow.py` 在本次 Kakuyomu run 中启用单话知识门禁，要求每个待翻译非空章节具备与当前来源和整书 bundle 匹配的单话概要；局部术语表存在时仅注入批准词条，并与全书术语表合并，译名冲突即停止。全章节预检在首个模型调用前执行，章节上下文构建时再次核验。其他入口未启用此门禁。
 - 全书 provenance 可记录最多 1000 个章节，与 Kakuyomu collector 的目录上限一致。概要候选审核器校验全书覆盖计数并支持最多 1000 个来源；发布时逐个验证当前 `normalized_source`/raw lineage，并限制单文件 16 MiB、累计源文件读取 128 MiB。术语审核器同样验证全书覆盖计数，允许空正文话目以 0 字符/0 段落保留在 provenance 中；发布逐源验证并限制单文件 16 MiB、累计 128 MiB。超过数量或读取限额时拒绝发布，不会缩减候选覆盖范围。
-- 这是候选隔离与局部发布机制，不是端到端 AI 审核服务或完整知识状态机。TM 默认检索门禁已实现：无审核快照时不检索候选，兼容开关需显式启用。全书预读现可按配置 tokenizer/context 限额分批形成术语/概要/世界观/叙述习惯草稿并保留逐项段落指针；Kakuyomu 正式编排入口与通用项目名翻译模式都要求已批准的全书概要 bundle，并核对其有序 AI 来源文件名/版本与当前章节映射一致。该门禁在项目模式加载时生效；显式 JSON 兼容配置仍可沿用旧 Markdown 概要，不等同于默认项目流程。目标 tokenizer/context 参数、真实目录人工映射和模型质量尚未验收；逐项来源指针不证明语义正确。系统不验证回执签名、审核者身份或模型质量，也未实现风险分层、升级效果评估、低风险抽查、冲突更正/废弃或历史迁移，因此阶段 2 仍为`部分实现`。
+- 这是候选隔离与局部发布机制，不是端到端 AI 审核服务或完整知识状态机。TM 默认检索门禁已实现：无审核快照时不检索候选，兼容开关需显式启用。全书预读现可按配置 tokenizer/context 限额分批提取，再对候选做分层模型综合，并保留原文段落指针和综合 lineage；Kakuyomu 正式编排入口与通用项目名翻译模式都要求已批准的全书概要 bundle，并核对其有序 AI 来源文件名/版本与当前章节映射一致。该门禁在项目模式加载时生效；显式 JSON 兼容配置仍可沿用旧 Markdown 概要，不等同于默认项目流程。真实 tokenizer/context 参数、真实目录人工映射和综合语义质量尚未验收；逐项来源指针不证明语义正确。系统不验证回执签名、审核者身份或模型质量，也未实现风险分层、升级效果评估、低风险抽查、冲突更正/废弃或历史迁移，因此阶段 2 仍为`部分实现`。
 
 ## TM 来源索引 v1
 

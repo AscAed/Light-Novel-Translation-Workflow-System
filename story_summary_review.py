@@ -120,6 +120,96 @@ def _validate_reviewer(value) -> dict[str, str]:
     }
 
 
+def _validate_claim_evidence_records(
+    records,
+    *,
+    paragraph_locations,
+    source_ids_by_batch,
+    allowed_batch_ids,
+):
+    if not isinstance(records, list) or len(records) > 50000:
+        raise ValueError("Summary provenance has malformed claim evidence.")
+    normalized_claims = []
+    seen_claim_ids = set()
+    summary_claim_count = 0
+    for item in records:
+        if not isinstance(item, dict) or set(item) != {
+            "claim_id",
+            "category",
+            "batch_id",
+            "claim_text",
+            "claim_sha256",
+            "evidence",
+        }:
+            raise ValueError("Summary provenance has malformed claim evidence.")
+        claim_id = _require_text(item.get("claim_id"), "claim_id", maximum=128)
+        category = item.get("category")
+        batch_id = item.get("batch_id")
+        claim_text = _require_text(
+            item.get("claim_text"), "claim_text", maximum=4000
+        )
+        if (
+            claim_id in seen_claim_ids
+            or not isinstance(category, str)
+            or category not in {"summary", "worldbuilding", "narrative_voice"}
+            or not isinstance(batch_id, str)
+            or batch_id not in allowed_batch_ids
+            or item.get("claim_sha256")
+            != hashlib.sha256(claim_text.encode("utf-8")).hexdigest()
+        ):
+            raise ValueError("Summary provenance has invalid claim identity.")
+        seen_claim_ids.add(claim_id)
+        if category == "summary":
+            summary_claim_count += 1
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list) or not evidence or len(evidence) > 50:
+            raise ValueError("Summary provenance has invalid claim locations.")
+        normalized_evidence = []
+        seen_evidence = set()
+        for reference in evidence:
+            if not isinstance(reference, dict) or set(reference) != {
+                "source_id",
+                "filename",
+                "paragraph_index",
+            }:
+                raise ValueError("Summary provenance has invalid claim locations.")
+            source_id = reference.get("source_id")
+            filename = reference.get("filename")
+            paragraph_index = reference.get("paragraph_index")
+            if not isinstance(source_id, str):
+                raise ValueError("Summary provenance has invalid claim locations.")
+            expected_location = paragraph_locations.get(source_id)
+            if (
+                expected_location is None
+                or source_id not in source_ids_by_batch[batch_id]
+                or expected_location[0] != filename
+                or expected_location[1] != paragraph_index
+                or source_id in seen_evidence
+            ):
+                raise ValueError("Summary provenance has invalid claim locations.")
+            seen_evidence.add(source_id)
+            normalized_evidence.append(
+                {
+                    "source_id": source_id,
+                    "filename": filename,
+                    "paragraph_index": paragraph_index,
+                }
+            )
+        normalized_claims.append(
+            {
+                "claim_id": claim_id,
+                "category": category,
+                "batch_id": batch_id,
+                "claim_text": claim_text,
+                "claim_sha256": item["claim_sha256"],
+                "evidence": normalized_evidence,
+            }
+        )
+    if summary_claim_count < 1:
+        raise ValueError("Summary provenance has no evidenced summary claim.")
+    return normalized_claims
+
+
 def _validate_summary_provenance(provenance: dict) -> dict:
     if not isinstance(provenance, dict):
         raise ValueError("Summary provenance must be a JSON object.")
@@ -166,6 +256,16 @@ def _validate_summary_provenance(provenance: dict) -> dict:
                 "source_version_id": version_id,
             }
         )
+        source_input_file = item.get("source_input_file")
+        if source_input_file is not None:
+            source_input_file = _require_text(
+                source_input_file, "source_input_file", maximum=4096
+            )
+            if "\\" in source_input_file or any(
+                part in {"", ".", ".."} for part in source_input_file.split("/")
+            ):
+                raise ValueError("Summary provenance has an unsafe AI input path.")
+            normalized_sources[-1]["source_input_file"] = source_input_file
         paragraph_count = item.get("included_paragraph_count")
         if paragraph_count is not None:
             if (
@@ -187,6 +287,15 @@ def _validate_summary_provenance(provenance: dict) -> dict:
                 raise ValueError("Summary provenance has an invalid source index.")
             normalized_sources[-1]["source_index"] = source_index
             source_indexes.append(source_index)
+        chapter_position = item.get("chapter_position")
+        if chapter_position is not None:
+            if (
+                isinstance(chapter_position, bool)
+                or not isinstance(chapter_position, int)
+                or chapter_position < 1
+            ):
+                raise ValueError("Summary provenance has an invalid chapter position.")
+            normalized_sources[-1]["chapter_position"] = chapter_position
 
     if (
         any(not isinstance(name, str) for name in summary_chapters)
@@ -233,13 +342,110 @@ def _validate_summary_provenance(provenance: dict) -> dict:
                 "input_characters": input_characters,
                 "input_character_limit": input_character_limit,
             }
+        elif coverage.get("scope") == "selected_chapter":
+            configured_count = coverage.get("configured_chapter_count")
+            included_count = coverage.get("included_chapter_count")
+            input_characters = coverage.get("input_characters")
+            input_character_limit = coverage.get("input_character_limit")
+            if (
+                coverage.get("complete_for_configured_chapters") is not False
+                or isinstance(configured_count, bool)
+                or configured_count != 1
+                or isinstance(included_count, bool)
+                or included_count != 1
+                or len(source_files) != 1
+                or isinstance(input_characters, bool)
+                or not isinstance(input_characters, int)
+                or input_characters < 0
+                or isinstance(input_character_limit, bool)
+                or not isinstance(input_character_limit, int)
+                or input_character_limit < 1
+                or input_characters > input_character_limit
+            ):
+                raise ValueError("Summary provenance has invalid chapter-local coverage.")
+            normalized["input_coverage"] = {
+                "scope": "selected_chapter",
+                "complete_for_configured_chapters": False,
+                "configured_chapter_count": configured_count,
+                "included_chapter_count": included_count,
+                "input_characters": input_characters,
+                "input_character_limit": input_character_limit,
+            }
+
+    chapter_local = provenance.get("chapter_local")
+    if chapter_local is not None:
+        expected_fields = {
+            "episode_id",
+            "position",
+            "source_file",
+            "source_version_id",
+            "source_input_file",
+            "source_sha256",
+        }
+        if not isinstance(chapter_local, dict) or set(chapter_local) != expected_fields:
+            raise ValueError("Summary provenance has malformed chapter-local identity.")
+        episode_id = _require_text(
+            chapter_local.get("episode_id"), "episode_id", maximum=128
+        )
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", episode_id):
+            raise ValueError("Summary provenance has an invalid episode ID.")
+        position = chapter_local.get("position")
+        if (
+            isinstance(position, bool)
+            or not isinstance(position, int)
+            or position < 1
+        ):
+            raise ValueError("Summary provenance has an invalid chapter position.")
+        source_file = _require_text(
+            chapter_local.get("source_file"), "chapter-local source file", maximum=4096
+        )
+        source_version_id = _require_text(
+            chapter_local.get("source_version_id"),
+            "chapter-local source version",
+            maximum=256,
+        )
+        source_input_file = _require_text(
+            chapter_local.get("source_input_file"),
+            "chapter-local AI input file",
+            maximum=4096,
+        )
+        if "\\" in source_input_file or any(
+            part in {"", ".", ".."} for part in source_input_file.split("/")
+        ):
+            raise ValueError("Summary provenance has an unsafe chapter-local AI path.")
+        source_sha256 = _require_sha256(
+            chapter_local.get("source_sha256"), "chapter-local source_sha256"
+        )
+        if (
+            normalized.get("input_coverage", {}).get("scope")
+            != "selected_chapter"
+            or len(normalized_sources) != 1
+            or normalized_sources[0]["filename"] != source_file
+            or normalized_sources[0]["source_version_id"] != source_version_id
+            or normalized_sources[0].get("source_input_file") != source_input_file
+            or normalized_sources[0].get("chapter_position") != position
+        ):
+            raise ValueError(
+                "Summary chapter-local identity does not match its source coverage."
+            )
+        normalized["chapter_local"] = {
+            "episode_id": episode_id,
+            "position": position,
+            "source_file": source_file,
+            "source_version_id": source_version_id,
+            "source_input_file": source_input_file,
+            "source_sha256": source_sha256,
+        }
+    elif normalized.get("input_coverage", {}).get("scope") == "selected_chapter":
+        raise ValueError("Summary chapter-local coverage has no bound episode identity.")
 
     token_budget = provenance.get("token_budget")
     batch_ids = set()
     source_ids_by_batch = {}
     paragraph_locations = {}
+    synthesis_batch_ids = set()
     if token_budget is not None:
-        token_fields = {
+        legacy_token_fields = {
             "tokenizer_sha256",
             "context_window_tokens",
             "max_output_tokens_per_request",
@@ -251,8 +457,25 @@ def _validate_summary_provenance(provenance: dict) -> dict:
             "total_estimated_input_tokens",
             "batches",
         }
-        if not isinstance(token_budget, dict) or set(token_budget) != token_fields:
+        synthesis_token_fields = legacy_token_fields | {
+            "extraction_provider_call_count",
+            "synthesis_provider_call_count",
+            "extraction_estimated_input_tokens",
+            "synthesis_estimated_input_tokens",
+            "synthesis_status",
+            "synthesis_rounds",
+        }
+        if not isinstance(token_budget, dict):
             raise ValueError("Summary provenance has malformed token budget data.")
+        token_budget_fields = frozenset(token_budget)
+        if token_budget_fields not in {
+            frozenset(legacy_token_fields),
+            frozenset(synthesis_token_fields),
+        }:
+            raise ValueError("Summary provenance has malformed token budget data.")
+        has_synthesis_provenance = (
+            token_budget_fields == frozenset(synthesis_token_fields)
+        )
         _require_sha256(token_budget.get("tokenizer_sha256"), "tokenizer_sha256")
         integer_fields = (
             "context_window_tokens",
@@ -270,6 +493,36 @@ def _validate_summary_provenance(provenance: dict) -> dict:
                 raise ValueError(
                     f"Summary provenance has an invalid {field_name}."
                 )
+        extraction_call_count = (
+            token_budget["extraction_provider_call_count"]
+            if has_synthesis_provenance
+            else token_budget["provider_call_count"]
+        )
+        synthesis_call_count = (
+            token_budget["synthesis_provider_call_count"]
+            if has_synthesis_provenance
+            else 0
+        )
+        extraction_estimated_tokens = (
+            token_budget["extraction_estimated_input_tokens"]
+            if has_synthesis_provenance
+            else token_budget["total_estimated_input_tokens"]
+        )
+        synthesis_estimated_tokens = (
+            token_budget["synthesis_estimated_input_tokens"]
+            if has_synthesis_provenance
+            else 0
+        )
+        for field_name, value, minimum in (
+            ("extraction_provider_call_count", extraction_call_count, 1),
+            ("synthesis_provider_call_count", synthesis_call_count, 0),
+            ("extraction_estimated_input_tokens", extraction_estimated_tokens, 1),
+            ("synthesis_estimated_input_tokens", synthesis_estimated_tokens, 0),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(
+                    f"Summary provenance has an invalid {field_name}."
+                )
         if (
             token_budget["max_input_tokens_per_request"]
             != token_budget["context_window_tokens"]
@@ -277,6 +530,8 @@ def _validate_summary_provenance(provenance: dict) -> dict:
             - token_budget["safety_margin_tokens"]
             or token_budget["max_provider_calls"] > 100
             or token_budget["provider_call_count"] > token_budget["max_provider_calls"]
+            or token_budget["provider_call_count"]
+            != extraction_call_count + synthesis_call_count
             or source_indexes != list(range(1, len(source_files) + 1))
         ):
             raise ValueError("Summary provenance has inconsistent token budget data.")
@@ -305,7 +560,7 @@ def _validate_summary_provenance(provenance: dict) -> dict:
         if (
             not isinstance(batches, list)
             or not batches
-            or len(batches) != token_budget["provider_call_count"]
+            or len(batches) != extraction_call_count
         ):
             raise ValueError("Summary provenance has malformed token batches.")
         total_estimated = 0
@@ -361,106 +616,324 @@ def _validate_summary_provenance(provenance: dict) -> dict:
             total_estimated += estimated_tokens
         if (
             all_batch_source_ids != expected_source_ids
-            or total_estimated != token_budget["total_estimated_input_tokens"]
+            or total_estimated != extraction_estimated_tokens
         ):
             raise ValueError(
                 "Summary provenance token batches do not cover source paragraphs exactly."
             )
+        if has_synthesis_provenance:
+            candidate_records = provenance.get("batch_candidate_evidence")
+            if (
+                not isinstance(candidate_records, list)
+                or not candidate_records
+                or len(candidate_records) > 50000
+            ):
+                raise ValueError(
+                    "Summary provenance has malformed batch candidate evidence."
+                )
+            candidate_evidence = {}
+            for record in candidate_records:
+                if not isinstance(record, dict) or set(record) != {
+                    "candidate_id",
+                    "evidence_ids",
+                }:
+                    raise ValueError(
+                        "Summary provenance has malformed batch candidate evidence."
+                    )
+                candidate_id = _require_text(
+                    record.get("candidate_id"),
+                    "candidate_id",
+                    maximum=256,
+                )
+                evidence_ids = record.get("evidence_ids")
+                if (
+                    candidate_id in candidate_evidence
+                    or not isinstance(evidence_ids, list)
+                    or not evidence_ids
+                    or len(evidence_ids) > 50
+                    or any(not isinstance(value, str) for value in evidence_ids)
+                    or len(set(evidence_ids)) != len(evidence_ids)
+                ):
+                    raise ValueError(
+                        "Summary provenance has malformed batch candidate evidence."
+                    )
+                owners = [
+                    batch_id
+                    for batch_id, batch_source_ids in source_ids_by_batch.items()
+                    if set(evidence_ids) <= batch_source_ids
+                ]
+                if len(owners) != 1:
+                    raise ValueError(
+                        "Summary provenance candidate evidence crosses extraction batches."
+                    )
+                candidate_evidence[candidate_id] = set(evidence_ids)
+
+            synthesis_rounds = token_budget["synthesis_rounds"]
+            synthesis_status = token_budget["synthesis_status"]
+            if not isinstance(synthesis_rounds, list):
+                raise ValueError(
+                    "Summary provenance has malformed synthesis rounds."
+                )
+            if synthesis_status == "not_required_single_batch":
+                if (
+                    extraction_call_count != 1
+                    or synthesis_call_count != 0
+                    or synthesis_rounds
+                ):
+                    raise ValueError(
+                        "Summary provenance has inconsistent synthesis status."
+                    )
+            elif synthesis_status == "completed":
+                if (
+                    extraction_call_count < 2
+                    or synthesis_call_count < 1
+                    or not synthesis_rounds
+                ):
+                    raise ValueError(
+                        "Summary provenance has incomplete synthesis records."
+                    )
+            else:
+                raise ValueError(
+                    "Summary provenance has an invalid synthesis status."
+                )
+
+            counted_synthesis_calls = 0
+            total_synthesis_estimated = 0
+            current_candidate_ids = list(candidate_evidence)
+            all_candidate_ids = set(candidate_evidence)
+            for round_index, round_record in enumerate(synthesis_rounds, start=1):
+                if not isinstance(round_record, dict) or set(round_record) != {
+                    "round",
+                    "input_candidate_count",
+                    "output_candidate_count",
+                    "provider_call_count",
+                    "batches",
+                }:
+                    raise ValueError(
+                        "Summary provenance has a malformed synthesis round."
+                    )
+                round_batches = round_record.get("batches")
+                if (
+                    round_record.get("round") != round_index
+                    or isinstance(round_record.get("round"), bool)
+                    or round_record.get("input_candidate_count")
+                    != len(current_candidate_ids)
+                    or round_record.get("provider_call_count")
+                    != (
+                        len(round_batches)
+                        if isinstance(round_batches, list)
+                        else -1
+                    )
+                    or not isinstance(round_batches, list)
+                    or not round_batches
+                ):
+                    raise ValueError(
+                        "Summary provenance has inconsistent synthesis round counts."
+                    )
+                input_candidate_ids = []
+                output_candidate_ids = []
+                next_candidate_evidence = {}
+                for batch_index, synthesis_batch in enumerate(
+                    round_batches, start=1
+                ):
+                    expected_batch_id = (
+                        f"R{round_index:03d}B{batch_index:04d}"
+                    )
+                    if not isinstance(synthesis_batch, dict) or set(
+                        synthesis_batch
+                    ) != {
+                        "batch_id",
+                        "input_candidate_ids",
+                        "output_candidate_ids",
+                        "estimated_input_tokens",
+                        "reported_prompt_tokens",
+                        "user_message_characters",
+                        "user_message_sha256",
+                        "response_sha256",
+                    }:
+                        raise ValueError(
+                            "Summary provenance has a malformed synthesis batch."
+                        )
+                    input_ids = synthesis_batch.get("input_candidate_ids")
+                    output_ids = synthesis_batch.get("output_candidate_ids")
+                    estimated_tokens = synthesis_batch.get(
+                        "estimated_input_tokens"
+                    )
+                    reported_tokens = synthesis_batch.get(
+                        "reported_prompt_tokens"
+                    )
+                    user_characters = synthesis_batch.get(
+                        "user_message_characters"
+                    )
+                    if (
+                        synthesis_batch.get("batch_id") != expected_batch_id
+                        or not isinstance(input_ids, list)
+                        or not input_ids
+                        or len(input_ids) > 500
+                        or any(not isinstance(value, str) for value in input_ids)
+                        or len(set(input_ids)) != len(input_ids)
+                        or any(value not in candidate_evidence for value in input_ids)
+                        or not isinstance(output_ids, list)
+                        or not output_ids
+                        or len(output_ids) > 500
+                        or any(not isinstance(value, str) for value in output_ids)
+                        or len(set(output_ids)) != len(output_ids)
+                        or isinstance(estimated_tokens, bool)
+                        or not isinstance(estimated_tokens, int)
+                        or estimated_tokens < 1
+                        or estimated_tokens
+                        > token_budget["max_input_tokens_per_request"]
+                        or isinstance(user_characters, bool)
+                        or not isinstance(user_characters, int)
+                        or user_characters < 1
+                        or (
+                            reported_tokens is not None
+                            and (
+                                isinstance(reported_tokens, bool)
+                                or not isinstance(reported_tokens, int)
+                                or reported_tokens < 0
+                                or reported_tokens
+                                > token_budget["max_input_tokens_per_request"]
+                            )
+                        )
+                        or any(
+                            value in all_candidate_ids
+                            for value in output_ids
+                        )
+                    ):
+                        raise ValueError(
+                            "Summary provenance has invalid synthesis batch limits."
+                        )
+                    _require_sha256(
+                        synthesis_batch.get("user_message_sha256"),
+                        "synthesis user_message_sha256",
+                    )
+                    _require_sha256(
+                        synthesis_batch.get("response_sha256"),
+                        "synthesis response_sha256",
+                    )
+                    input_candidate_ids.extend(input_ids)
+                    output_candidate_ids.extend(output_ids)
+                    allowed_sources = set().union(
+                        *(candidate_evidence[value] for value in input_ids)
+                    )
+                    source_ids_by_batch[expected_batch_id] = allowed_sources
+                    synthesis_batch_ids.add(expected_batch_id)
+                    for output_id in output_ids:
+                        next_candidate_evidence[output_id] = allowed_sources
+                    all_candidate_ids.update(output_ids)
+                    total_synthesis_estimated += estimated_tokens
+                    counted_synthesis_calls += 1
+                if (
+                    input_candidate_ids != current_candidate_ids
+                    or round_record.get("output_candidate_count")
+                    != len(output_candidate_ids)
+                    or len(set(output_candidate_ids)) != len(output_candidate_ids)
+                ):
+                    raise ValueError(
+                        "Summary provenance synthesis rounds do not preserve candidate lineage."
+                    )
+                current_candidate_ids = output_candidate_ids
+                candidate_evidence = next_candidate_evidence
+
+            if (
+                counted_synthesis_calls != synthesis_call_count
+                or total_synthesis_estimated != synthesis_estimated_tokens
+                or extraction_estimated_tokens + synthesis_estimated_tokens
+                != token_budget["total_estimated_input_tokens"]
+            ):
+                raise ValueError(
+                    "Summary provenance synthesis token totals are inconsistent."
+                )
+            normalized["batch_candidate_evidence"] = candidate_records
         normalized["token_budget"] = token_budget
 
     claim_evidence = provenance.get("claim_evidence")
     if claim_evidence is not None:
-        if not isinstance(claim_evidence, list) or len(claim_evidence) > 50000:
-            raise ValueError("Summary provenance has malformed claim evidence.")
         if not token_budget:
             raise ValueError(
                 "Claim-level summary evidence requires token-batch provenance."
             )
-        normalized_claims = []
-        seen_claim_ids = set()
-        summary_claim_count = 0
-        for item in claim_evidence:
-            if not isinstance(item, dict) or set(item) != {
-                "claim_id",
-                "category",
-                "batch_id",
-                "claim_text",
-                "claim_sha256",
-                "evidence",
-            }:
-                raise ValueError("Summary provenance has malformed claim evidence.")
-            claim_id = _require_text(
-                item.get("claim_id"), "claim_id", maximum=128
+        normalized["claim_evidence"] = _validate_claim_evidence_records(
+            claim_evidence,
+            paragraph_locations=paragraph_locations,
+            source_ids_by_batch=source_ids_by_batch,
+            allowed_batch_ids=batch_ids | synthesis_batch_ids,
+        )
+    batch_claim_evidence = provenance.get("batch_claim_evidence")
+    if batch_claim_evidence is not None:
+        if not token_budget:
+            raise ValueError(
+                "Batch claim evidence requires token-batch provenance."
             )
-            category = item.get("category")
-            batch_id = item.get("batch_id")
-            claim_text = _require_text(
-                item.get("claim_text"), "claim_text", maximum=4000
-            )
-            if (
-                claim_id in seen_claim_ids
-                or not isinstance(category, str)
-                or category not in {"summary", "worldbuilding", "narrative_voice"}
-                or not isinstance(batch_id, str)
-                or batch_id not in batch_ids
-                or item.get("claim_sha256")
-                != hashlib.sha256(claim_text.encode("utf-8")).hexdigest()
+        normalized["batch_claim_evidence"] = _validate_claim_evidence_records(
+            batch_claim_evidence,
+            paragraph_locations=paragraph_locations,
+            source_ids_by_batch=source_ids_by_batch,
+            allowed_batch_ids=batch_ids,
+        )
+    book_bundle = provenance.get("book_bundle")
+    if book_bundle is not None:
+        expected_bundle_fields = {
+            "source_snapshot_id",
+            "ai_bundle_id",
+            "bundle_set_relative_path",
+            "bundle_set_sha256",
+            "ai_bundle_relative_path",
+            "ai_bundle_sha256",
+            "episode_count",
+        }
+        if (
+            not isinstance(book_bundle, dict)
+            or set(book_bundle) != expected_bundle_fields
+        ):
+            raise ValueError("Summary provenance has malformed book bundle data.")
+        source_snapshot_id = _require_text(
+            book_bundle.get("source_snapshot_id"),
+            "source_snapshot_id",
+            maximum=128,
+        )
+        ai_bundle_id = _require_text(
+            book_bundle.get("ai_bundle_id"),
+            "ai_bundle_id",
+            maximum=128,
+        )
+        for field in (
+            "bundle_set_relative_path",
+            "ai_bundle_relative_path",
+        ):
+            value = _require_text(book_bundle.get(field), field, maximum=4096)
+            if "\\" in value or any(
+                part in {"", ".", ".."} for part in value.split("/")
             ):
-                raise ValueError("Summary provenance has invalid claim identity.")
-            seen_claim_ids.add(claim_id)
-            if category == "summary":
-                summary_claim_count += 1
-            evidence = item.get("evidence")
-            if (
-                not isinstance(evidence, list)
-                or not evidence
-                or len(evidence) > 50
-            ):
-                raise ValueError("Summary provenance has invalid claim locations.")
-            normalized_evidence = []
-            seen_evidence = set()
-            for reference in evidence:
-                if not isinstance(reference, dict) or set(reference) != {
-                    "source_id",
-                    "filename",
-                    "paragraph_index",
-                }:
-                    raise ValueError("Summary provenance has invalid claim locations.")
-                source_id = reference.get("source_id")
-                filename = reference.get("filename")
-                paragraph_index = reference.get("paragraph_index")
-                if not isinstance(source_id, str):
-                    raise ValueError("Summary provenance has invalid claim locations.")
-                expected_location = paragraph_locations.get(source_id)
-                if (
-                    expected_location is None
-                    or source_id not in source_ids_by_batch[batch_id]
-                    or expected_location[0] != filename
-                    or expected_location[1] != paragraph_index
-                    or source_id in seen_evidence
-                ):
-                    raise ValueError("Summary provenance has invalid claim locations.")
-                seen_evidence.add(source_id)
-                normalized_evidence.append(
-                    {
-                        "source_id": source_id,
-                        "filename": filename,
-                        "paragraph_index": paragraph_index,
-                    }
-                )
-            normalized_claims.append(
-                {
-                    "claim_id": claim_id,
-                    "category": category,
-                    "batch_id": batch_id,
-                    "claim_text": claim_text,
-                    "claim_sha256": item["claim_sha256"],
-                    "evidence": normalized_evidence,
-                }
+                raise ValueError("Summary provenance has an unsafe bundle path.")
+        for field in ("bundle_set_sha256", "ai_bundle_sha256"):
+            _require_sha256(book_bundle.get(field), field)
+        episode_count = book_bundle.get("episode_count")
+        coverage_scope = normalized.get("input_coverage", {}).get("scope")
+        if (
+            isinstance(episode_count, bool)
+            or not isinstance(episode_count, int)
+            or (
+                episode_count != len(source_files)
+                if coverage_scope != "selected_chapter"
+                else episode_count < len(source_files)
             )
-        if summary_claim_count < 1:
-            raise ValueError("Summary provenance has no evidenced summary claim.")
-        normalized["claim_evidence"] = normalized_claims
+            or not re.fullmatch(r"source-v1-[0-9a-f]{64}", source_snapshot_id)
+            or not re.fullmatch(r"ai-v1-[0-9a-f]{64}", ai_bundle_id)
+        ):
+            raise ValueError("Summary provenance book bundle scope is inconsistent.")
+        normalized["book_bundle"] = {
+            "source_snapshot_id": source_snapshot_id,
+            "ai_bundle_id": ai_bundle_id,
+            "bundle_set_relative_path": book_bundle[
+                "bundle_set_relative_path"
+            ],
+            "bundle_set_sha256": book_bundle["bundle_set_sha256"],
+            "ai_bundle_relative_path": book_bundle["ai_bundle_relative_path"],
+            "ai_bundle_sha256": book_bundle["ai_bundle_sha256"],
+            "episode_count": episode_count,
+        }
     return normalized
 
 
@@ -731,6 +1204,9 @@ def load_reviewed_story_summary(
     expected_sources: list[dict] | None = None,
     source_input_root: str | None = None,
     source_input_map: dict[str, dict] | None = None,
+    require_book_bundle: bool = False,
+    expected_book_bundle: dict | None = None,
+    expected_chapter_local: dict | None = None,
 ) -> str:
     """Validate an approved bundle and return its summary text."""
     bundle_path = Path(path)
@@ -781,26 +1257,65 @@ def load_reviewed_story_summary(
             or coverage.get("complete_for_configured_chapters") is not True
         ):
             raise ValueError("Reviewed summary lacks complete full-book coverage.")
-        if expected_sources is not None:
-            expected = [
-                {
-                    "filename": item.get("filename"),
-                    "source_version_id": item.get("source_version_id"),
-                }
-                for item in expected_sources
-                if isinstance(item, dict)
-            ]
-            actual = [
-                {
-                    "filename": item["filename"],
-                    "source_version_id": item["source_version_id"],
-                }
-                for item in source_provenance["source_files"]
-            ]
-            if len(expected) != len(expected_sources) or actual != expected:
-                raise ValueError(
-                    "Reviewed summary sources do not match the current chapter map."
+    if expected_sources is not None:
+        expected = [
+            {
+                "filename": item.get("filename"),
+                "source_version_id": item.get("source_version_id"),
+                **(
+                    {"source_input_file": item["source_input_file"]}
+                    if "source_input_file" in item
+                    else {}
+                ),
+            }
+            for item in expected_sources
+            if isinstance(item, dict)
+        ]
+        actual = [
+            {
+                "filename": item["filename"],
+                "source_version_id": item["source_version_id"],
+                **(
+                    {"source_input_file": item["source_input_file"]}
+                    if "source_input_file" in item
+                    else {}
+                ),
+            }
+            for item in source_provenance["source_files"]
+        ]
+        if len(expected) != len(expected_sources) or actual != expected:
+            raise ValueError(
+                "Reviewed summary sources do not match the current chapter map."
+            )
+    if expected_chapter_local is not None:
+        actual_chapter_local = source_provenance.get("chapter_local")
+        if not isinstance(actual_chapter_local, dict) or any(
+            actual_chapter_local.get(key) != value
+            for key, value in expected_chapter_local.items()
+        ):
+            raise ValueError(
+                "Reviewed summary does not match the current chapter-local source."
+            )
+    book_bundle = source_provenance.get("book_bundle")
+    if require_book_bundle and not isinstance(book_bundle, dict):
+        raise ValueError("Reviewed summary is not bound to a verified AI book bundle.")
+    if expected_book_bundle is not None:
+        if (
+            not isinstance(book_bundle, dict)
+            or any(
+                book_bundle.get(field) != expected_book_bundle.get(field)
+                for field in (
+                    "source_snapshot_id",
+                    "ai_bundle_id",
+                    "bundle_set_relative_path",
+                    "bundle_set_sha256",
+                    "ai_bundle_relative_path",
+                    "ai_bundle_sha256",
+                    "episode_count",
                 )
+            )
+        ):
+            raise ValueError("Reviewed summary is bound to a different AI book bundle.")
     expected_source_provenance_digest = hashlib.sha256(
         json.dumps(
             source_provenance,

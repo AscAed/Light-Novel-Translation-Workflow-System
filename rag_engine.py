@@ -30,6 +30,18 @@ _KNOWLEDGE_REVIEW_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _EXPECTED_TM_HASH_UNSET = object()
 
 
+def _glossary_aliases(key: str) -> list[str]:
+    clean_key = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
+    raw_aliases = re.split(r"/|／|\bor\b|,|，|、", clean_key)
+    return [alias.strip() for alias in raw_aliases if alias.strip()]
+
+
+def _glossary_destination(value: Any) -> str:
+    parts = re.split(r"[/／\(\)（）]", str(value))
+    candidates = [part.strip() for part in parts if part.strip()]
+    return candidates[0] if candidates else str(value).strip()
+
+
 class RAGEngine:
     """RAGEngine handles similarity search, glossary parsing, and partitioned guidelines."""
 
@@ -48,6 +60,7 @@ class RAGEngine:
         require_reviewed_glossary: bool = False,
         source_input_root: Optional[str] = None,
         source_input_map: Optional[dict] = None,
+        reviewed_tm_translation_root: Optional[str] = None,
     ):
         """Initialise paths and load initial database contents from disk."""
         self.logger = logging.getLogger(__name__)
@@ -63,6 +76,11 @@ class RAGEngine:
         self.source_manifest_path = source_manifest_path
         self.reviewed_tm_path = reviewed_tm_path
         self.translation_root = translation_root
+        self.reviewed_tm_translation_root = (
+            translation_root
+            if reviewed_tm_translation_root is None
+            else reviewed_tm_translation_root
+        )
         self.allow_unreviewed_tm = allow_unreviewed_tm
         self.require_reviewed_glossary = require_reviewed_glossary
         self.source_input_root = source_input_root
@@ -86,7 +104,7 @@ class RAGEngine:
             self._reviewed_tm_data = load_reviewed_tm_snapshot(
                 self.reviewed_tm_path,
                 self.source_root,
-                self.translation_root,
+                self.reviewed_tm_translation_root,
                 self.source_manifest_path,
                 source_input_root=self.source_input_root,
                 source_input_map=self.source_input_map,
@@ -390,22 +408,71 @@ class RAGEngine:
             raise ValueError("Reviewed glossary source versions are not current.")
         return terms
 
-    def get_cleaned_glossary(self, raw_text: str) -> List[Dict[str, str]]:
+    def get_cleaned_glossary(
+        self,
+        raw_text: str,
+        additional_glossary: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, str]]:
         """Filter and return cleaned terminology mapping matching the raw text."""
-        merged = self._parse_glossary_json()
+        entries = [
+            (key, value, False)
+            for key, value in self._parse_glossary_json().items()
+        ]
+        if additional_glossary is not None:
+            if not isinstance(additional_glossary, dict):
+                raise ValueError("Additional glossary must be a JSON object.")
+            for source, translation in additional_glossary.items():
+                if (
+                    not isinstance(source, str)
+                    or not source
+                    or not isinstance(translation, str)
+                    or not translation
+                ):
+                    raise ValueError("Additional glossary contains an invalid term.")
+                existing_values = [
+                    value for key, value, _ in entries if key == source
+                ]
+                if any(
+                    _glossary_destination(value)
+                    != _glossary_destination(translation)
+                    for value in existing_values
+                ):
+                    raise ValueError(
+                        "Reviewed global and chapter glossaries conflict."
+                    )
+                entries.append((source, translation, True))
+
         results = []
-        for key, val in merged.items():
-            clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
-            raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
-            keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
+        destinations_by_alias = {}
+        aliases_with_additional_terms = set()
+        for key, val, is_additional in entries:
+            keywords = _glossary_aliases(key)
             if not keywords:
                 continue
             if any(kw in raw_text for kw in keywords):
-                src = keywords[0]
-                parts_v = re.split(r"[/／\(\)（）]", str(val))
-                dst_candidates = [item.strip() for item in parts_v if item.strip()]
-                dst = dst_candidates[0] if dst_candidates else str(val).strip()
-                results.append({"src": src, "dst": dst, "info": str(val).strip()})
+                dst = _glossary_destination(val)
+                for alias in keywords:
+                    previous_destinations = destinations_by_alias.get(alias, [])
+                    if (
+                        (is_additional or alias in aliases_with_additional_terms)
+                        and any(previous != dst for previous in previous_destinations)
+                    ):
+                        raise ValueError(
+                            "Glossary entries resolve to conflicting source terms."
+                        )
+                for alias in keywords:
+                    destinations_by_alias.setdefault(alias, []).append(dst)
+                    if is_additional:
+                        aliases_with_additional_terms.add(alias)
+
+                result = {
+                    "src": keywords[0],
+                    "dst": dst,
+                    "info": str(val).strip(),
+                }
+                if is_additional and result in results:
+                    continue
+                results.append(result)
         return results
 
     def _parse_guidelines_content(self) -> Tuple[str, Dict[float, str]]:

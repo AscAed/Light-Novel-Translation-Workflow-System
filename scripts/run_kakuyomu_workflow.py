@@ -7,7 +7,9 @@ import io
 import json
 import math
 import os
+import re
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +29,10 @@ from pipeline import (  # noqa: E402
     TranslationPipeline,
     _resolve_project_human_edition_root,
     validate_provider_configuration,
+)
+from book_bundles import (  # noqa: E402
+    export_book_bundles,
+    load_verified_ai_book_bundle,
 )
 from scripts.ingest_kakuyomu_pages import (  # noqa: E402
     _load_catalog,
@@ -64,6 +70,10 @@ from translation_plan_approval import (  # noqa: E402
     translation_plan_sha256,
     verify_approval_receipt,
     write_new_json,
+)
+from translation_review import (  # noqa: E402
+    _load_run,
+    build_translation_run_manifest,
 )
 from utils import (  # noqa: E402
     open_regular_file,
@@ -146,6 +156,65 @@ def _resolve_roots(source_root: str, translation_root: str) -> tuple[Path, Path]
     if not _roots_are_disjoint(source_path, translation_path):
         raise ValueError("Source and translation roots must be disjoint.")
     return source_path, translation_path
+
+
+def _prepare_translation_run_directory(
+    workspace_dir: str,
+    run_id: str | None,
+    plan: dict,
+) -> tuple[str, Path, Path, bool]:
+    if run_id is None:
+        run_id = uuid.uuid4().hex
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ValueError("Run ID must be 32 lowercase hexadecimal characters.")
+
+    workspace_path = Path(workspace_dir).resolve(strict=True)
+    workflow_path = workspace_path / "Workflow"
+    runs_path = workflow_path / "Runs"
+    run_path = runs_path / run_id
+    for directory in (workflow_path, runs_path, run_path):
+        if directory.is_symlink():
+            raise ValueError("Translation run directories cannot be symbolic links.")
+        directory.mkdir(exist_ok=True)
+        if not directory.is_dir():
+            raise ValueError("Translation run path is not a directory.")
+    try:
+        run_path.resolve(strict=True).relative_to(workspace_path)
+    except ValueError as exc:
+        raise ValueError("Translation run path must remain inside its project.") from exc
+
+    manifest_path = run_path / "run.json"
+    if manifest_path.exists():
+        _, existing_run, _ = _load_run(run_path)
+        if existing_run["plan_sha256"] != plan["plan_sha256"]:
+            raise ValueError("Run ID is already bound to a different translation plan.")
+        draft_path = run_path / existing_run["draft_root"]
+        if draft_path.is_symlink() or not draft_path.is_dir():
+            raise ValueError("Existing translation run has an invalid draft directory.")
+        return run_id, run_path, draft_path, True
+
+    state_path = run_path / "run_state.json"
+    expected_state = {
+        "schema_version": 1,
+        "status": "running",
+        "run_id": run_id,
+        "work_id": plan["work_id"],
+        "plan_sha256": plan["plan_sha256"],
+    }
+    if state_path.exists():
+        state = _load_json_regular(str(state_path), "translation run state")
+        if state != expected_state:
+            raise ValueError("Run ID is already bound to another task.")
+    elif any(run_path.iterdir()):
+        raise ValueError("Run directory contains files without a valid run state.")
+    else:
+        write_new_json(state_path, expected_state)
+
+    draft_path = run_path / "Drafts"
+    if draft_path.is_symlink():
+        raise ValueError("Translation draft directory cannot be a symbolic link.")
+    draft_path.mkdir(exist_ok=True)
+    return run_id, run_path, draft_path, False
 
 
 def _validate_plan_output_location(source_root: str, plan_output: str) -> None:
@@ -701,6 +770,7 @@ def run_workflow(
     max_archive_bytes: int | None = None,
     max_episodes: int = DEFAULT_MAX_EPISODES,
     request_delay_seconds: float = DEFAULT_REQUEST_DELAY_SECONDS,
+    run_id: str | None = None,
     config_loader=None,
     discovery_factory=None,
     adapter_factory=None,
@@ -862,6 +932,30 @@ def run_workflow(
             "status": "not_needed",
             "reason": "normalized_source_selected",
         }
+    book_bundle_report = None
+    verified_book_bundle = None
+    if selected_ai_edition_root is not None:
+        book_bundle_report = export_book_bundles(
+            source_root=str(source_path),
+            catalog_relative_path=plan_catalog,
+            human_root=human_edition_root,
+            ai_root=ai_edition_root,
+            checkpoint_relative_path=checkpoint,
+            manifest_relative_path=manifest,
+            edition_manifest_relative_path=edition_manifest,
+        )
+        verified_book_bundle = load_verified_ai_book_bundle(
+            source_root=str(source_path),
+            catalog_relative_path=plan_catalog,
+            checkpoint_relative_path=checkpoint,
+            bundle_set_relative_path=book_bundle_report[
+                "bundle_set_relative_path"
+            ],
+            human_root=human_edition_root,
+            ai_root=ai_edition_root,
+            manifest_relative_path=manifest,
+            edition_manifest_relative_path=edition_manifest,
+        )
     plan = preview_translation_plan(
         source_root=str(source_path),
         catalog=plan_catalog,
@@ -899,7 +993,67 @@ def run_workflow(
             "pre_translation_freshness": pre_translation_freshness,
             "plan": plan,
         }
+    issues = plan.get("issues")
+    target_issue_ids = {
+        issue.get("episode_id")
+        for issue in issues
+        if isinstance(issue, dict)
+        and issue.get("code") == "translation_target_exists"
+    } if isinstance(issues, list) else set()
+    existing_target_ids = {
+        episode.get("episode_id")
+        for episode in plan.get("episodes", [])
+        if isinstance(episode, dict)
+        and episode.get("translation_target_exists")
+    }
+    resumable_plan = (
+        plan.get("status") == "blocked"
+        and isinstance(issues, list)
+        and bool(issues)
+        and target_issue_ids == existing_target_ids
+        and any(
+            isinstance(episode, dict)
+            and not episode.get("translation_target_exists")
+            for episode in plan.get("episodes", [])
+        )
+        and all(
+            isinstance(issue, dict)
+            and issue.get("code") == "translation_target_exists"
+            for issue in issues
+        )
+    )
+    if plan.get("status") != "ready_for_review" and not resumable_plan:
+        return {
+            "status": "translation_plan_blocked",
+            "work_id": work_id,
+            "translation_plan_sha256": plan["plan_sha256"],
+            "pre_translation_freshness": pre_translation_freshness,
+            "plan": plan,
+        }
     approval = verify_approval_receipt(approval_receipt, plan)
+    if selected_ai_edition_root is None:
+        return {
+            "status": "reviewed_publication_requires_ai_edition",
+            "reason": (
+                "The reviewed publication workflow requires a verified AI "
+                "edition and full-book bundle."
+            ),
+            "work_id": work_id,
+            "translation_plan_sha256": plan["plan_sha256"],
+            "pre_translation_freshness": pre_translation_freshness,
+        }
+    expected_book_bundle = {
+        field: verified_book_bundle[field]
+        for field in (
+            "source_snapshot_id",
+            "ai_bundle_id",
+            "bundle_set_relative_path",
+            "bundle_set_sha256",
+            "ai_bundle_relative_path",
+            "ai_bundle_sha256",
+            "episode_count",
+        )
+    }
     chapter_map = [
         {
             "raw_file": episode["source_file"],
@@ -942,6 +1096,8 @@ def run_workflow(
                 for chapter in chapter_map
                 if isinstance(chapter.get("source_input_file"), str)
             },
+            require_book_bundle=True,
+            expected_book_bundle=expected_book_bundle,
         )
     except (OSError, ValueError):
         return {
@@ -949,41 +1105,135 @@ def run_workflow(
             "reason": "missing_or_invalid_reviewed_summary",
             "work_id": work_id,
             "translation_plan_sha256": plan["plan_sha256"],
+            "book_bundles": book_bundle_report,
             "pre_translation_freshness": pre_translation_freshness,
         }
 
-    pipeline = TranslationPipeline()
-    tm_data = pipeline.rag.tm_data
-    tm_chapters = tm_data.get("chapters", {})
-    for target, chapter in zip(targets, chapter_map):
-        pending = has_pending_chapter_transaction(
-            str(translation_path),
-            target["translation_file"],
-            target["tm_key"],
+    resolved_run_id, run_path, draft_path, run_already_completed = (
+        _prepare_translation_run_directory(
+            workspace_dir,
+            run_id,
+            plan,
         )
-        output_path = resolve_relative_path(
-            str(translation_path),
-            target["translation_file"],
-            allow_missing=True,
-        )
-        committed = _is_committed_translation(
-            str(source_path),
-            str(translation_path),
-            target,
-            chapter,
-            tm_data,
-            ai_edition_root=selected_ai_edition_root,
-        )
-        if (
-            (output_path.exists() or target["tm_key"] in tm_chapters)
-            and not pending
-            and not committed
+    )
+    if run_already_completed:
+        return {
+            "status": "review_pending",
+            "work_id": work_id,
+            "run_id": resolved_run_id,
+            "run_manifest": str(run_path / "run.json"),
+            "draft_root": str(draft_path),
+            "translation_plan_sha256": plan["plan_sha256"],
+            "book_bundles": book_bundle_report,
+        }
+    _validate_workflow_root_boundaries(
+        source_path,
+        translation_path,
+        human_edition_root,
+        ai_edition_root,
+    )
+    if not _roots_are_disjoint(source_path.resolve(), draft_path.resolve()):
+        raise ValueError("Translation drafts must be outside SourceArchive.")
+    for protected_root in (human_edition_root, ai_edition_root, translation_path):
+        if not _roots_are_disjoint(
+            Path(protected_root).resolve(strict=False),
+            draft_path.resolve(strict=True),
         ):
-            raise FileExistsError(
-                "Existing translation output or memory does not match the current source."
+            raise ValueError(
+                "Translation drafts must be disjoint from source editions and publication."
             )
+    Config.OUTPUT_DIR = str(draft_path)
+    Config.REQUIRE_REVIEWED_PUBLICATION = True
+    Config.TRANSLATION_RUN_ID = resolved_run_id
+    Config.EXPECTED_BOOK_BUNDLE = expected_book_bundle
+    previous_chapter_knowledge_requirement = (
+        Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE
+    )
+    Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = True
+    try:
+        pipeline = TranslationPipeline(
+            reviewed_tm_translation_root=str(translation_path)
+        )
+        tm_data = pipeline.rag.tm_data
+        tm_chapters = tm_data.get("chapters", {})
+        for target, chapter in zip(targets, chapter_map):
+            publication_path = resolve_relative_path(
+                str(translation_path),
+                target["translation_file"],
+                allow_missing=True,
+            )
+            if plan.get("status") == "blocked" and publication_path.exists():
+                if not _is_committed_translation(
+                    str(source_path),
+                    str(translation_path),
+                    target,
+                    chapter,
+                    tm_data,
+                    ai_edition_root=selected_ai_edition_root,
+                ):
+                    return {
+                        "status": "translation_plan_blocked",
+                        "work_id": work_id,
+                        "translation_plan_sha256": plan["plan_sha256"],
+                        "pre_translation_freshness": pre_translation_freshness,
+                        "plan": plan,
+                    }
+                continue
+            pending = has_pending_chapter_transaction(
+                str(draft_path),
+                target["translation_file"],
+                target["tm_key"],
+            )
+            output_path = resolve_relative_path(
+                str(draft_path),
+                target["translation_file"],
+                allow_missing=True,
+            )
+            committed = _is_committed_translation(
+                str(source_path),
+                str(draft_path),
+                target,
+                chapter,
+                tm_data,
+                ai_edition_root=selected_ai_edition_root,
+            )
+            if (
+                (output_path.exists() or target["tm_key"] in tm_chapters)
+                and not pending
+                and not committed
+            ):
+                raise FileExistsError(
+                    "Existing translation output or memory does not match the current source."
+                )
 
-    asyncio.run(pipeline.run_all())
+        asyncio.run(pipeline.run_all())
+    finally:
+        Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = (
+            previous_chapter_knowledge_requirement
+        )
+    run_manifest = build_translation_run_manifest(
+        run_id=resolved_run_id,
+        plan=plan,
+        source_root=str(source_path),
+        source_manifest=manifest,
+        edition_manifest=edition_manifest,
+        catalog=plan_catalog,
+        ai_root=ai_edition_root,
+        draft_root=str(draft_path),
+        translation_root=str(translation_path),
+        book_bundle={
+            field: expected_book_bundle[field]
+            for field in (
+                "source_snapshot_id",
+                "ai_bundle_id",
+                "bundle_set_relative_path",
+                "bundle_set_sha256",
+                "ai_bundle_relative_path",
+                "ai_bundle_sha256",
+            )
+        },
+    )
+    write_new_json(run_path / "run.json", run_manifest)
     post_translation_freshness = _refresh_downstream_freshness_snapshot(
         source_root=source_path,
         translation_root=translation_path,
@@ -992,7 +1242,10 @@ def run_workflow(
         plan=plan,
     )
     return {
-        "status": "complete",
+        "status": "review_pending",
+        "run_id": resolved_run_id,
+        "run_manifest": str(run_path / "run.json"),
+        "draft_root": str(draft_path),
         "work_id": work_id,
         "translation_plan_sha256": plan["plan_sha256"],
         "approval_reviewer": approval["approved_by"],
@@ -1006,6 +1259,7 @@ def run_workflow(
             discovery.source_fingerprint if discovery is not None else None
         ),
         "source_editions": edition_report,
+        "book_bundles": book_bundle_report,
         "pre_translation_freshness": pre_translation_freshness,
         "post_translation_freshness": post_translation_freshness,
         "episodes": [
@@ -1091,6 +1345,13 @@ def main(argv: list[str] | None = None) -> int:
         "--approval-receipt",
         help="Required local human-approval receipt for translation execution.",
     )
+    parser.add_argument(
+        "--run-id",
+        help=(
+            "Resume an interrupted translation run using its 32-character "
+            "hexadecimal ID."
+        ),
+    )
     parser.add_argument("--manifest", default="source_manifest.json")
     parser.add_argument("--checkpoint")
     parser.add_argument(
@@ -1117,6 +1378,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--config is not used with --plan-only.")
         if args.approval_receipt:
             parser.error("--approval-receipt is only used for translation.")
+        if args.run_id:
+            parser.error("--run-id is only used for translation execution.")
         if args.work_url:
             parser.error("--plan-only requires an existing --catalog; it does not access the network.")
         if not args.catalog:
@@ -1163,6 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
                 translation_root=args.translation_root,
                 config_file=args.config,
                 approval_receipt=args.approval_receipt,
+                run_id=args.run_id,
                 discovered_catalog=args.discovered_catalog,
                 manifest=args.manifest,
                 source_edition=args.source_edition,
@@ -1190,7 +1454,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, sort_keys=True))
     if args.plan_only:
         return 0 if report["status"] == "ready_for_review" else 2
-    return 0 if report["status"] == "complete" else 2
+    return 0 if report["status"] in {"complete", "review_pending"} else 2
 
 
 if __name__ == "__main__":

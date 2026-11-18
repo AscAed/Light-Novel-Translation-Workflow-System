@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import json
 import re
@@ -340,6 +341,8 @@ class Config:
     SOURCE_MANIFEST_PATH = None
     TM_REVIEWED_PATH = None
     ALLOW_UNREVIEWED_TM = False
+    REQUIRE_REVIEWED_PUBLICATION = False
+    TRANSLATION_RUN_ID = None
     GLOSSARY_PATH = ""
     REQUIRE_REVIEWED_GLOSSARY = False
     GUIDELINES_PATH = ""
@@ -373,6 +376,8 @@ class Config:
     
     STORY_SUMMARY_PATH = ""
     REQUIRE_REVIEWED_STORY_SUMMARY = False
+    EXPECTED_BOOK_BUNDLE = None
+    REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = False
     TM_PATH = ""
     
     EXECUTION_MODE = "CODING_PLAN"
@@ -401,7 +406,11 @@ class Config:
         cls.CHAPTER_MAP = None
         cls.SOURCE_MANIFEST_PATH = None
         cls.AI_EDITION_ROOT = None
+        cls.REQUIRE_REVIEWED_PUBLICATION = False
+        cls.TRANSLATION_RUN_ID = None
         cls.REQUIRE_REVIEWED_STORY_SUMMARY = False
+        cls.EXPECTED_BOOK_BUNDLE = None
+        cls.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = False
         cls.REQUIRE_REVIEWED_GLOSSARY = False
         cls.TM_REVIEWED_PATH = None
         cls.ALLOW_UNREVIEWED_TM = False
@@ -549,6 +558,7 @@ class Config:
                 "INFO_PATH": os.path.join(workspace_dir, "Knowledge", "作品基本信息.json"),
                 "STORY_SUMMARY_PATH": os.path.join(workspace_dir, "Knowledge", "STORY_SUMMARY.md"),
                 "TM_PATH": os.path.join(workspace_dir, "Knowledge", "translation_memory.json"),
+                "REQUIRE_REVIEWED_PUBLICATION": True,
             }
             if not os.path.exists(cfg_data["GLOSSARY_PATH"]):
                 legacy_glossary = os.path.join(workspace_dir, "Glossary.json")
@@ -586,6 +596,7 @@ class Config:
                 "Glossary_reviewed.json",
             )
             cfg_data["REQUIRE_REVIEWED_GLOSSARY"] = True
+            cfg_data["REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE"] = True
 
             ai_edition_config = _default_ai_edition_config(workspace_dir)
             cfg_data["RAW_DIR"] = ai_edition_config["source_root"]
@@ -603,6 +614,14 @@ class Config:
             raise FileNotFoundError(
                 "No translation project with a verified AI edition was selected; "
                 "pass --project or configure an explicit JSON config."
+            )
+
+        if not isinstance(
+            cfg_data.get("REQUIRE_REVIEWED_PUBLICATION", False),
+            bool,
+        ):
+            raise ValueError(
+                "REQUIRE_REVIEWED_PUBLICATION must be a boolean."
             )
 
         env_mapping = {
@@ -1419,9 +1438,44 @@ class ContentBlockedError(RuntimeError):
 GeminiAgent = UnifiedAgent
 
 class TranslationPipeline:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        reviewed_tm_translation_root: Optional[str] = None,
+    ):
         if not Config.WORKSPACE_DIR:
             Config.load_config()
+        if Config.REQUIRE_REVIEWED_PUBLICATION:
+            run_id = Config.TRANSLATION_RUN_ID
+            if not isinstance(run_id, str) or not re.fullmatch(
+                r"[0-9a-f]{32}", run_id
+            ):
+                raise ValueError(
+                    "Project translations must run through "
+                    "scripts/run_kakuyomu_workflow.py to create reviewable drafts."
+                )
+            workspace_path = Path(Config.WORKSPACE_DIR).resolve(strict=True)
+            expected_output = (
+                workspace_path
+                / "Workflow"
+                / "Runs"
+                / run_id
+                / "Drafts"
+            ).resolve(strict=True)
+            configured_output = Path(Config.OUTPUT_DIR).resolve(strict=True)
+            state_path = expected_output.parent / "run_state.json"
+            with open_regular_file(state_path, binary=True) as stream:
+                run_state = json.loads(stream.read(64 * 1024 + 1).decode("utf-8"))
+            if (
+                configured_output != expected_output
+                or not isinstance(run_state, dict)
+                or run_state.get("schema_version") != 1
+                or run_state.get("status") != "running"
+                or run_state.get("run_id") != run_id
+            ):
+                raise ValueError(
+                    "Project translation output must remain inside its active review run."
+                )
         reject_knowledge_draft_path(Config.GLOSSARY_PATH, "glossary input")
         reject_knowledge_draft_path(
             Config.STORY_SUMMARY_PATH, "story summary input"
@@ -1469,11 +1523,17 @@ class TranslationPipeline:
                 raise ValueError(
                     "Project translation requires a complete versioned AI chapter map."
                 )
+            if not isinstance(Config.EXPECTED_BOOK_BUNDLE, dict):
+                raise ValueError(
+                    "Project translation requires the current verified AI book bundle."
+                )
             self.story_summary = load_reviewed_story_summary(
                 Config.STORY_SUMMARY_PATH,
                 Config.RAW_DIR,
                 Config.SOURCE_MANIFEST_PATH,
                 require_full_book_coverage=True,
+                require_book_bundle=True,
+                expected_book_bundle=Config.EXPECTED_BOOK_BUNDLE,
                 expected_sources=expected_sources,
                 source_input_root=source_input_root,
                 source_input_map=source_input_map,
@@ -1500,6 +1560,11 @@ class TranslationPipeline:
             source_manifest_path=Config.SOURCE_MANIFEST_PATH,
             reviewed_tm_path=Config.TM_REVIEWED_PATH,
             translation_root=Config.OUTPUT_DIR,
+            reviewed_tm_translation_root=(
+                Config.OUTPUT_DIR
+                if reviewed_tm_translation_root is None
+                else reviewed_tm_translation_root
+            ),
             allow_unreviewed_tm=Config.ALLOW_UNREVIEWED_TM,
             require_reviewed_glossary=Config.REQUIRE_REVIEWED_GLOSSARY,
             source_input_root=source_input_root,
@@ -1565,7 +1630,161 @@ class TranslationPipeline:
                     
         return ""
 
+    def _load_reviewed_chapter_knowledge(
+        self, chapter_filename: str, chapter_position: Optional[float]
+    ) -> dict:
+        chapter_map = Config.CHAPTER_MAP
+        if not isinstance(chapter_map, list):
+            raise ValueError("Chapter-local knowledge requires a versioned chapter map.")
+        matches = [
+            item
+            for item in chapter_map
+            if isinstance(item, dict) and item.get("raw_file") == chapter_filename
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Chapter-local knowledge requires one current chapter-map entry."
+            )
+        chapter = matches[0]
+        position = chapter.get("chapter_position")
+        if (
+            isinstance(position, bool)
+            or not isinstance(position, int)
+            or position < 1
+            or chapter_position != position
+        ):
+            raise ValueError(
+                "Chapter-local knowledge does not match the current chapter position."
+            )
+        source_version_id = chapter.get("source_version_id")
+        source_input_file = chapter.get("source_input_file")
+        source_sha256 = chapter.get("source_sha256")
+        if (
+            not isinstance(source_version_id, str)
+            or not source_version_id
+            or not isinstance(source_input_file, str)
+            or not source_input_file
+            or not isinstance(source_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", source_sha256)
+            or not isinstance(Config.EXPECTED_BOOK_BUNDLE, dict)
+            or not isinstance(
+                Config.EXPECTED_BOOK_BUNDLE.get("bundle_set_sha256"),
+                str,
+            )
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                Config.EXPECTED_BOOK_BUNDLE["bundle_set_sha256"],
+            )
+            or not isinstance(Config.SOURCE_MANIFEST_PATH, str)
+        ):
+            raise ValueError(
+                "Chapter-local knowledge requires current AI bundle and source identities."
+            )
+
+        knowledge_root = Path(Config.WORKSPACE_DIR) / "Knowledge"
+        drafts_root = knowledge_root / "ChapterDrafts"
+        if (
+            knowledge_root.is_symlink()
+            or drafts_root.is_symlink()
+            or not drafts_root.is_dir()
+        ):
+            raise ValueError("Chapter-local knowledge directory is unavailable.")
+        version_key = hashlib.sha256(
+            source_version_id.encode("utf-8")
+        ).hexdigest()[:16]
+        legacy_directory_pattern = f"episode-{position:04d}-*-{version_key}"
+        bundle_key = Config.EXPECTED_BOOK_BUNDLE["bundle_set_sha256"][:16]
+        directory_pattern = (
+            f"{legacy_directory_pattern}-bundle-{bundle_key}"
+        )
+        draft_directories = list(drafts_root.glob(directory_pattern))
+        if not draft_directories:
+            draft_directories = list(drafts_root.glob(legacy_directory_pattern))
+        if len(draft_directories) != 1:
+            raise ValueError(
+                "No unique chapter-local knowledge directory matches the current source."
+            )
+        draft_root = draft_directories[0]
+        if draft_root.is_symlink() or not draft_root.is_dir():
+            raise ValueError("Chapter-local knowledge path is not a regular directory.")
+
+        source_map = {
+            chapter_filename: {
+                "source_version_id": source_version_id,
+                "source_input_file": source_input_file,
+                "source_sha256": source_sha256,
+            }
+        }
+        summary = load_reviewed_story_summary(
+            str(draft_root / "STORY_SUMMARY_reviewed.json"),
+            Config.RAW_DIR,
+            Config.SOURCE_MANIFEST_PATH,
+            expected_sources=[
+                {
+                    "filename": chapter_filename,
+                    "source_version_id": source_version_id,
+                    "source_input_file": source_input_file,
+                }
+            ],
+            source_input_root=Config.AI_EDITION_ROOT,
+            source_input_map=source_map,
+            require_book_bundle=True,
+            expected_book_bundle=Config.EXPECTED_BOOK_BUNDLE,
+            expected_chapter_local={
+                "position": position,
+                "source_file": chapter_filename,
+                "source_version_id": source_version_id,
+                "source_input_file": source_input_file,
+                "source_sha256": source_sha256,
+            },
+        )
+
+        glossary_root = resolve_child_path(
+            str(draft_root),
+            "Glossary_reviewed.json",
+            allow_missing=True,
+        )
+        if glossary_root.is_symlink():
+            raise ValueError("Chapter-local glossary cannot be a symbolic link.")
+        chapter_terms = {}
+        if glossary_root.exists():
+            with open_regular_file(glossary_root, binary=True) as stream:
+                glossary_bytes = stream.read(16 * 1024 * 1024 + 1)
+            if len(glossary_bytes) > 16 * 1024 * 1024:
+                raise ValueError("Chapter-local glossary exceeds the size limit.")
+            try:
+                glossary_bundle = json.loads(glossary_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("Chapter-local glossary bundle is malformed.") from exc
+            if not isinstance(glossary_bundle, dict):
+                raise ValueError("Chapter-local glossary bundle must be an object.")
+            chapter_terms = self.rag._parse_reviewed_glossary_bundle(
+                glossary_bundle
+            )
+            review = glossary_bundle.get("review")
+            source_files = (
+                review.get("source_files")
+                if isinstance(review, dict)
+                else None
+            )
+            if (
+                not isinstance(source_files, list)
+                or len(source_files) != 1
+                or not isinstance(source_files[0], dict)
+                or source_files[0].get("filename") != chapter_filename
+                or source_files[0].get("source_version_id") != source_version_id
+            ):
+                raise ValueError(
+                    "Chapter-local glossary does not match the current source."
+                )
+        return {"summary": summary, "terms": chapter_terms}
+
     async def _build_run_context(self, chapter_filename: str, raw_text: str, current_chap_num: Optional[float]) -> dict:
+        chapter_knowledge = None
+        if Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE:
+            chapter_knowledge = self._load_reviewed_chapter_knowledge(
+                chapter_filename, current_chap_num
+            )
         guidelines = self.rag.get_partitioned_guidelines(
             chapter_filename,
             current_raw_text=raw_text,
@@ -1578,7 +1797,14 @@ class TranslationPipeline:
             for pair in tm_matches:
                 tm_prompt += f"Raw: {pair['raw']}\nTranslated: {pair['translated']}\n---\n"
                 
-        glossary_matches = self.rag.get_cleaned_glossary(raw_text)
+        glossary_matches = self.rag.get_cleaned_glossary(
+            raw_text,
+            additional_glossary=(
+                chapter_knowledge["terms"]
+                if chapter_knowledge is not None
+                else None
+            ),
+        )
         sliced_summary = ""
         if current_chap_num is not None:
             sliced_summary = get_sliced_story_summary(self.story_summary, current_chap_num)
@@ -1587,6 +1813,12 @@ class TranslationPipeline:
         static_ctx += f"<GUIDELINES>\n{guidelines}\n</GUIDELINES>\n\n"
         if sliced_summary:
             static_ctx += f"<STORY_SUMMARY>\n{sliced_summary}\n</STORY_SUMMARY>\n\n"
+        if chapter_knowledge and chapter_knowledge["summary"]:
+            static_ctx += (
+                "<CHAPTER_KNOWLEDGE>\n"
+                f"{chapter_knowledge['summary']}\n"
+                "</CHAPTER_KNOWLEDGE>\n\n"
+            )
         if tm_prompt:
             static_ctx += f"<TRANSLATION_MEMORY>\n{tm_prompt}\n</TRANSLATION_MEMORY>\n\n"
         if glossary_matches:
@@ -2120,6 +2352,9 @@ class TranslationPipeline:
             raise RuntimeError(
                 f"No Markdown chapters found in raw directory: {Config.RAW_DIR}"
             )
+        if Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE:
+            os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+            self._preflight_reviewed_chapter_knowledge(chapters)
         print(f"Starting pipeline for {len(chapters)} chapters...")
         
         for i, chapter in enumerate(chapters):
@@ -2133,6 +2368,52 @@ class TranslationPipeline:
             await self.run_chapter(chapter)
             
         print("\nPipeline complete!")
+
+    def _preflight_reviewed_chapter_knowledge(self, chapters) -> None:
+        tm_chapters = self.rag.tm_data.get("chapters", {})
+        if not isinstance(tm_chapters, dict):
+            tm_chapters = {}
+
+        for chapter in chapters:
+            if not isinstance(chapter, ChapterSpec):
+                raise ValueError(
+                    "Chapter-local knowledge requires a versioned chapter map."
+                )
+            mapped_paths = (
+                chapter.raw_file != chapter.translation_file
+                or "/" in chapter.raw_file
+                or "/" in chapter.translation_file
+                or chapter.tm_key != chapter.raw_file
+            )
+            if mapped_paths:
+                output_path = resolve_relative_path(
+                    Config.OUTPUT_DIR,
+                    chapter.translation_file,
+                    allow_missing=True,
+                )
+            else:
+                output_path = resolve_child_path(
+                    Config.OUTPUT_DIR,
+                    chapter.translation_file,
+                    allow_missing=True,
+                )
+
+            if output_path.exists() or chapter.tm_key in tm_chapters:
+                continue
+
+            raw_text = _read_chapter_source_text(chapter, mapped_paths)
+            if not raw_text.strip():
+                continue
+
+            position = chapter.chapter_position
+            if position is None:
+                position = extract_chapter_num(chapter.raw_file)
+            if position is None:
+                position = extract_chapter_num(chapter.tm_key)
+            self._load_reviewed_chapter_knowledge(
+                chapter.raw_file,
+                position,
+            )
 
 if __name__ == "__main__":
     Config.load_config()

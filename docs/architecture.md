@@ -43,7 +43,7 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 | `scripts/merge_source_markdown.py` | 按显式来源顺序合并章节集合，支持完整 checkpoint v5 门禁并记录输入版本 | 数据根目录 + work ID + 显式有序 episode IDs 或完整 checkpoint + 必填输出字节上限 -> `export` artifact |
 | `scripts/build_epub_candidate.py` | 用精确版本匹配的 Pandoc 构建显式章节选集的 EPUB candidate 并执行有限结构检查 | 章节 catalog + 译文 Markdown -> candidate EPUB + 输入/输出哈希 sidecar |
 | `epub_builder.py` | 校验 EPUB candidate catalog、尺寸/版本约束及 ZIP/OPF/XHTML 基本结构 | 合成/真实 Markdown 输入与 Pandoc -> candidate 及局部验证结果 |
-| `scripts/auto_extract_knowledge.py` / `knowledge_batching.py` | 实验性生成知识和来源清单草稿；默认前三章，显式全书模式依本地 tokenizer/context 限额按段落分批，并校验候选段落引用 | 原文章节 + `--full-book`、字符上限、tokenizer 与模型容量参数 -> 术语/分批概要/世界观/叙述习惯候选及批次 provenance |
+| `scripts/auto_extract_knowledge.py` / `knowledge_batching.py` | 实验性生成知识和来源清单草稿；默认前三章；`--full-book` 或 `--chapter-position` 从 verified AI bundle 按本地 tokenizer/context 限额分批，并校验候选段落引用 | verified AI bundle + 字符上限、tokenizer 与模型容量参数 -> 全书候选或单话局部候选及 provenance；单话概要/可选术语经人工回执发布后由 `pipeline.py` 按当前章节及 bundle 身份校验并注入上下文 |
 | `chapter_transaction.py` | 逐章记录译文/TM 更新意图，并在重跑时验证和恢复未完成提交 | 章节映射、原文/译文哈希、TM 基线 -> 输出文件与 TM |
 | `source_manifest.py` | 校验并追加本地版本清单元数据原型；按版本 ID 核验单个 artifact | ID、SHA-256、相对路径、父版本 ID -> JSON 清单/选定文件校验 |
 | `source_ingestion.py` | 消费注入适配器的分页和原文 bytes；维护断点并写版本化本地副本；提供显式相对路径本地文件 adapter、字节保真 Markdown 物化和章节集合导出 | `SourceAdapter`/`LocalFileAdapter`/指定版本 -> `raw_source`、`raw_page_html`、元数据、Markdown/export artifact、manifest/checkpoint |
@@ -60,6 +60,8 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 项目名模式中的路径边界：`SourceArchive/` 存放原始页面、可见正文、规范化文本、派生版本、source/edition manifests、采集 catalog/checkpoint 和不可变校验快照；不存放 AI 工作副本或翻译计划/审批回执。`Workflow/Plans/` 保存待审翻译计划，`Workflow/Approvals/` 保存计划审批回执。`RAWs_AI/` 保存 AI 清洗镜像和索引，是默认翻译正文的读取位置。`CHAPTER_MAP.raw_file` 与 `source_version_id` 指向归档版本，仅用于版本溯源；`source_input_file` 指向 `RAWs_AI/` 下的实际翻译输入，`source_sha256` 是镜像字节哈希，并与归档 manifest 的 `content_sha256` 元数据核对。翻译、概要、术语和 TM 来源运行时读取 AI 正文只访问 `RAWs_AI/`；归档目录只提供 lineage 和已登记摘要，不打开归档章节正文。镜像缺失或哈希不符时失败关闭，不改读归档或人读版。来源 manifest/edition 验证器和清洗/导出流程可显式读取归档正文。计划与审批 CLI 均拒绝向 `SourceArchive/` 写入工作流文件。
 
 默认项目模式还固定使用 `Knowledge/STORY_SUMMARY_reviewed.json` 和 `Knowledge/Glossary_reviewed.json`。概要须覆盖完整 AI 章节映射，术语 bundle 须通过来源版本核验；缺失、旧式或过期的知识输入在创建翻译请求前失败关闭。显式 JSON 配置保留调用者指定旧格式的兼容路径。
+
+Kakuyomu run 还要求每个待翻译的非空章节拥有来源版本和当前整书 bundle 均匹配的 `ChapterDrafts/.../STORY_SUMMARY_reviewed.json`。启动预检覆盖全部待翻译章节，避免后续章节缺少回执时前面章节已调用模型；每章上下文构建时再次复核。局部 `Glossary_reviewed.json` 可选；与全书批准词条冲突时失败关闭。
 
 1. `Config.load_config` 从项目参数、JSON 配置或环境变量解析路径；代码还会尝试读取仓库根目录 `.env`。项目名模式要求 `SourceArchive/` 和 `RAWs_AI/` 都存在，默认验证 AI 索引、其 catalog 摘要与 ID/title/position 完整覆盖、清洗清单、镜像字节哈希及归档 manifest lineage；生成的 `CHAPTER_MAP` 分开保存归档溯源路径/版本与 `RAWs_AI` 实际输入路径/哈希。pipeline 从 AI 镜像读取正文，并将镜像字节哈希与归档 manifest 登记的 `content_sha256` 比较；它读取归档 metadata，不读取归档章节正文。缺失、过期或不完整时失败关闭，不读取人读版 `生肉/`。项目名模式同时把概要路径设为 `Knowledge/STORY_SUMMARY_reviewed.json` 并启用全书审核门禁。显式 JSON `RAW_DIR`/`CHAPTER_MAP` 仍由调用者指定，可用于迁移旧版目录。项目根可选 `workflow_paths.json`（schema v1）设置已存在的 `output_dir` 和可选 `human_edition_root`；路径可相对项目根或绝对指定，不接受原文根或章节映射覆盖，译文根不得与原文目录重叠。没有该文件时，默认 `熟肉/` 若含子目录仍须通过显式 `--config` 指定译文根。
 2. `TranslationPipeline` 在加载作品信息、RAG 和翻译阶段前，验证项目模式的概要 bundle 已批准、覆盖完整 AI 章节映射，并与每章 AI 文件名及 `source_version_id` 一致；缺失、过期或不匹配时失败关闭。显式 JSON 兼容配置仍可配置旧概要路径。显式配置 `TM_REVIEWED_PATH` 时同时传入译文根目录以核验审核快照。

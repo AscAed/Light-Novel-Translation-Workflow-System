@@ -2,6 +2,12 @@
 
 > 当前汇总（2026-11-17 原始 HTML 全量刷新后）：来源 manifest 356/356、合并 edition manifest 532/532；HTML 回放验证器对 88/88 个最新页面响应按 parser v4 重放出与当前 `raw_source` 一致的正文哈希，双版本 validator 也对同一批 raw source 返回 `verified`。默认翻译输入是从 `RAWs_AI` 直接读取的 `ai-efficient-v1`；`SourceArchive` 只保留版本归档和来源校验数据。当前映射计划为 `ready_for_review`、88/88 来源有效、0 问题；映射/清洗人工验收和真实翻译尚未完成。下方较早的日期记录保留其检查时的数字，不代表刷新后的当前计数。
 
+> 2026-11-18 单话知识候选阶段检查点：抽取器新增互斥 `--chapter-position N`，从当前 verified AI bundle 只读取指定话，并按来源版本隔离保存带段落证据的知识草稿；复用 tokenizer/context/call 预算和 Provider 授权门禁。该检查点的抽取器单测 37 项通过、非 E2E 回归 542 项通过、4 项因 Windows 能力跳过。当时尚无审核/发布接口，翻译管线未消费这些候选；后续审核和上下文接入见下文。该检查点未重跑长时 mock E2E，也未调用真实 Provider。
+
+> 2026-11-18 单话知识审核与上下文接入已完成本地实现：复用现有概要/术语回执发布器；Kakuyomu 翻译前预检所有待翻译非空章节的 approved 单话概要，按位置、当前来源/AI 输入哈希及同次整书 bundle 身份核验。每章上下文注入单话概要，局部术语表可选；局部/全局同词或别名译名冲突会阻断，逐章构建上下文时再次复核。跨模块定向回归 197 项、全量非 E2E 回归 551 项通过（4 项 Windows 能力跳过），mock E2E 7 项通过，详见[开发与验证](development.md#2026-11-18-最终续接验证)。未调用真实 Provider，试点 88 话仍未生成或批准知识。
+
+> 2026-11-18 全书跨批候选综合：`scripts/auto_extract_knowledge.py --full-book` 在分批提取后，现按 tokenizer/context 预算对候选做分层 Provider 综合；综合请求只接收结构化候选，并要求 `source_text` 与 `book_knowledge` 均获授权。批次候选、每轮 lineage、token 预算和最终段落证据写入 provenance，由概要审核器复核。定向回归 63 项通过；此后的全量非 E2E 回归 551 项通过、4 项因 Windows 能力跳过，mock E2E 7 项通过。真实 Provider、目标 tokenizer/template 匹配、候选语义质量及人工审核仍未验证。该能力不等于已生成或批准本书知识草稿；详见[开发与验证](development.md#2026-11-18-全书跨批候选综合)及[最终续接验证](development.md#2026-11-18-最终续接验证)。
+
 > 2026-11-17 默认项目知识门禁：`pipeline.py --project` 现要求来源版本有效的 `Knowledge/Glossary_reviewed.json`，与 reviewed 全书概要门禁并列。当前试点知识目录只有旧式 `Glossary.json`，尚无 reviewed glossary bundle；默认项目模式会在 RAG 初始化时失败关闭，不读取旧表。显式 JSON 配置保持调用者选择的兼容行为。合成回归 194 项通过；未读取术语正文或调用 Provider。详见[开发与验证](development.md#2026-11-17-项目模式已审核术语表门禁)。
 
 > 2026-11-17 AI/人读清洗结果可重复验证：新增 `scripts/validate_source_editions.py`，对当前 catalog 的 88 话重读 manifest 绑定 raw 字节，分别重跑 AI 与人读清洗 profile，并逐话比较索引、不可变归档和镜像。当前结果 `verified`，输入 793,183 bytes、AI 输出 774,253 bytes、人读输出 799,293 bytes；没有输出正文或写入书籍数据。19 项双版本定向单测通过。该项证明当前文件与代码 profile 一致，不代替人工章节/语义/阅读器验收；详见[开发与验证](development.md#2026-11-17-ai-与人读版清洗产物可重复验证)。
@@ -75,7 +81,7 @@
 - `scripts/validate_tm_provenance.py`：只读核对 TM 来源索引的文件哈希、段落引用和词对内容；配置 manifest 时还可检测同一来源 artifact 的更新版本。不修改 TM，也不判断译文质量或审核状态。
 - `scripts/validate_knowledge_provenance.py`：只读核对知识候选 provenance 的来源文本哈希、版本关联及 manifest 中的最新来源；不修改或批准知识草稿。
 - `scripts/apply_story_summary_review.py` 与 `story_summary_review.py`：生成哈希绑定的概要审核模板、发布明确批准的 JSON bundle，并在翻译流水线加载时复核 bundle 与 provenance 来源版本新鲜度。旧 Markdown 概要仍可加载但未经此审核门禁；回执未签名/审核者身份未认证。
-- `scripts/auto_extract_knowledge.py` / `knowledge_batching.py`：读取章节正文前依据 `Config.PROOFREAD_MODEL` 解析 Provider/URL/专属 Key 并检查该 Provider 的 `source_text` 外发授权，创建客户端时复检。默认模式仍只取前三章并截到 20,000 个 Unicode 字符；全书模式读取当前全部配置章节（最多 1000 章），每章最多 16 MiB，要求总字符上限、本地 tokenizer JSON、context/output/safety/message 参数，并按 token 预算逐段分批，最多 500 段/批、100 次请求。批次输出必须以当前段落 ID 引用 glossary、概要、设定和叙述候选；跨批概要是按源顺序合并的候选集合，不是连贯的二阶段模型综合。Provenance 记录章节/段落覆盖、tokenizer hash、每批预算/输入输出哈希和结论证据；概要审核保留并验证这些字段。字符预算不证明目录覆盖，tokenizer/context 可信度依赖调用者提供正确的模型文件/参数，真实 Provider 行为未验证。Kakuyomu 正式编排入口和通用项目名模式均要求与当前章节映射匹配的 approved 全书概要；项目名模式的映射来自默认 AI 清洗版。显式 JSON 兼容配置可保留旧 Markdown 概要行为，不能代表 `--project` 默认流程。草稿排他新建且不自动批准。合成测试记录见[2026-11-17 全书知识预读增量](development.md#2026-11-17-token预算分批全书知识预读)。
+- `scripts/auto_extract_knowledge.py` / `knowledge_batching.py`：读取章节正文前依据 `Config.PROOFREAD_MODEL` 解析 Provider/URL/专属 Key 并检查该 Provider 的 `source_text` 外发授权；全书及 `--chapter-position` 模式还要求 `book_knowledge` 授权，创建客户端时复检。默认模式仍只取前三章并截到 20,000 个 Unicode 字符；全书模式读取当前全部配置章节（最多 1000 章），单话模式只选一个版本化 catalog 位置。两种预算模式都要求 verified bundle、总字符上限、本地 tokenizer JSON、context/output/safety/message 参数，并按 token 预算分批和综合，最多 100 次请求。provenance 记录章节/段落覆盖、tokenizer hash、候选 lineage 和结论证据；单话输出隔离于来源版本与 bundle 目录，概要与可选术语现可人工审核后进入匹配的章节上下文。字符预算不证明目录覆盖，tokenizer/context 可信度依赖调用者提供正确的模型文件/参数；真实 Provider、综合语义质量、reviewer 身份和全局/局部知识语义冲突仍未验证。草稿排他新建且不自动批准。合成测试记录见[2026-11-17 全书知识预读增量](development.md#2026-11-17-token预算分批全书知识预读)、[2026-11-18 全书跨批候选综合](development.md#2026-11-18-全书跨批候选综合)、[单话知识候选草稿（审核接入前检查点）](development.md#2026-11-18-单话知识候选草稿审核接入前检查点)及[单话审核知识接入翻译上下文](development.md#2026-11-18-单话审核知识接入翻译上下文)。
 - `scripts/apply_knowledge_review.py`：可为当前 glossary/provenance 候选排他新建绑定原始字节 SHA-256 的未完成审核回执模板（所有决定均为 `pending`，不可发布），也可消费完整回执，校验候选哈希、provenance 来源新鲜度和术语段落命中，仅将明确批准项写入新的 reviewed glossary bundle；模板模式不读章节或 manifest，也不调用审核 Provider，任何模式均不覆盖既有文件。回执 reviewer 字段未签名、未认证，是调用者声明。项目名模式固定加载 `Knowledge/Glossary_reviewed.json` 并校验来源新鲜度；显式 JSON 配置仍由调用者指定 `GLOSSARY_PATH`。
 - `prompts/`：初译、逻辑校对和文风润色提示词。
 - `tests/`：标准库 `unittest` 测试、独立 mock HTTP 服务、RAG/对齐/路径安全测试。
@@ -100,6 +106,13 @@
 - `部分实现` I3 Markdown 物化与章节导出：按显式 ID 校验 manifest 关联的 raw 版本哈希、UTF-8 和上限后，可字节保真生成不可变单话 `.md`；试点现有 88 个目录话目均已有 normalized artifact，且按完整 checkpoint v5 导出一份 88 话有序 Markdown。集合模式可显式选择递增位置的 episode ID，也可按完整 checkpoint 当前记录的 discovered/completed ID 和 raw 版本绑定选择章节，并核对 raw 版本仍与 manifest 当前版本相符。导出以 `\n\n` 分隔，要求输出字节上限，并把所有 normalized 版本作为父节点。checkpoint 未签名且可编辑；模式只验证当前所列集合，不证明记录未经改写或平台目录枚举穷尽。仍不做语义清洗、段落差异映射或真实章节人工验收。
 - `部分实现` I4 来源版本衔接：人工映射可把 `source_version_id` 绑定到 manifest 中 `.md` artifact。通用章节映射加载、翻译运行前与提交前、章节对齐、知识审核发布、TM/知识/概要审计及 EPUB 候选构建都会核验 normalized 文件和 manifest 哈希，并要求其 raw 父版本仍是最新版本；旧 normalized 或 raw 更新后尚未重建 normalized 会被拒绝。损坏文件或父 lineage 报 `invalid`，过期来源报 `stale`。TM 审计仍分开验证 manifest 原始字节哈希和文本读取哈希。`scripts/snapshot_downstream_freshness.py` 可将 TM、知识来源和已审核全书概要审计结果写成绑定 manifest/消费者输入哈希的只读 schema v2 快照；概要快照校验当前版本化章节映射的全书覆盖，只保存文件哈希、状态和详情，不保存概要正文。Kakuyomu 完整编排会在计划生成后自动追加翻译前快照、成功翻译后追加翻译后快照；项目模式 `scripts/ingest_kakuyomu_pages.py --project` 会在来源采集后同步来源历史并记录 AI 索引及下游状态。相同状态幂等复用，状态变化追加新文件。版本化通用翻译入口还会校验已有译文与 TM 是否匹配当前输入，仅跳过已提交且版本一致的结果，否则保留既有字节并阻断。快照不会自动修改消费者数据或替代运行时门禁；source-only/本地导入路径仍需显式生成快照，自动重建派生物及真实章节验收未完成。
 - `部分实现` I5 EPUB 候选构建：离线 builder 可消费显式排序的 Markdown catalog，要求 Pandoc 版本精确匹配且不覆盖既有输出；构建前对每个 `source_version_id` 校验来源 manifest 的文件哈希、work/episode identity 与最新版本，并在 sidecar 记录 manifest 路径/hash。只处理文本 Markdown、拒绝图片；candidate 和有限 ZIP/OPF/XHTML 检查不是完整 EPUBCheck，也不证明质量、完整选集或阅读器兼容。试点已生成 88 个原文 Markdown，但译文目录仍为空，因此没有真实译文 EPUB 输入。
+
+## 2026-11-18 翻译工作流续接
+
+- `部分实现` 全书数据契约：`book_bundles.py` 现生成 raw JSON、AI JSON、human Markdown 和 bundle-set marker；marker 最后写入，重跑按内容寻址复用。AI bundle contract v2 绑定逐话来源版本、AI 镜像摘要、分组和当前索引。试点 loader 对 88 话 bundle-set 返回 `verified`；source manifest 及双版本校验结果沿用本轮前已验证的 356/356 与 532/532 记录。该目录是公开 catalog 快照，不证明平台声明之外的完整性。
+- `部分实现` full-book 知识抽取 CLI 需要显式 bundle-set、AI bundle 路径、catalog、checkpoint 和 human root，并在授权预检后加载经校验的 AI bundle 正文；输出 provenance 绑定快照和 AI bundle 哈希。合成集成测试通过；本轮未调用 Provider，未生成本书知识候选。
+- `部分实现` Kakuyomu 编排器把当前 bundle 身份绑定到 approved 全书摘要和译文 run；项目模式流水线要求活动 run 并只把逐话草稿写进 `Workflow/Runs/<run_id>/Drafts/`。新增本地逐话 checklist 和 create-only 发布器，发布前重验来源、bundle 和译文哈希。审核者身份及独立性声明未认证，终审 AI、有限返工版本链和返工次数仍未实现/决策。
+- 试点 bundle-set：`projects/祝福のネトラレラ/SourceArchive/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json`。本轮没有生成真实审核概要、翻译草稿或外部 `熟肉` 输出；映射/清洗质量人工验收和 Provider 端到端试译仍待处理。验证命令和限制见[开发与验证](development.md#2026-11-18-整书快照与审核发布门禁)。
 
 ## 计划
 

@@ -86,6 +86,28 @@ Chapter 2 specific guidelines.
                 guidelines_path=self.guidelines_path
             )
 
+    def test_reviewed_tm_uses_publication_root_when_output_is_a_draft_root(self):
+        with patch("rag_engine.load_reviewed_tm_snapshot") as load_snapshot:
+            RAGEngine(
+                self.tm_path,
+                self.glossary_path,
+                self.guidelines_path,
+                source_root="source",
+                source_manifest_path="source_manifest.json",
+                reviewed_tm_path="reviewed_tm.json",
+                translation_root="run/Drafts",
+                reviewed_tm_translation_root="published",
+            )
+
+        load_snapshot.assert_called_once_with(
+            "reviewed_tm.json",
+            "source",
+            "published",
+            "source_manifest.json",
+            source_input_root=None,
+            source_input_map=None,
+        )
+
     def test_draft_glossary_cannot_be_loaded_for_retrieval(self):
         draft_path = os.path.join(self.test_dir, "Glossary_draft.json")
         with open(draft_path, "w", encoding="utf-8") as f:
@@ -150,6 +172,89 @@ Chapter 2 specific guidelines.
         self.assertEqual(len(res_test), 1)
         self.assertEqual(res_test[0]["src"], "テスト")
         self.assertEqual(res_test[0]["dst"], "测试")
+
+    def test_get_cleaned_glossary_merges_reviewed_chapter_terms(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        result = engine.get_cleaned_glossary(
+            "alpha appears",
+            additional_glossary={"alpha": "阿尔法"},
+        )
+
+        self.assertEqual(
+            result,
+            [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
+        )
+
+    def test_get_cleaned_glossary_rejects_conflicting_reviewed_terms(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        with self.assertRaisesRegex(ValueError, "glossaries conflict"):
+            engine.get_cleaned_glossary(
+                "ネトラレラ",
+                additional_glossary={"ネトラレラ (Netorarera)": "另一个译名"},
+            )
+
+    def test_get_cleaned_glossary_preserves_global_alias_matches(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲","alpha":"乙"}'
+
+        result = engine.get_cleaned_glossary("alpha")
+
+        self.assertEqual(
+            result,
+            [
+                {"src": "alpha", "dst": "甲", "info": "甲"},
+                {"src": "alpha", "dst": "乙", "info": "乙"},
+            ],
+        )
+
+    def test_get_cleaned_glossary_rejects_local_alias_conflict(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "alpha",
+                additional_glossary={"alpha": "乙"},
+            )
+
+    def test_get_cleaned_glossary_rejects_conflicting_secondary_alias(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "beta",
+                additional_glossary={"beta": "乙"},
+            )
+
+    def test_get_cleaned_glossary_compares_destinations_not_descriptions(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha":"甲（全书说明）"}'
+
+        result = engine.get_cleaned_glossary(
+            "alpha",
+            additional_glossary={"alpha": "甲（本话说明）"},
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {"src": "alpha", "dst": "甲", "info": "甲（全书说明）"},
+                {"src": "alpha", "dst": "甲", "info": "甲（本话说明）"},
+            ],
+        )
+
+    def test_get_cleaned_glossary_keeps_local_participation_for_same_value(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲","alpha":"乙"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "alpha",
+                additional_glossary={"alpha": "乙"},
+            )
 
     def test_get_partitioned_guidelines_direct_match(self):
         """Verify guidelines direct matching retrieves specific chapter rules."""
