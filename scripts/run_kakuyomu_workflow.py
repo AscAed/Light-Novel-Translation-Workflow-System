@@ -78,6 +78,7 @@ from translation_plan_approval import (  # noqa: E402
 from translation_review import (  # noqa: E402
     _load_run,
     build_translation_run_manifest,
+    has_verified_translation_publication,
 )
 from utils import (  # noqa: E402
     open_regular_file,
@@ -1243,14 +1244,25 @@ def run_workflow(
                 allow_missing=True,
             )
             if plan.get("status") == "blocked" and publication_path.exists():
-                if not _is_committed_translation(
+                committed = _is_committed_translation(
                     str(source_path),
                     str(translation_path),
                     target,
                     chapter,
                     tm_data,
                     ai_edition_root=selected_ai_edition_root,
-                ):
+                )
+                if not committed:
+                    committed = has_verified_translation_publication(
+                        Path(workspace_dir) / "Workflow" / "Runs",
+                        work_id=work_id,
+                        episode_id=target["episode_id"],
+                        source_version_id=chapter["source_version_id"],
+                        source_sha256=chapter["source_sha256"],
+                        translation_file=target["translation_file"],
+                        translation_root=translation_path,
+                    )
+                if not committed:
                     return {
                         "status": "translation_plan_blocked",
                         "work_id": work_id,

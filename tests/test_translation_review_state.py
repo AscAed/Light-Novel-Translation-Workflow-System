@@ -292,6 +292,54 @@ class TranslationReviewStateTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             write_review_decision(run_root, first)
 
+    def test_decision_chain_rejects_reusing_an_earlier_candidate_digest(self):
+        run_root = self.root / "run"
+        run_root.mkdir()
+        first = decision_record(
+            stage_verdicts=verdicts(fidelity="fail"),
+        )
+        write_review_decision(run_root, first)
+        second = decision_record(
+            candidate_revision=1,
+            candidate_relative_path=(
+                "ReviewCandidates/episode-1/revision-1.md"
+            ),
+            parent_candidate_sha256=first["candidate_sha256"],
+            candidate_sha256="e" * 64,
+            stage_verdicts=verdicts(fidelity="fail"),
+        )
+        write_review_decision(run_root, second)
+        third = decision_record(
+            candidate_revision=2,
+            candidate_relative_path=(
+                "ReviewCandidates/episode-1/revision-2.md"
+            ),
+            parent_candidate_sha256=second["candidate_sha256"],
+            candidate_sha256=first["candidate_sha256"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "reuses a candidate digest"):
+            write_review_decision(run_root, third)
+
+        chain = load_review_decision_chain(
+            run_root,
+            episode_id=first["episode_id"],
+        )
+        self.assertEqual(
+            [record["decision_sha256"] for record in chain],
+            [first["decision_sha256"], second["decision_sha256"]],
+        )
+        self.assertFalse(
+            (
+                run_root
+                / "ReviewDecisions"
+                / first["episode_id"]
+                / (
+                    f"revision-0002-{third['decision_sha256']}.json"
+                )
+            ).exists()
+        )
+
     def test_decision_chain_rejects_tampered_file(self):
         run_root = self.root / "run"
         run_root.mkdir()

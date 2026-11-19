@@ -1,5 +1,16 @@
 # 开发与验证
 
+## 2026-11-19 返工发布续跑完整性修复
+
+- `已实现` `write_review_decision` 在写入返工决定前，拒绝候选 SHA-256 与同话既有决定链任一候选重复；拒绝发生在文件写入前，已有决定链保持可加载。
+- `已实现` 新增只读发布证明查询：仅当既有 run 的 work/episode、来源版本与 SHA-256、译文根和相对目标均匹配，且发布回执、审阅快照、最终批准候选与当前正式译文字节全部有效时，才确认该话已发布。Kakuyomu 工作流在计划标为 blocked 且译文目标已存在时，先按原 TM/provenance 规则检查；不匹配时再核验该发布证明，从而正确恢复返工候选已发布、但原始 TM 仍绑定初稿的部分计划。
+- 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review tests.test_kakuyomu_workflow -q`：70 项通过，覆盖跨修订候选摘要重用拒绝、返工发布凭据与目标/来源绑定、篡改后拒绝，以及只续跑剩余话目。
+- 当前非 E2E 回归：PowerShell 动态发现全部 `test_*.py` 并排除 `test_e2e.py`，661 项运行、657 项通过、4 项跳过、0 项失败。普通权限进程下 3 项符号链接用例因 `WinError 1314` 跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- 获准提权后单独复跑 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、10 项通过、1 项 FIFO 能力跳过；3 项符号链接用例均实际执行并通过。该提升权限结果只覆盖安全路径模块，不与普通权限的全量回归合并计数。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，202.630 秒，退出码 0。日志中的内容过滤与段落数不匹配来自预期负向 fixture；没有调用真实 Provider 或线上服务。
+- `.venv\Scripts\python.exe -m py_compile translation_review_state.py translation_review.py scripts\run_kakuyomu_workflow.py tests\test_translation_review_state.py tests\test_translation_review.py tests\test_kakuyomu_workflow.py` 与 `git diff --check`：通过。试点书籍文件未被本轮修改。
+- 验证边界：以上自动测试使用合成数据或本地 mock，不能替代试点人类/AI 原文的全量人工验收、真实 Provider 试译或部署验证；用户报告的单话与合集抽样结论另见[抽样核实记录](#2026-11-19-人类版与-ai-版原文抽样核实)。
+
 ## 2026-11-19 当前工作树回归与来源边界修复
 
 - `已实现` 有版本来源的空 AI 章节现在通过 `commit_chapter_translation` 原子提交空译文、零段 TM 和来源 provenance；正式 run 写入仅含摘要的 `source_validation`/`commit` 阶段记录。重复运行会核验输出与 TM 后跳过，不再留下无 TM 证明的空文件。
@@ -7,8 +18,8 @@
 - `已实现` AI 索引复核现在读取索引绑定的 catalog 路径并比较当前 SHA-256、作品 ID 与逐话 ID/标题/位置；catalog 同路径被改动、重排或删项时，计划预览保留 `stale_ai_edition_catalog` 分类，导出与审校发布均失败关闭。
 - 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_page_source tests.test_source_ingestion tests.test_kakuyomu_html_archive -q`：224 项通过，覆盖空章节提交/续跑、声明为 Shift_JIS 的响应解析与归档回放、旧 UTF-8 metadata 兼容。
 - AI catalog 快照与发布相关定向回归 `.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_book_bundles tests.test_kakuyomu_translation_plan tests.test_translation_review -q`：85 项通过，覆盖同路径 catalog 变更、重排、删项及计划错误分类。
-- 完整非 E2E 回归在提升权限下动态发现并排除 `test_e2e.py`：659 项运行、658 项通过、1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过、0 失败；3 项符号链接用例均已执行并通过。
-- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，206.669 秒，退出码 0。日志中的 `ContentBlockedError`、Provider 拒绝和段落数不匹配来自预期负向 fixture；测试 runner 汇总为 `OK`。
+- 本节原记录的完整非 E2E 回归为早前工作树快照；本次代码修复后的最新计数及权限分项见[返工发布续跑完整性修复](#2026-11-19-返工发布续跑完整性修复)。
+- 本节原记录的 mock E2E 与来源回放为早前工作树快照；本次代码修复后的最新 runner 结果见[返工发布续跑完整性修复](#2026-11-19-返工发布续跑完整性修复)。
 - 试点 `SourceArchive` 的 HTML 回放 validator 以当前实现只读重验：88/88 页面、356 个 manifest 文件哈希有效、HTML 4,814,835 bytes、回放正文 793,183 bytes，状态 `verified`。旧档案沿用无 charset 字段时的 UTF-8 默认；没有改写试点数据。
 - 非 UTF-8 响应仅由本地 Shift_JIS fixture 验证；没有重新访问 Kakuyomu、调用真实 Provider、修改试点来源数据或验证线上部署。UTF-8 以外的真实站点响应仍待 live capture 核验。
 

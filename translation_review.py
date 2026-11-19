@@ -1191,6 +1191,68 @@ def _episode_has_valid_publication(
     return True
 
 
+def has_verified_translation_publication(
+    runs_root: str | Path,
+    *,
+    work_id: str,
+    episode_id: str,
+    source_version_id: str,
+    source_sha256: str,
+    translation_file: str,
+    translation_root: str | Path,
+) -> bool:
+    """Find a valid prior publication for one exact source and output target."""
+    supplied_runs_root = Path(runs_root)
+    if supplied_runs_root.is_symlink() or not supplied_runs_root.is_dir():
+        return False
+    try:
+        expected_translation_root = Path(translation_root).resolve(strict=True)
+        run_directories = sorted(
+            supplied_runs_root.iterdir(),
+            key=lambda item: item.name,
+        )
+    except OSError:
+        return False
+    if not expected_translation_root.is_dir():
+        return False
+
+    for candidate_run_root in run_directories:
+        if candidate_run_root.is_symlink() or not candidate_run_root.is_dir():
+            continue
+        try:
+            run_root, run, run_bytes = _load_run(candidate_run_root)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            continue
+        if run["work_id"] != work_id:
+            continue
+        try:
+            episode = _run_episode(run, episode_id)
+        except ValueError:
+            continue
+        if (
+            episode["source_version_id"] != source_version_id
+            or episode["source_sha256"] != source_sha256
+            or episode["translation_file"] != translation_file
+        ):
+            continue
+        try:
+            run_translation_root = Path(run["translation_root"]).resolve(
+                strict=True
+            )
+            if run_translation_root != expected_translation_root:
+                continue
+            if _episode_has_valid_publication(
+                run_root,
+                run,
+                run_bytes,
+                episode,
+            ):
+                return True
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            continue
+    return False
+
+
 def _mark_run_published_if_complete(
     run_root: Path, run: dict, run_bytes: bytes
 ) -> str | None:

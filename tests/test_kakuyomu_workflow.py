@@ -1177,11 +1177,17 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     completed_output.read_text(encoding="utf-8"),
                     "edited conflicting output",
                 )
-                with patch(
-                    "scripts.run_kakuyomu_workflow._is_committed_translation",
-                    return_value=True,
+                with (
+                    patch(
+                        "scripts.run_kakuyomu_workflow._is_committed_translation",
+                        return_value=False,
+                    ),
+                    patch(
+                        "scripts.run_kakuyomu_workflow.has_verified_translation_publication",
+                        return_value=True,
+                    ) as verified_publication,
                 ):
-                    resumed_committed = run_workflow(
+                    resumed_reviewed_publication = run_workflow(
                         source_root=str(source_root),
                         catalog="catalog.json",
                         translation_root=str(translation_root),
@@ -1191,8 +1197,9 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         config_loader=lambda **_: None,
                         adapter_factory=lambda *_args: object(),
                     )
+                verified_publication.assert_called_once()
                 self.assertEqual(
-                    resumed_committed["status"],
+                    resumed_reviewed_publication["status"],
                     "review_pending",
                 )
                 self.assertEqual(approval_verifier.call_count, 5)

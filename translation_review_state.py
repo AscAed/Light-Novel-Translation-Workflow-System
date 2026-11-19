@@ -472,6 +472,10 @@ def write_review_decision(
     )
     if existing:
         previous = existing[-1]
+        if verified["candidate_sha256"] in {
+            decision["candidate_sha256"] for decision in existing
+        }:
+            raise ValueError("Review decision chain reuses a candidate digest.")
         if previous["transition"]["status"] != "rework":
             raise ValueError(
                 "A new review decision requires a rework transition."

@@ -23,6 +23,7 @@ from translation_review import (
     _load_run,
     _mark_run_published_if_complete,
     build_translation_run_manifest,
+    has_verified_translation_publication,
     prepare_translation_review,
     publish_reviewed_run,
     publish_reviewed_translation,
@@ -427,6 +428,84 @@ class TranslationReviewTests(unittest.TestCase):
             receipt["candidate_sha256"],
             hashlib.sha256(candidate_bytes).hexdigest(),
         )
+
+    def test_verified_publication_lookup_binds_reworked_output_to_source(self):
+        record_translation_review_decision(
+            self.run_root,
+            self.episode_id,
+            stage_verdicts={
+                "fidelity": ["fail"],
+                "fluency": ["pass"],
+                "style": ["pass"],
+            },
+            reviewer_id="synthetic reviewer",
+            reviewed_at_utc="2026-11-19T00:00:00Z",
+            policy_sha256="d" * 64,
+            max_rework_attempts=1,
+        )
+        candidate_root = (
+            self.run_root / "ReviewCandidates" / self.episode_id
+        )
+        candidate_root.mkdir(parents=True)
+        candidate_path = candidate_root / "revision-0001.md"
+        candidate_path.write_bytes(
+            "「Synthetic revised paragraph.」\n".encode("utf-8")
+        )
+        record_translation_review_decision(
+            self.run_root,
+            self.episode_id,
+            stage_verdicts={
+                "fidelity": ["pass"],
+                "fluency": ["pass"],
+                "style": ["pass"],
+            },
+            reviewer_id="synthetic reviewer",
+            reviewed_at_utc="2026-11-19T00:01:00Z",
+            policy_sha256="d" * 64,
+            max_rework_attempts=1,
+            candidate_file=candidate_path,
+        )
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+        lookup = has_verified_translation_publication
+        common = {
+            "work_id": self.work_id,
+            "episode_id": self.episode_id,
+            "source_version_id": self.plan["episodes"][0][
+                "source_version_id"
+            ],
+            "source_sha256": self.plan["episodes"][0]["source_sha256"],
+            "translation_file": "episode-0001.md",
+            "translation_root": self.translation_root,
+        }
+
+        self.assertTrue(lookup(self.run_root.parent, **common))
+        self.assertFalse(
+            lookup(
+                self.run_root.parent,
+                **{**common, "source_sha256": "0" * 64},
+            )
+        )
+        self.assertFalse(
+            lookup(
+                self.run_root.parent,
+                **{**common, "translation_file": "episode-other.md"},
+            )
+        )
+        self.assertFalse(
+            lookup(
+                self.run_root.parent,
+                **{**common, "translation_root": self.root},
+            )
+        )
+        (self.translation_root / "episode-0001.md").write_bytes(
+            b"changed after publication"
+        )
+        self.assertFalse(lookup(self.run_root.parent, **common))
 
     def test_changed_final_candidate_blocks_reviewed_rework_publication(self):
         record_translation_review_decision(
