@@ -148,7 +148,7 @@
 ## 2026-11-19 人类版与 AI 版原文抽样核实
 
 - `用户报告`：已核实人类版目录中的部分单话文件和大合集文件，未发现明显问题。核实目录：`D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉`。
-- `用户报告`：已核实 AI 版的部分单话文件和大合集文件，未发现明显问题。单话核实目录：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\`；关联的大合集文件：`projects/祝福のネトラレラ/RAWs_AI/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27/book-ai.json`。
+- `用户报告`：已核实 AI 版的部分单话文件和大合集文件，未发现明显问题。单话核实目录：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\`；关联的大合集文件：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。
 - 本记录转述用户的抽样核实，不表示本次执行了逐文件复核；抽样文件清单、检查准则、全量覆盖、逐段语义准确性和格式/阅读器验收范围未提供或未验证。不得据此把两套版本标记为全量验收通过。
 
 ## 2026-11-18 CodeRabbit 未提交差异复核
