@@ -5,7 +5,7 @@
 - `已实现` 版本化空来源通过章节事务提交空产物和 provenance，支持一致性复核及正式 run 阶段记录；重试验证后跳过。
 - `已实现` 新采集的原始 HTML 响应字符集已规范化并写入 episode metadata，沿 metadata parent 关系绑定到 HTML artifact；回放按 charset 解码，旧记录缺字段时兼容 UTF-8，原始响应 bytes 不变。
 - `已实现` AI 索引验证会复核索引绑定的 catalog 当前字节摘要和完整 episode 映射；catalog 原路径内容变化、重排或删项会阻断使用。
-- `已验证` 完整非 E2E 回归 659 项运行、658 项通过、1 项因 Windows 不支持 FIFO 跳过；已提升权限验证的 3 项符号链接测试全部通过。mock E2E 7 项通过；试点 HTML archive validator 返回 88/88、356 文件有效、`verified`。定向命令和证据范围见[开发与验证](development.md#2026-11-19-当前工作树回归与来源边界修复)。
+- `已验证` 当前分支最近一次非 E2E 回归 663 项运行、659 项通过、4 项跳过：普通权限下 3 项符号链接用例因 `WinError 1314` 跳过、1 项 FIFO 用例因 Windows 能力限制跳过；另一次提升权限安全路径模块运行 11 项、10 项通过，3 个符号链接用例通过、1 项 FIFO 跳过。本次 mock E2E 7 项通过，200.376 秒；试点 HTML archive validator 另有 88/88、356 文件有效、`verified` 的只读结果。命令和证据范围见[开发与验证](development.md#2026-11-19-返工发布续跑完整性修复)。
 - `未验证` Shift_JIS 仅经合成 fixture 验证，未对站点做 live 请求；真实 Provider、译文质量、人工试点映射/双版验收及线上部署仍未验证。
 
 ## 2026-11-19 续跑与结构化审批回归
