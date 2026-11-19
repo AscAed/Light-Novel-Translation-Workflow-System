@@ -517,6 +517,43 @@ class SourceEditionsTests(unittest.TestCase):
                 episode["output_sha256"],
             )
 
+    def test_ai_index_verification_rejects_changed_catalog_at_same_path(self):
+        self._export()
+        catalog_path = self.source_root / "source_catalog.json"
+        original_catalog = json.loads(
+            catalog_path.read_text(encoding="utf-8")
+        )
+        changes = {
+            "reordered": lambda value: value["episodes"].reverse(),
+            "removed": lambda value: value["episodes"].pop(),
+            "renamed": lambda value: value["episodes"][0].update(
+                {"title": "Changed title"}
+            ),
+        }
+
+        for label, change in changes.items():
+            with self.subTest(change=label):
+                changed_catalog = copy.deepcopy(original_catalog)
+                change(changed_catalog)
+                catalog_path.write_text(
+                    json.dumps(changed_catalog, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                with self.assertRaises(ValueError):
+                    verify_ai_edition_index(
+                        source_root=str(self.source_root),
+                        ai_root=str(self.ai_root),
+                        source_manifest_relative_path="source_manifest.json",
+                        edition_manifest_relative_path=(
+                            "source_editions_manifest.json"
+                        ),
+                    )
+
+        catalog_path.write_text(
+            json.dumps(original_catalog, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
     def test_ai_index_verification_does_not_read_archived_episode_bodies(self):
         self._export()
 
@@ -783,6 +820,33 @@ class SourceEditionsTests(unittest.TestCase):
             safe_path_component("Chapter: One/Two?", fallback="fallback"),
             "Chapter_ One_Two_",
         )
+
+    def test_safe_filename_components_reserve_utf8_bytes_for_extension(self):
+        component = safe_path_component(
+            "語" * 200,
+            fallback="fallback",
+            extension=".md",
+        )
+
+        self.assertLessEqual(len((component + ".md").encode("utf-8")), 255)
+        self.assertLessEqual(
+            len((component + ".md").encode("utf-16-le")) // 2,
+            100,
+        )
+
+    def test_source_and_edition_manifest_paths_must_differ(self):
+        with self.assertRaisesRegex(ValueError, "must be different files"):
+            prepare_source_editions(
+                source_root=str(self.source_root),
+                catalog_relative_path="source_catalog.json",
+                manifest_relative_path="source_manifest.json",
+                human_root=str(self.human_root),
+                ai_root=str(self.ai_root),
+                edition_manifest_relative_path="source_manifest.json",
+            )
+
+        self.assertEqual(list(self.human_root.rglob("*.md")), [])
+        self.assertEqual(list(self.ai_root.rglob("*.md")), [])
 
     def test_human_markup_escapes_source_text_around_special_annotations(self):
         rendered = _prepare_human_text(

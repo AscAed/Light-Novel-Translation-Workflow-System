@@ -23,6 +23,7 @@ from source_ingestion import (
     SourceAccessDenied,
     SourceRateLimited,
     SourceUnavailable,
+    normalize_charset_name,
 )
 
 
@@ -363,11 +364,19 @@ def _validate_page_url(page_url: str, work_id: str, episode_id: str) -> None:
 
 
 def _decode_response(payload: bytes, content_type: str) -> str:
+    charset = _response_charset(content_type)
+    try:
+        return payload.decode(charset)
+    except UnicodeError as exc:
+        raise ValueError("Kakuyomu response could not be decoded.") from exc
+
+
+def _response_charset(content_type: str) -> str:
     match = re.search(r"(?:^|;)\s*charset=([^;\s]+)", content_type, re.IGNORECASE)
     encoding = match.group(1).strip("\"'") if match else "utf-8"
     try:
-        return payload.decode(encoding)
-    except (LookupError, UnicodeError) as exc:
+        return normalize_charset_name(encoding)
+    except ValueError as exc:
         raise ValueError("Kakuyomu response could not be decoded.") from exc
 
 
@@ -1086,4 +1095,5 @@ class KakuyomuPageAdapter:
             ),
             content,
             page_bytes,
+            _response_charset(page_content_type),
         )

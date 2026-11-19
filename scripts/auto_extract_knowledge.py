@@ -535,6 +535,12 @@ def _validate_full_book_synthesis_result(
         for candidate in candidate_units
         if candidate["kind"] == "glossary"
     }
+    input_glossary_destinations = {}
+    for candidate in candidate_units:
+        if candidate["kind"] == "glossary":
+            input_glossary_destinations.setdefault(
+                candidate["src"], set()
+            ).add(candidate["dst"])
     if (
         not isinstance(glossary, list)
         or len(glossary) > max(100, len(input_glossary_sources) * 2)
@@ -590,6 +596,10 @@ def _validate_full_book_synthesis_result(
         if previous_dst is not None and previous_dst != normalized_dst:
             raise ValueError(
                 "Full-book synthesis proposed conflicting translations for a term."
+            )
+        if normalized_dst not in input_glossary_destinations.get(src, set()):
+            raise ValueError(
+                "Full-book synthesis glossary changed a candidate translation."
             )
         synthesis_destinations[src] = normalized_dst
         if not any(src in paragraph_by_id[row["source_id"]].text for row in evidence):
@@ -672,6 +682,17 @@ def _validate_full_book_synthesis_result(
             )
 
     return output_units
+
+
+def _record_batch_glossary_translation(translations, item):
+    src = item["src"]
+    dst = item["dst"].strip()
+    previous = translations.get(src)
+    if previous is not None and previous != dst:
+        raise ValueError(
+            "Full-book batches proposed conflicting translations for a term."
+        )
+    translations[src] = dst
 
 
 def _units_from_batch_result(validated):
@@ -1412,17 +1433,7 @@ async def extract_knowledge(
                 result_json, batch["paragraphs"], batch_index
             )
             for item in validated["glossary"]:
-                value = (
-                    f"{item['dst']} （{item['info']}）"
-                    if item["info"]
-                    else item["dst"]
-                )
-                previous = merged_glossary.get(item["src"])
-                if previous is not None and previous != value:
-                    raise ValueError(
-                        "Full-book batches proposed conflicting translations for a term."
-                    )
-                merged_glossary[item["src"]] = value
+                _record_batch_glossary_translation(merged_glossary, item)
             new_candidates = _units_from_batch_result(validated)
             batch_candidate_bytes += _candidate_units_size(new_candidates)
             if batch_candidate_bytes > _MAX_FULL_BOOK_CANDIDATE_BYTES:

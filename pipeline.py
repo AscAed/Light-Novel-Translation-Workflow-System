@@ -31,8 +31,7 @@ from utils import (
     resolve_child_path,
     resolve_relative_path,
     split_paragraphs,
-    write_new_child_text,
-    write_new_relative_text,
+    write_text_atomically,
 )
 from openai import (
     APIConnectionError,
@@ -299,6 +298,46 @@ def _resolve_project_output_override(workspace_dir: str) -> Optional[str]:
     return str(output_path)
 
 
+def _reject_unreviewed_project_publication(
+    workspace_dir: str, output_dir: str
+) -> None:
+    """Keep compatibility runs away from a project's formal output root."""
+    if not isinstance(output_dir, str) or not output_dir:
+        return
+
+    output_path = Path(output_dir).resolve(strict=False)
+    publication_roots = []
+    if workspace_dir and Path(workspace_dir).is_dir():
+        workspace_path = Path(workspace_dir).resolve(strict=True)
+        publication_roots.append(workspace_path / "熟肉")
+        configured_output = _resolve_project_output_override(
+            str(workspace_path)
+        )
+        if configured_output:
+            publication_roots.append(Path(configured_output))
+
+    output_parts = output_path.parts
+    for index, part in enumerate(output_parts):
+        if part == "熟肉":
+            publication_roots.append(Path(*output_parts[: index + 1]))
+
+    output_key = os.path.normcase(str(output_path))
+    for root in publication_roots:
+        root_path = root.resolve(strict=False)
+        try:
+            common = os.path.commonpath(
+                (output_key, os.path.normcase(str(root_path)))
+            )
+        except ValueError:
+            continue
+        if common == os.path.normcase(str(root_path)):
+            raise ValueError(
+                "Unreviewed translation cannot write to a project publication "
+                "directory; use scripts/run_kakuyomu_workflow.py to create "
+                "reviewable drafts."
+            )
+
+
 def _reject_duplicate_json_fields(pairs):
     result = {}
     for key, value in pairs:
@@ -323,6 +362,14 @@ class ResponseContractError(ValueError):
     """Raised when a model response cannot be parsed into its required contract."""
 
 
+class TranslationQualityGateError(RuntimeError):
+    """Raised when a formal project translation cannot pass a quality stage."""
+
+    def __init__(self, message: str, *, chapter_position: Optional[int] = None):
+        super().__init__(message)
+        self.chapter_position = chapter_position
+
+
 # Monkey-patch to prevent socket.getfqdn hang in proxy_bypass on Windows
 orig_proxy_bypass = urllib.request.proxy_bypass
 def patched_proxy_bypass(host):
@@ -337,6 +384,7 @@ class Config:
     RAW_DIR = ""
     AI_EDITION_ROOT = None
     OUTPUT_DIR = ""
+    TRANSLATION_OUTPUT_MODE = None
     CHAPTER_MAP = None
     SOURCE_MANIFEST_PATH = None
     TM_REVIEWED_PATH = None
@@ -403,6 +451,7 @@ class Config:
 
     @classmethod
     def load_config(cls, project: Optional[str] = None, config_file: Optional[str] = None):
+        cls.TRANSLATION_OUTPUT_MODE = None
         cls.CHAPTER_MAP = None
         cls.SOURCE_MANIFEST_PATH = None
         cls.AI_EDITION_ROOT = None
@@ -444,7 +493,8 @@ class Config:
                 cls.WORKSPACE_DIR = "/tmp/test_workspace"
                 os.makedirs(cls.WORKSPACE_DIR, exist_ok=True)
             cls.RAW_DIR = os.path.join(cls.WORKSPACE_DIR, "生肉")
-            cls.OUTPUT_DIR = os.path.join(cls.WORKSPACE_DIR, "熟肉")
+            cls.OUTPUT_DIR = os.path.join(cls.WORKSPACE_DIR, "translated")
+            cls.TRANSLATION_OUTPUT_MODE = "test_draft"
             cls.GLOSSARY_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "Glossary.json")
             cls.GUIDELINES_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "guidelines.txt")
             cls.INFO_PATH = os.path.join(cls.WORKSPACE_DIR, "Knowledge", "作品基本信息.json")
@@ -553,6 +603,7 @@ class Config:
                 raise FileNotFoundError(f"Project directory not found: {workspace_dir}")
             cfg_data = {
                 "WORKSPACE_DIR": workspace_dir,
+                "TRANSLATION_OUTPUT_MODE": "reviewed_run_draft",
                 "GLOSSARY_PATH": os.path.join(workspace_dir, "Knowledge", "Glossary.json"),
                 "GUIDELINES_PATH": os.path.join(workspace_dir, "Knowledge", "guidelines.txt"),
                 "INFO_PATH": os.path.join(workspace_dir, "Knowledge", "作品基本信息.json"),
@@ -622,6 +673,21 @@ class Config:
         ):
             raise ValueError(
                 "REQUIRE_REVIEWED_PUBLICATION must be a boolean."
+            )
+        output_mode = cfg_data.get("TRANSLATION_OUTPUT_MODE")
+        if output_mode is not None and not isinstance(output_mode, str):
+            raise ValueError("TRANSLATION_OUTPUT_MODE must be a string.")
+        if config_file and output_mode not in (None, "compatibility_draft"):
+            raise ValueError(
+                "Explicit JSON configuration may only declare "
+                "TRANSLATION_OUTPUT_MODE='compatibility_draft'."
+            )
+        if (
+            output_mode == "compatibility_draft"
+            and cfg_data.get("REQUIRE_REVIEWED_PUBLICATION", False)
+        ):
+            raise ValueError(
+                "compatibility_draft cannot enable reviewed project publication."
             )
 
         env_mapping = {
@@ -1446,6 +1512,16 @@ class TranslationPipeline:
         if not Config.WORKSPACE_DIR:
             Config.load_config()
         if Config.REQUIRE_REVIEWED_PUBLICATION:
+            if Config.ALLOW_UNREVIEWED_TM:
+                raise ValueError(
+                    "Reviewed project translation cannot enable "
+                    "unreviewed TM retrieval."
+                )
+            if Config.TRANSLATION_OUTPUT_MODE != "reviewed_run_draft":
+                raise ValueError(
+                    "Reviewed project drafts must be created through "
+                    "scripts/run_kakuyomu_workflow.py."
+                )
             run_id = Config.TRANSLATION_RUN_ID
             if not isinstance(run_id, str) or not re.fullmatch(
                 r"[0-9a-f]{32}", run_id
@@ -1476,11 +1552,25 @@ class TranslationPipeline:
                 raise ValueError(
                     "Project translation output must remain inside its active review run."
                 )
+        else:
+            if Config.TRANSLATION_OUTPUT_MODE not in {
+                "compatibility_draft",
+                "test_draft",
+            }:
+                raise ValueError(
+                    "Unreviewed translations require an explicit "
+                    "TRANSLATION_OUTPUT_MODE='compatibility_draft'."
+                )
+            _reject_unreviewed_project_publication(
+                Config.WORKSPACE_DIR,
+                Config.OUTPUT_DIR,
+            )
         reject_knowledge_draft_path(Config.GLOSSARY_PATH, "glossary input")
         reject_knowledge_draft_path(
             Config.STORY_SUMMARY_PATH, "story summary input"
         )
         self.story_summary = ""
+        self._stage_trace = {}
         source_input_map = {
             item["raw_file"]: {
                 "source_version_id": item.get("source_version_id"),
@@ -1540,10 +1630,17 @@ class TranslationPipeline:
             )
         elif os.path.exists(Config.STORY_SUMMARY_PATH):
             if Path(Config.STORY_SUMMARY_PATH).suffix.lower() == ".json":
+                source_summary_kwargs = {}
+                if source_input_map:
+                    source_summary_kwargs = {
+                        "source_input_root": source_input_root,
+                        "source_input_map": source_input_map,
+                    }
                 self.story_summary = load_reviewed_story_summary(
                     Config.STORY_SUMMARY_PATH,
                     Config.RAW_DIR,
                     Config.SOURCE_MANIFEST_PATH,
+                    **source_summary_kwargs,
                 )
             else:
                 self.story_summary = load_text(Config.STORY_SUMMARY_PATH)
@@ -1569,6 +1666,180 @@ class TranslationPipeline:
             require_reviewed_glossary=Config.REQUIRE_REVIEWED_GLOSSARY,
             source_input_root=source_input_root,
             source_input_map=source_input_map,
+        )
+
+    @staticmethod
+    def _stage_digest(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            payload = value.encode("utf-8")
+        else:
+            payload = json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _record_stage(
+        self,
+        name: str,
+        *,
+        status: str,
+        input_value: Any = None,
+        output_value: Any = None,
+        model: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        record = {
+            "status": status,
+            "input_sha256": self._stage_digest(input_value),
+            "output_sha256": self._stage_digest(output_value),
+        }
+        if model is not None:
+            record["model"] = model
+        if metadata:
+            record["metadata"] = metadata
+        self._stage_trace[name] = record
+
+    def _begin_stage_attempt(
+        self,
+        name: str,
+        *,
+        input_value: Any,
+        model: str,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        if not isinstance(getattr(self, "_stage_trace", None), dict):
+            self._stage_trace = {}
+        attempts = self._stage_trace.setdefault(name, [])
+        attempt_metadata = dict(metadata or {})
+        attempt_metadata.setdefault("attempt", len(attempts) + 1)
+        attempt = {
+            "status": "running",
+            "input_sha256": self._stage_digest(input_value),
+            "output_sha256": None,
+            "model": model,
+            "metadata": attempt_metadata,
+        }
+        attempts.append(attempt)
+        return attempt
+
+    def _finish_stage_attempt(
+        self,
+        attempt: dict,
+        *,
+        status: str,
+        output_value: Any = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        attempt["status"] = status
+        attempt["output_sha256"] = self._stage_digest(output_value)
+        if metadata:
+            attempt.setdefault("metadata", {}).update(metadata)
+
+    def _stage_report_path(self, spec: ChapterSpec) -> Optional[Path]:
+        if not Config.REQUIRE_REVIEWED_PUBLICATION:
+            return None
+        run_root = Path(Config.OUTPUT_DIR).resolve(strict=True).parent
+        reports_root = run_root / "StageReports"
+        if reports_root.is_symlink():
+            raise ValueError("Stage report directory cannot be a symbolic link.")
+        digest = hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+        return reports_root / f"episode-{digest}.json"
+
+    def _write_stage_report(
+        self,
+        spec: ChapterSpec,
+        *,
+        status: str,
+        failure_stage: Optional[str] = None,
+        error_type: Optional[str] = None,
+        recovery_reason: Optional[str] = None,
+    ) -> None:
+        report_path = self._stage_report_path(spec)
+        if report_path is None:
+            return
+        existing_attempts = []
+        if report_path.exists():
+            if report_path.is_symlink():
+                raise ValueError("Stage report cannot be a symbolic link.")
+            if report_path.stat().st_size > 4 * 1024 * 1024:
+                raise ValueError("Stage report exceeds the supported size limit.")
+            with open_regular_file(report_path) as stream:
+                previous = json.load(stream)
+            expected_episode = {
+                "raw_file": spec.raw_file,
+                "translation_file": spec.translation_file,
+                "tm_key": spec.tm_key,
+                "position": spec.chapter_position,
+                "source_version_id": spec.source_version_id,
+                "source_input_file": spec.source_input_file,
+                "source_sha256": spec.source_sha256,
+            }
+            if (
+                not isinstance(previous, dict)
+                or previous.get("schema_version") != 1
+                or previous.get("run_id") != Config.TRANSLATION_RUN_ID
+                or previous.get("episode") != expected_episode
+                or not isinstance(previous.get("attempts"), list)
+                or any(
+                    not isinstance(item, dict)
+                    for item in previous["attempts"]
+                )
+            ):
+                raise ValueError(
+                    "Existing stage report does not match this run and episode."
+                )
+            existing_attempts = previous["attempts"]
+        attempt = {
+            "attempt": len(existing_attempts) + 1,
+            "status": status,
+            "stages": self._stage_trace,
+        }
+        if failure_stage is not None:
+            attempt["failure_stage"] = failure_stage
+        if error_type is not None:
+            attempt["error_type"] = error_type
+        if recovery_reason is not None:
+            attempt["recovery_reason"] = recovery_reason
+        payload = {
+            "schema_version": 1,
+            "run_id": Config.TRANSLATION_RUN_ID,
+            "work_id": Config.EXPECTED_BOOK_BUNDLE.get("work_id")
+            if isinstance(Config.EXPECTED_BOOK_BUNDLE, dict)
+            else None,
+            "episode": {
+                "raw_file": spec.raw_file,
+                "translation_file": spec.translation_file,
+                "tm_key": spec.tm_key,
+                "position": spec.chapter_position,
+                "source_version_id": spec.source_version_id,
+                "source_input_file": spec.source_input_file,
+                "source_sha256": spec.source_sha256,
+            },
+            "attempts": [*existing_attempts, attempt],
+        }
+        write_text_atomically(
+            str(report_path),
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+
+    def _ensure_recovered_stage_report(
+        self, spec: ChapterSpec, *, reason: str
+    ) -> None:
+        if not Config.REQUIRE_REVIEWED_PUBLICATION:
+            return
+        report_path = self._stage_report_path(spec)
+        if report_path is None or report_path.exists():
+            return
+        self._stage_trace = {}
+        self._write_stage_report(
+            spec,
+            status="recovered",
+            recovery_reason=reason,
         )
 
     def _get_agent_instruction(self, agent_dir: str) -> str:
@@ -1961,8 +2232,10 @@ class TranslationPipeline:
         return count_mismatch or int(raw_sequence != translated_sequence)
 
     async def _run_refinement_loop(self, raw_text: str, raw_translation_list: List[str], static_context: str, glossary_matches: list, annotated_context: Optional[List[Dict[str, str]]] = None) -> List[str]:
+        self._active_refinement_stage = "proofreading"
         proofread_instr = self._get_agent_instruction("逻辑审计者（校对 Agent）")
         polish_instr = self._get_agent_instruction("潤色 Agent（情感與文風總監）")
+        formal_quality_gate = Config.REQUIRE_REVIEWED_PUBLICATION
         
         proofread_schema = {
             "type": "OBJECT",
@@ -1983,6 +2256,7 @@ class TranslationPipeline:
         
         max_retries = 2
         for attempt in range(max_retries + 1):
+            self._active_refinement_stage = "proofreading"
             proofreader = UnifiedAgent(
                 Config.PROOFREAD_MODEL,
                 proofread_instr,
@@ -1995,11 +2269,47 @@ class TranslationPipeline:
             proofread_input = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, current_translation)]
             json_input = json.dumps(proofread_input, ensure_ascii=False, indent=2)
             proofread_prompt = f"请检查以下段落翻译，返回严重程度、评估意见和修正后的翻译数组（1:1映射）：\n```json\n{json_input}\n```"
-            
-            proofread_res = await proofreader.call(proofread_prompt)
+
+            proofread_attempt = self._begin_stage_attempt(
+                "proofreading",
+                input_value=proofread_input,
+                model=Config.PROOFREAD_MODEL,
+                metadata={"attempt": attempt + 1},
+            )
+            try:
+                proofread_res = await proofreader.call(proofread_prompt)
+            except ResponseContractError as error:
+                self._finish_stage_attempt(
+                    proofread_attempt, status="failed"
+                )
+                logger.warning("Proofreader returned an unreadable response.")
+                if formal_quality_gate:
+                    raise TranslationQualityGateError(
+                        "Formal translation quality gate blocked: "
+                        "proofreader response could not be read."
+                    ) from error
+                raise
+            except Exception:
+                self._finish_stage_attempt(
+                    proofread_attempt, status="failed"
+                )
+                raise
             if not isinstance(proofread_res, dict):
-                logger.warning("Proofreader returned a non-object response; retaining the previous translation.")
+                self._finish_stage_attempt(
+                    proofread_attempt, status="failed"
+                )
+                logger.warning("Proofreader returned a non-object response.")
+                if formal_quality_gate:
+                    raise TranslationQualityGateError(
+                        "Formal translation quality gate blocked: "
+                        "proofreader response was not an object."
+                    )
                 corrected_list = current_translation
+                self._finish_stage_attempt(
+                    proofread_attempt,
+                    status="fallback",
+                    output_value=corrected_list,
+                )
                 break
             required_fields = {"severity", "critique", "corrected_text"}
             severity = proofread_res.get("severity")
@@ -2011,16 +2321,48 @@ class TranslationPipeline:
                 or severity not in {"none", "minor", "severe"}
                 or not isinstance(critique, str)
             ):
-                logger.warning("Proofreader returned an invalid response schema; retaining the previous translation.")
+                self._finish_stage_attempt(
+                    proofread_attempt, status="failed"
+                )
+                logger.warning("Proofreader returned an invalid response schema.")
+                if formal_quality_gate:
+                    raise TranslationQualityGateError(
+                        "Formal translation quality gate blocked: "
+                        "proofreader response did not match its contract."
+                    )
                 corrected_list = current_translation
+                self._finish_stage_attempt(
+                    proofread_attempt,
+                    status="fallback",
+                    output_value=corrected_list,
+                )
                 break
             try:
                 require_aligned_paragraphs(raw_paras, corrected_list, "Proofreading")
-            except ValueError:
-                logger.warning("Proofreader returned invalid paragraph data; retaining the previous translation.")
+            except ValueError as error:
+                self._finish_stage_attempt(
+                    proofread_attempt, status="failed"
+                )
+                logger.warning("Proofreader returned invalid paragraph data.")
+                if formal_quality_gate:
+                    raise TranslationQualityGateError(
+                        "Formal translation quality gate blocked: "
+                        "proofreading paragraph data was invalid."
+                    ) from error
                 corrected_list = current_translation
+                self._finish_stage_attempt(
+                    proofread_attempt,
+                    status="fallback",
+                    output_value=corrected_list,
+                )
                 break
-            
+
+            self._finish_stage_attempt(
+                proofread_attempt,
+                status="completed",
+                output_value=corrected_list,
+                metadata={"reported_severity": severity},
+            )
             if severity == "severe" and Config.STRICT_REFLECTION_MODE and attempt < max_retries:
                 print(
                     "Severe proofreading issues detected. "
@@ -2066,7 +2408,7 @@ class TranslationPipeline:
                         }
                     }
                 }
-                
+                self._active_refinement_stage = "reflection"
                 translator = UnifiedAgent(
                     Config.INITIAL_MODEL,
                     translator_instr,
@@ -2075,16 +2417,54 @@ class TranslationPipeline:
                     data_categories=FULL_TRANSLATION_CATEGORIES,
                     **Config.TRANSLATOR_PARAMS,
                 )
+                reflection_attempt = self._begin_stage_attempt(
+                    "reflection",
+                    input_value={
+                        "paragraphs": input_data,
+                        "critique": critique,
+                    },
+                    model=Config.INITIAL_MODEL,
+                    metadata={"attempt": attempt + 1},
+                )
                 try:
                     res = await translator.call(reflection_prompt)
                     reflection_translation = res["translated_paragraphs"]
                     require_aligned_paragraphs(
                         raw_paras, reflection_translation, "Reflection translation"
                     )
-                except (KeyError, TypeError, ValueError):
-                    print("Reflection retry failed or returned mismatched lines. Using original.")
-                    break
+                except Exception as error:
+                    self._finish_stage_attempt(
+                        reflection_attempt, status="failed"
+                    )
+                    logger.warning(
+                        "Reflection retry returned invalid paragraph data."
+                    )
+                    if formal_quality_gate and isinstance(
+                        error, (KeyError, TypeError, ValueError)
+                    ):
+                        raise TranslationQualityGateError(
+                            "Formal translation quality gate blocked: "
+                            "reflection translation response was invalid."
+                        ) from error
+                    if isinstance(error, (KeyError, TypeError, ValueError)):
+                        self._finish_stage_attempt(
+                            reflection_attempt,
+                            status="fallback",
+                            output_value=current_translation,
+                        )
+                        break
+                    raise
+                self._finish_stage_attempt(
+                    reflection_attempt,
+                    status="completed",
+                    output_value=reflection_translation,
+                )
                 current_translation = reflection_translation
+            elif severity == "severe" and formal_quality_gate:
+                raise TranslationQualityGateError(
+                    "Formal translation quality gate blocked: "
+                    "severe proofreading issues remain."
+                )
             else:
                 break
                 
@@ -2100,6 +2480,7 @@ class TranslationPipeline:
             }
         }
         
+        self._active_refinement_stage = "polishing"
         polisher = UnifiedAgent(
             Config.STYLE_MODEL,
             polish_instr,
@@ -2112,23 +2493,67 @@ class TranslationPipeline:
         polish_input = [{"raw": rp, "translated": tp} for rp, tp in zip(raw_paras, corrected_list)]
         polish_json = json.dumps(polish_input, ensure_ascii=False, indent=2)
         polish_prompt = f"请润色以下翻译（要求返回1:1映射的JSON数组）：\n```json\n{polish_json}\n```"
-        
+        polish_attempt = self._begin_stage_attempt(
+            "polishing",
+            input_value=polish_input,
+            model=Config.STYLE_MODEL,
+        )
         try:
             polish_res = await polisher.call(polish_prompt)
-        except ResponseContractError:
-            logger.warning(
-                "Polisher returned an unreadable response; retaining the proofread translation."
+        except ResponseContractError as error:
+            self._finish_stage_attempt(polish_attempt, status="failed")
+            logger.warning("Polisher returned an unreadable response.")
+            if formal_quality_gate:
+                raise TranslationQualityGateError(
+                    "Formal translation quality gate blocked: "
+                    "polisher response could not be read."
+                ) from error
+            self._finish_stage_attempt(
+                polish_attempt,
+                status="fallback",
+                output_value=corrected_list,
             )
             return corrected_list
+        except Exception:
+            self._finish_stage_attempt(polish_attempt, status="failed")
+            raise
         if isinstance(polish_res, dict) and "polished_paragraphs" in polish_res:
             try:
                 polished_paragraphs = polish_res["polished_paragraphs"]
                 require_aligned_paragraphs(raw_paras, polished_paragraphs, "Polishing")
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as error:
+                self._finish_stage_attempt(polish_attempt, status="failed")
+                if formal_quality_gate:
+                    raise TranslationQualityGateError(
+                        "Formal translation quality gate blocked: "
+                        "polishing paragraph data was invalid."
+                    ) from error
+                self._finish_stage_attempt(
+                    polish_attempt,
+                    status="fallback",
+                    output_value=corrected_list,
+                )
             else:
+                self._finish_stage_attempt(
+                    polish_attempt,
+                    status="completed",
+                    output_value=polished_paragraphs,
+                )
                 return polished_paragraphs
             
+        if formal_quality_gate:
+            if polish_attempt["status"] == "running":
+                self._finish_stage_attempt(polish_attempt, status="failed")
+            raise TranslationQualityGateError(
+                "Formal translation quality gate blocked: "
+                "polisher response did not match its contract."
+            )
+        if polish_attempt["status"] == "running":
+            self._finish_stage_attempt(
+                polish_attempt,
+                status="fallback",
+                output_value=corrected_list,
+            )
         print("Polisher failed or returned mismatched lines. Returning proofread results.")
         return corrected_list
 
@@ -2178,6 +2603,19 @@ class TranslationPipeline:
                 self._validate_transaction_translation,
             )
             if recovered:
+                try:
+                    self._ensure_recovered_stage_report(
+                        spec,
+                        reason="committed_output_recovered",
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "Failed to persist recovered stage report for %s.",
+                        spec.tm_key,
+                    )
+                    raise RuntimeError(
+                        "Formal translation stage report could not be persisted."
+                    ) from error
                 print(f"RECOVERED: {spec.translation_file}")
                 return
 
@@ -2193,6 +2631,19 @@ class TranslationPipeline:
                     spec,
                     self.rag,
                 ):
+                    try:
+                        self._ensure_recovered_stage_report(
+                            spec,
+                            reason="verified_output_missing_stage_report",
+                        )
+                    except Exception as error:
+                        logger.exception(
+                            "Failed to persist recovered stage report for %s.",
+                            spec.tm_key,
+                        )
+                        raise RuntimeError(
+                            "Formal translation stage report could not be persisted."
+                        ) from error
                     print(f">>> Skipping verified {spec.translation_file}")
                     return
                 raise FileExistsError(
@@ -2219,15 +2670,62 @@ class TranslationPipeline:
             raw_text = _read_chapter_source_text(spec, mapped_paths)
         if not raw_text.strip():
             self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
-            print(f"Chapter {spec.raw_file} is empty. Writing empty output.")
-            if mapped_paths:
-                write_new_relative_text(
-                    Config.OUTPUT_DIR, spec.translation_file, ""
+            self._stage_trace = {}
+            self._record_stage(
+                "source_validation",
+                status="empty",
+                input_value=raw_text,
+                output_value="",
+            )
+            self._record_stage(
+                "commit",
+                status="running",
+                input_value=raw_text,
+            )
+            try:
+                commit_chapter_translation(
+                    Config.OUTPUT_DIR,
+                    raw_text,
+                    spec,
+                    "",
+                    self.rag,
+                    self._validate_transaction_translation,
                 )
-            else:
-                write_new_child_text(
-                    Config.OUTPUT_DIR, spec.translation_file, ""
+            except Exception as error:
+                self._record_stage(
+                    "commit",
+                    status="failed",
+                    input_value=raw_text,
                 )
+                try:
+                    self._write_stage_report(
+                        spec,
+                        status="failed",
+                        failure_stage="commit",
+                        error_type=type(error).__name__,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist stage report for %s.", spec.tm_key
+                    )
+                raise
+            self._record_stage(
+                "commit",
+                status="completed",
+                input_value=raw_text,
+                output_value="",
+            )
+            try:
+                self._write_stage_report(spec, status="completed")
+            except Exception as error:
+                logger.exception(
+                    "Failed to persist empty-source stage report for %s.",
+                    spec.tm_key,
+                )
+                raise RuntimeError(
+                    "Formal translation stage report could not be persisted."
+                ) from error
+            print(f"Chapter {spec.raw_file} is empty. Committed empty output.")
             return
         current_chap_num = spec.chapter_position
         if current_chap_num is None:
@@ -2235,43 +2733,143 @@ class TranslationPipeline:
         if current_chap_num is None:
             current_chap_num = extract_chapter_num(spec.tm_key)
         
-        ctx_data = await self._build_run_context(
-            spec.raw_file, raw_text, current_chap_num
-        )
+        self._stage_trace = {}
+        self._active_refinement_stage = None
+
+        def record_failure(stage: str, error: BaseException) -> None:
+            try:
+                self._write_stage_report(
+                    spec,
+                    status="failed",
+                    failure_stage=stage,
+                    error_type=type(error).__name__,
+                )
+            except Exception:
+                logger.exception("Failed to persist stage report for %s.", spec.tm_key)
+
+        try:
+            ctx_data = await self._build_run_context(
+                spec.raw_file, raw_text, current_chap_num
+            )
+        except Exception as error:
+            record_failure("context", error)
+            raise
         static_context = ctx_data["static_context"]
         glossary_matches = ctx_data["glossary_matches"]
+        self._record_stage(
+            "context",
+            status="completed",
+            input_value=raw_text,
+            output_value=static_context,
+            metadata={"glossary_match_count": len(glossary_matches)},
+        )
         
         print(f"[0/3] {spec.raw_file}: Annotating context...")
-        annotated_context = await self._run_context_annotation(raw_text, static_context)
+        try:
+            annotated_context = await self._run_context_annotation(
+                raw_text, static_context
+            )
+        except Exception as error:
+            record_failure("annotation", error)
+            raise
+        self._record_stage(
+            "annotation",
+            status="completed",
+            input_value=raw_text,
+            output_value=annotated_context,
+            model=Config.PROOFREAD_MODEL,
+        )
 
         print(f"[1/3] {spec.raw_file}: Initial translation...")
-        raw_translation_list = await self._run_translation_phase(raw_text, static_context, glossary_matches, annotated_context)
+        try:
+            raw_translation_list = await self._run_translation_phase(
+                raw_text, static_context, glossary_matches, annotated_context
+            )
+        except Exception as error:
+            record_failure("translation", error)
+            raise
         if not raw_translation_list:
-            raise RuntimeError(
+            error = RuntimeError(
                 f"FAILED: {spec.raw_file}: Initial translator returned empty results."
             )
+            record_failure("translation", error)
+            raise error
+        self._record_stage(
+            "translation",
+            status="completed",
+            input_value=raw_text,
+            output_value=raw_translation_list,
+            model=Config.INITIAL_MODEL,
+        )
             
         print(f"[2/3 & 3/3] {spec.raw_file}: Proofread & Polish...")
-        final_list = await self._run_refinement_loop(raw_text, raw_translation_list, static_context, glossary_matches, annotated_context)
+        try:
+            final_list = await self._run_refinement_loop(
+                raw_text,
+                raw_translation_list,
+                static_context,
+                glossary_matches,
+                annotated_context,
+            )
+        except TranslationQualityGateError as error:
+            error.chapter_position = (
+                current_chap_num
+                if isinstance(current_chap_num, int)
+                and not isinstance(current_chap_num, bool)
+                else None
+            )
+            record_failure(
+                getattr(self, "_active_refinement_stage", None)
+                or "proofreading_polishing",
+                error,
+            )
+            raise
+        except Exception as error:
+            record_failure(
+                getattr(self, "_active_refinement_stage", None)
+                or "proofreading_polishing",
+                error,
+            )
+            raise
+        self._active_refinement_stage = None
         
         if final_list:
             raw_paras = split_paragraphs(raw_text)
-            self._validate_final_paragraphs(raw_paras, final_list)
-            final_text = "\n\n".join(final_list)
-            self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
-            commit_chapter_translation(
-                Config.OUTPUT_DIR,
-                raw_text,
-                spec,
-                final_text,
-                self.rag,
-                self._validate_transaction_translation,
+            try:
+                self._validate_final_paragraphs(raw_paras, final_list)
+                final_text = "\n\n".join(final_list)
+                self._verify_chapter_source_snapshot(spec, raw_text, mapped_paths)
+                commit_chapter_translation(
+                    Config.OUTPUT_DIR,
+                    raw_text,
+                    spec,
+                    final_text,
+                    self.rag,
+                    self._validate_transaction_translation,
+                )
+            except Exception as error:
+                record_failure("commit", error)
+                raise
+            self._record_stage(
+                "commit",
+                status="completed",
+                input_value=final_list,
+                output_value=final_text,
             )
+            try:
+                self._write_stage_report(spec, status="completed")
+            except Exception as error:
+                logger.exception("Failed to persist stage report for %s.", spec.tm_key)
+                raise RuntimeError(
+                    "Formal translation stage report could not be persisted."
+                ) from error
             print(f"SUCCESS: {spec.translation_file}")
         else:
-            raise RuntimeError(
+            error = RuntimeError(
                 f"FAILED: {spec.raw_file}: Refinement returned empty results."
             )
+            record_failure("polishing", error)
+            raise error
 
     def _validate_final_paragraphs(self, raw_paras, translated_paras):
         require_aligned_paragraphs(raw_paras, translated_paras, "Final translation")

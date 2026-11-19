@@ -3,7 +3,9 @@
 import hashlib
 import html
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from scripts.ingest_kakuyomu_pages import (
@@ -31,7 +33,6 @@ from source_manifest import load_manifest, verify_manifest_artifact
 from utils import (
     open_regular_file,
     resolve_relative_path,
-    write_new_relative_bytes,
 )
 
 
@@ -93,22 +94,41 @@ def _write_immutable(root: Path, relative_path: str, content: bytes) -> bool:
         relative_path,
         allow_missing=True,
     )
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
     try:
-        write_new_relative_bytes(str(root), relative_path, content)
-        return True
-    except FileExistsError:
-        existing = bytearray()
-        with open_regular_file(target, binary=True) as stream:
-            while True:
-                chunk = stream.read(min(1024 * 1024, len(content) + 1 - len(existing)))
-                if not chunk:
-                    break
-                existing.extend(chunk)
-                if len(existing) > len(content):
-                    break
-        if bytes(existing) != content:
-            raise ValueError("Existing immutable book bundle differs.")
-        return False
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary_path, target)
+            return True
+        except FileExistsError:
+            pass
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+    existing = bytearray()
+    with open_regular_file(target, binary=True) as stream:
+        while True:
+            chunk = stream.read(
+                min(1024 * 1024, len(content) + 1 - len(existing))
+            )
+            if not chunk:
+                break
+            existing.extend(chunk)
+            if len(existing) > len(content):
+                break
+    if bytes(existing) != content:
+        raise ValueError("Existing immutable book bundle differs.")
+    return False
 
 
 def _load_complete_checkpoint(
@@ -298,6 +318,8 @@ def export_book_bundles(
         ai_root=str(ai_path),
         source_manifest_relative_path=manifest_relative_path,
         edition_manifest_relative_path=edition_manifest_relative_path,
+        human_index_relative_path=human_index_relative_path,
+        ai_index_relative_path=ai_index_relative_path,
     )
     catalog = _load_catalog_snapshot(
         str(source_path),
@@ -333,7 +355,7 @@ def export_book_bundles(
     )
     manifest_sha256 = _sha256_file(manifest_path)
     edition_manifest_sha256 = _sha256_file(edition_manifest_path)
-    catalog_sha256 = _sha256_file(catalog_path)
+    catalog_sha256 = catalog["sha256"]
     source_manifest = load_manifest(manifest_path)
     checkpoint_path = resolve_relative_path(
         str(source_path),
@@ -623,6 +645,8 @@ def export_book_bundles(
         "work_id": catalog["work_id"],
         "catalog_sha256": catalog_sha256,
         "source_manifest_sha256": manifest_sha256,
+        "checkpoint_relative_path": checkpoint_relative_path.replace("\\", "/"),
+        "checkpoint_sha256": checkpoint_sha256,
         "work_metadata_version_id": verified_work_artifact["version_id"],
         "work_metadata": work_metadata,
         "groups": groups,
@@ -1090,6 +1114,8 @@ def load_verified_ai_book_bundle(
         ai_root=str(ai_path),
         source_manifest_relative_path=manifest_relative_path,
         edition_manifest_relative_path=edition_manifest_relative_path,
+        human_index_relative_path=human_index_record["relative_path"],
+        ai_index_relative_path=ai_index_record["relative_path"],
     )
     if edition_report["status"] != "verified":
         raise ValueError("Current source editions are not verified.")
@@ -1115,6 +1141,7 @@ def load_verified_ai_book_bundle(
     ):
         raise ValueError("AI book bundle does not cover the complete catalog.")
     bundled_by_input = {}
+    bundled_episode_ids = set()
     group_by_episode = {
         episode_id: group
         for group in catalog["chapters"]
@@ -1125,12 +1152,13 @@ def load_verified_ai_book_bundle(
             raise ValueError("AI book bundle contains an invalid episode.")
         episode_id = episode.get("episode_id")
         indexed = indexed_by_id.get(episode_id)
-        if indexed is None:
+        if indexed is None or episode_id in bundled_episode_ids:
             raise ValueError("AI book bundle contains an unknown episode.")
         source_input_file = episode.get("source_input_file")
         if (
             not isinstance(source_input_file, str)
             or source_input_file in bundled_by_input
+            or source_input_file != indexed.get("ai_relative_path")
             or episode.get("source_version_id")
             != indexed.get("source_version_id")
             or episode.get("source_sha256") != indexed.get("output_sha256")
@@ -1169,7 +1197,11 @@ def load_verified_ai_book_bundle(
             **episode,
             "source_file": source_artifact["relative_path"],
         }
-    if len(bundled_by_input) != episode_count:
+        bundled_episode_ids.add(episode_id)
+    if (
+        len(bundled_by_input) != episode_count
+        or bundled_episode_ids != set(indexed_by_id)
+    ):
         raise ValueError("AI book bundle has duplicate or missing input paths.")
 
     return {

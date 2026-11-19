@@ -1747,6 +1747,71 @@ class TestKnowledgeExtractionUnit(unittest.TestCase):
                 "R001B0001",
             )
 
+    def test_full_book_synthesis_rejects_destination_not_in_candidates(self):
+        paragraph = auto_extract_knowledge.SourceParagraph(
+            source_id="C0001P00001",
+            filename="chapter.md",
+            paragraph_index=1,
+            text="Alpha appears.",
+        )
+        candidates = [
+            {
+                "candidate_id": "B0001-glossary-0001",
+                "kind": "glossary",
+                "src": "Alpha",
+                "dst": "阿尔法",
+                "info": "term",
+                "evidence_ids": ["C0001P00001"],
+            },
+            {
+                "candidate_id": "B0001-summary-0001",
+                "kind": "claim",
+                "category": "summary",
+                "text": "Synthetic summary.",
+                "evidence_ids": ["C0001P00001"],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "changed a candidate translation"):
+            auto_extract_knowledge._validate_full_book_synthesis_result(
+                {
+                    "glossary": [
+                        {
+                            "src": "Alpha",
+                            "dst": "乙",
+                            "info": "term",
+                            "evidence_ids": ["C0001P00001"],
+                        }
+                    ],
+                    "summary_claims": [
+                        {
+                            "text": "Synthetic summary.",
+                            "evidence_ids": ["C0001P00001"],
+                        }
+                    ],
+                    "worldbuilding_claims": [],
+                    "narrative_voice_claims": [],
+                },
+                candidates,
+                {paragraph.source_id: paragraph},
+                "R001B0001",
+            )
+
+    def test_batch_glossary_merge_compares_translations_not_notes(self):
+        merged = {}
+        auto_extract_knowledge._record_batch_glossary_translation(
+            merged, {"src": "Alpha", "dst": "阿尔法", "info": "人物"}
+        )
+        auto_extract_knowledge._record_batch_glossary_translation(
+            merged, {"src": "Alpha", "dst": "阿尔法", "info": "称谓"}
+        )
+        self.assertEqual(merged, {"Alpha": "阿尔法"})
+
+        with self.assertRaisesRegex(ValueError, "conflicting translations"):
+            auto_extract_knowledge._record_batch_glossary_translation(
+                merged, {"src": "Alpha", "dst": "乙", "info": "称谓"}
+            )
+
     def test_full_book_synthesis_uses_bounded_hierarchical_rounds(self):
         paragraphs = [
             auto_extract_knowledge.SourceParagraph(

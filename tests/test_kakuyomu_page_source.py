@@ -19,6 +19,7 @@ from kakuyomu_page_source import (
 from scripts.ingest_kakuyomu_pages import (
     _load_catalog,
     _minimum_delay as _ingest_minimum_delay,
+    _record_project_ingestion_freshness,
     main,
 )
 from scripts.run_kakuyomu_workflow import (
@@ -203,6 +204,7 @@ def make_adapter(
     *,
     robots=ROBOTS,
     page=PAGE_HTML,
+    page_content_type="text/html; charset=utf-8",
     episodes=None,
     max_page_bytes=4096,
     max_episode_bytes=4096,
@@ -223,7 +225,7 @@ def make_adapter(
     for item in episodes:
         responses[item.page_url] = (
             page.encode("utf-8") if isinstance(page, str) else page,
-            "text/html; charset=utf-8",
+            page_content_type,
         )
     opener = FakeOpener(responses)
     clock = FakeClock()
@@ -444,6 +446,19 @@ class KakuyomuPageAdapterTests(unittest.TestCase):
             [request[0] for request in opener.requests],
             ["https://kakuyomu.jp/robots.txt"],
         )
+
+    def test_decodes_and_retains_declared_non_utf8_page_charset(self):
+        page_bytes = PAGE_HTML.encode("shift_jis")
+        adapter, _, _ = make_adapter(
+            page=page_bytes,
+            page_content_type='text/html; charset="Shift_JIS"',
+        )
+
+        fetched = adapter.fetch_episode(EPISODE_ID)
+
+        self.assertEqual(fetched.content, EXPECTED_TEXT.encode("utf-8"))
+        self.assertEqual(fetched.page_html, page_bytes)
+        self.assertEqual(fetched.page_charset, "shift_jis")
 
     def test_empty_robots_response_fails_closed(self):
         opener = FakeOpener(
@@ -1131,6 +1146,82 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
             snapshot["source_manifest"]["relative_path"],
             "source_editions_manifest.json",
         )
+
+    def test_project_freshness_passes_ai_source_map_to_downstream_audit(self):
+        source_root = self.root / "freshness-source"
+        ai_root = self.root / "freshness-ai"
+        translation_root = self.root / "freshness-translation"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        summary_path = source_root / "STORY_SUMMARY_reviewed.json"
+        summary_path.write_text("{}", encoding="utf-8")
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": summary_path,
+        }
+        expected_sources = [
+            {
+                "filename": "editions/ai-v1/episode.md",
+                "source_version_id": "ai-version-1",
+                "source_input_file": "chapters/episode.md",
+                "source_sha256": "a" * 64,
+            }
+        ]
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "verified",
+                        "detail": "verified fixture",
+                    },
+                    expected_sources,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["source_input_root"], str(ai_root))
+        self.assertEqual(
+            kwargs["source_input_map"],
+            {
+                "editions/ai-v1/episode.md": {
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "chapters/episode.md",
+                    "source_sha256": "a" * 64,
+                }
+            },
+        )
+        self.assertEqual(kwargs["expected_sources"], expected_sources)
 
     def test_project_mode_rejects_roots_outside_project_archive_before_fetch(self):
         projects_root = self.root / "projects"

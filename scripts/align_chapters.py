@@ -11,7 +11,11 @@ import re
 import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from source_manifest import load_manifest, verify_current_normalized_source
+from source_manifest import (
+    load_manifest,
+    verify_current_normalized_source,
+    verify_current_normalized_source_metadata,
+)
 from source_editions import read_verified_ai_edition_bytes
 from utils import (
     open_regular_file,
@@ -28,8 +32,14 @@ from utils import (
 def _read_bound_source(raw_dir, ai_root, spec, source_manifest_path):
     manifest_path = resolve_relative_path(raw_dir, source_manifest_path)
     manifest = load_manifest(manifest_path)
-    artifact = verify_current_normalized_source(
-        raw_dir, manifest, spec.source_version_id
+    artifact = (
+        verify_current_normalized_source_metadata(
+            manifest, spec.source_version_id
+        )
+        if spec.source_input_file is not None
+        else verify_current_normalized_source(
+            raw_dir, manifest, spec.source_version_id
+        )
     )
     if (
         artifact["kind"] != "normalized_source"
@@ -58,7 +68,9 @@ def _read_bound_source(raw_dir, ai_root, spec, source_manifest_path):
     return content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _verify_bound_sources_current(raw_dir, source_manifest_path, chapter_specs):
+def _verify_bound_sources_current(
+    raw_dir, source_manifest_path, chapter_specs, ai_root=None
+):
     bound_specs = [
         spec for spec in chapter_specs if spec.source_version_id is not None
     ]
@@ -70,14 +82,32 @@ def _verify_bound_sources_current(raw_dir, source_manifest_path, chapter_specs):
         resolve_relative_path(raw_dir, source_manifest_path)
     )
     for spec in bound_specs:
-        artifact = verify_current_normalized_source(
-            raw_dir, manifest, spec.source_version_id
+        artifact = (
+            verify_current_normalized_source_metadata(
+                manifest, spec.source_version_id
+            )
+            if spec.source_input_file is not None
+            else verify_current_normalized_source(
+                raw_dir, manifest, spec.source_version_id
+            )
         )
         if (
             artifact["kind"] != "normalized_source"
             or artifact["relative_path"] != spec.raw_file
         ):
             raise ValueError("Mapped chapter source-version binding changed.")
+        if spec.source_input_file is not None:
+            if (
+                not ai_root
+                or not spec.source_sha256
+                or artifact["content_sha256"] != spec.source_sha256
+            ):
+                raise ValueError("AI edition source binding changed.")
+            read_verified_ai_edition_bytes(
+                ai_root,
+                spec.source_input_file,
+                spec.source_sha256,
+            )
 
 
 # If running in a test context, dynamically mock the google-genai library
@@ -565,6 +595,7 @@ def main():
             raw_dir,
             Config.SOURCE_MANIFEST_PATH,
             chapter_specs,
+            Config.AI_EDITION_ROOT,
         )
     except (OSError, UnicodeError, ValueError) as exc:
         print(

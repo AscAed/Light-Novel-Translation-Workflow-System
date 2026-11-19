@@ -9,7 +9,7 @@ from kakuyomu_page_source import (
     _EpisodePageParser,
     _normalize_title,
 )
-from source_ingestion import source_artifact_id
+from source_ingestion import normalize_charset_name, source_artifact_id
 from source_manifest import (
     latest_artifacts_by_kind,
     load_manifest,
@@ -22,6 +22,9 @@ DEFAULT_MAX_TOTAL_HTML_BYTES = 1024 * 1024 * 1024
 _EPISODE_METADATA_FIELDS = frozenset(
     {"schema_version", "work_id", "episode_id", "title", "position", "source_ref"}
 )
+_EPISODE_METADATA_FIELDS_WITH_CHARSET = _EPISODE_METADATA_FIELDS | {
+    "page_charset"
+}
 
 
 def _reject_duplicate_keys(pairs):
@@ -48,7 +51,8 @@ def _load_episode_metadata(root: Path, artifact: dict) -> dict:
         raise ValueError("Episode metadata is not valid UTF-8 JSON.") from exc
     if (
         not isinstance(metadata, dict)
-        or set(metadata) != _EPISODE_METADATA_FIELDS
+        or set(metadata)
+        not in (_EPISODE_METADATA_FIELDS, _EPISODE_METADATA_FIELDS_WITH_CHARSET)
         or isinstance(metadata["schema_version"], bool)
         or metadata["schema_version"] != 1
         or not isinstance(metadata["work_id"], str)
@@ -60,6 +64,17 @@ def _load_episode_metadata(root: Path, artifact: dict) -> dict:
         or metadata["position"] < 1
     ):
         raise ValueError("Episode metadata has an invalid identity or schema.")
+    if "page_charset" in metadata:
+        try:
+            if (
+                normalize_charset_name(metadata["page_charset"])
+                != metadata["page_charset"]
+            ):
+                raise ValueError("Episode metadata charset is not canonical.")
+        except ValueError as exc:
+            raise ValueError(
+                "Episode metadata has an invalid page charset."
+            ) from exc
     return metadata
 
 
@@ -164,10 +179,11 @@ def validate_kakuyomu_html_archive(
             != html_artifact["content_sha256"]
         ):
             raise ValueError("Archived episode HTML changed during validation.")
+        charset = metadata.get("page_charset", "utf-8")
         try:
-            page_text = html_bytes.decode("utf-8")
-        except UnicodeError as exc:
-            raise ValueError("Archived episode HTML is not valid UTF-8.") from exc
+            page_text = html_bytes.decode(charset)
+        except (LookupError, UnicodeError) as exc:
+            raise ValueError("Archived episode HTML could not be decoded.") from exc
 
         parser = _EpisodePageParser()
         parser.feed(page_text)

@@ -1,5 +1,128 @@
 # 开发与验证
 
+## 2026-11-19 当前工作树回归与来源边界修复
+
+- `已实现` 有版本来源的空 AI 章节现在通过 `commit_chapter_translation` 原子提交空译文、零段 TM 和来源 provenance；正式 run 写入仅含摘要的 `source_validation`/`commit` 阶段记录。重复运行会核验输出与 TM 后跳过，不再留下无 TM 证明的空文件。
+- `已实现` `FetchedEpisode` 携带响应字符集；Kakuyomu adapter 将 charset 名规范化并在 episode metadata 中保存。metadata 作为 `raw_page_html` 的父版本，使 charset 随来源版本绑定；归档回放按该值解码，原始 HTML 响应字节仍原样保存。旧 metadata 缺少 `page_charset` 时按 UTF-8 兼容。
+- `已实现` AI 索引复核现在读取索引绑定的 catalog 路径并比较当前 SHA-256、作品 ID 与逐话 ID/标题/位置；catalog 同路径被改动、重排或删项时，计划预览保留 `stale_ai_edition_catalog` 分类，导出与审校发布均失败关闭。
+- 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_page_source tests.test_source_ingestion tests.test_kakuyomu_html_archive -q`：224 项通过，覆盖空章节提交/续跑、声明为 Shift_JIS 的响应解析与归档回放、旧 UTF-8 metadata 兼容。
+- AI catalog 快照与发布相关定向回归 `.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_book_bundles tests.test_kakuyomu_translation_plan tests.test_translation_review -q`：85 项通过，覆盖同路径 catalog 变更、重排、删项及计划错误分类。
+- 完整非 E2E 回归在提升权限下动态发现并排除 `test_e2e.py`：659 项运行、658 项通过、1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过、0 失败；3 项符号链接用例均已执行并通过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，206.669 秒，退出码 0。日志中的 `ContentBlockedError`、Provider 拒绝和段落数不匹配来自预期负向 fixture；测试 runner 汇总为 `OK`。
+- 试点 `SourceArchive` 的 HTML 回放 validator 以当前实现只读重验：88/88 页面、356 个 manifest 文件哈希有效、HTML 4,814,835 bytes、回放正文 793,183 bytes，状态 `verified`。旧档案沿用无 charset 字段时的 UTF-8 默认；没有改写试点数据。
+- 非 UTF-8 响应仅由本地 Shift_JIS fixture 验证；没有重新访问 Kakuyomu、调用真实 Provider、修改试点来源数据或验证线上部署。UTF-8 以外的真实站点响应仍待 live capture 核验。
+
+## 2026-11-19 续跑恢复与审批发布复核
+
+- AI 版计划审批现在要求完成结构化三项审阅，并将审阅模板摘要绑定到 schema v2 回执；CLI 在缺少 `--review` 或 `--human-index` 时明确拒绝。旧 schema v1 回执只适用于未绑定 AI 版的旧计划。
+- 恢复被阻断的部分发布计划时，工作流仍校验完整计划与当前 AI 索引，但已验证的正式译文不再加入待处理 `CHAPTER_MAP`；新 run manifest 仅包含剩余话目，整书摘要仍按全计划来源核验。
+- 批量发布会在可编辑审阅文件缺失时复核本地审核快照、回执及正式译文；run 状态会基于降级后的实际状态重新核验。单话产物已失败时不再把同一故障重复计作 run 级失败。发布回执使用 create-only 原子写入。
+- 显式 catalog 路径保留完整 catalog snapshot 元数据，合集导出校验遵循调用方提供的 AI/人读索引路径；不可变合集写入在目标创建前不会暴露部分内容。
+- 后续审查修正 AI 来源边界：章节对齐只核对归档 manifest lineage 元数据，读取 `RAWs_AI` 镜像，并在 embedding 后复读镜像摘要；概要发布与可选 JSON 概要加载也绑定 AI 输入，避免从归档正文读取。定向回归 `.venv\Scripts\python.exe -m unittest tests.test_align_chapters_unit tests.test_pipeline_contracts tests.test_story_summary_review -q`：184 项通过。
+- 完整非 E2E 回归：PowerShell 动态发现 `test_*.py` 并排除 `test_e2e.py`，647 项运行、643 项通过、4 项跳过、0 项失败。详细安全用例确认 3 项符号链接测试因 `WinError 1314` 缺少当前进程权限跳过；1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，244.453 秒，退出码 0。Kakuyomu 计划路径使用合成的人读索引与结构化审核模板；mock Provider 的内容拦截和段落错配属于负向测试。
+- 用户于 2026-11-19 提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 结果：9 项运行、3 项跳过、0 项失败。`-q` 输出未列出跳过原因或 checkout SHA；该结果保留为用户报告，不与本地当前工作树的 11 项详细结果合并，也不能单独证明符号链接用例已运行。
+- 本次只读复核确认人类版与 AI 版原文的抽样结果已记录于[人类版与 AI 版原文抽样核实](#2026-11-19-人类版与-ai-版原文抽样核实)；这是用户报告的部分抽查，不代表本次逐文件检查或全量内容验收。未调用真实 Provider、未批准试点 88 话映射、未生成真实译文，也未验证线上部署。
+
+## 2026-11-19 K4 决策链接入审核发布门禁
+
+- 决策摘要现在绑定 run-relative 候选路径。初版必须精确指向 `Drafts/<translation_file>`；返工版必须放在 `ReviewCandidates/<episode_id>/`，路径不能复用。记录只保存哈希、阶段判定和声明字段，不保存译文正文。
+- `record_translation_review_decision` 续写前会重验上一候选字节；返工候选必须位于当前 run、通过路径/符号链接检查、符合现有段落/引号契约，并且内容摘要不同于父版本。返工次数与策略摘要在同一链内固定，须由调用方显式传入，没有生产默认值。
+- 发布路径现消费决策链：没有决策链的旧 schema v1 人工 checklist 保持兼容；存在决策链时，旧 checklist 不能绕过门禁。只有链尾 `passed` 候选可以生成 schema v2 checklist，且绑定最终修订号、路径、候选摘要和决策摘要；八项人工检查仍须全部通过、无 issues、声明独立性并填写 UTC 审核时间。
+- 发布回执 schema v2 绑定最终候选和决策摘要。发布、重试与 run 完成核验会复核决策链、审核快照和候选字节，正式译文字节必须等于本次批准的最终候选；返工时原始 `Drafts/` 保持不变。`rework`、`needs_human`、候选篡改或既有输出冲突时不会写入新正式译文。
+- `needs_human` 当前是终止门禁：没有同一 run 内的人类仲裁回执/恢复入口。为失败或耗尽设定可覆盖权限前，不能将人工 checklist 当作绕过方式；仲裁责任与允许结果仍需明确。
+- 最大返工次数、策略摘要和阶段判定规则仍由调用方显式提供；代码没有选定终审 Provider/model、语义阈值或人工升级责任。哈希只能验证数据绑定和完整性，不能认证审核身份、策略执行或判定质量。旧人工 checklist 身份未签名认证。本增量不调用 Provider，也没有可部署的服务端或 Web 应用。
+- `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：47 项通过，覆盖旧 checklist 兼容、直通/返工候选发布、链路绕过拒绝、路径约束、候选/审核快照篡改、排他发布及状态恢复。
+- 门禁接入后完整回归：PowerShell 动态发现并排除 `test_e2e.py`，630 项运行、626 项通过、4 项因当前 Windows FIFO/符号链接能力跳过、0 项失败，用时 94.331 秒；`.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 7 项通过，418.613 秒，退出码 0。mock 中的 Provider 拒绝/格式异常来自预期负向 fixture，不是对真实端点的访问。
+- `.venv\Scripts\python.exe -m py_compile translation_review_state.py translation_review.py scripts\record_translation_review_decision.py scripts\prepare_translation_review.py scripts\publish_reviewed_translation.py scripts\publish_reviewed_run.py tests\test_translation_review_state.py tests\test_translation_review.py`、决策脚本 `--help`、`git diff --check`：通过。无真实 Provider、Kakuyomu、Notion 请求或部署。
+
+## 2026-11-19 试点计划映射续接核验
+
+- 对项目 `SourceArchive/source_catalog.raw-html-2026-11-17.json` 按 `workflow_paths.json` 配置的译文根执行 provider-free `--plan-only` 预览，得到 88/88 来源有效、0 问题、`network_requests=0`、`provider_calls=0`、`filesystem_writes=0`。
+- 预览与旧计划的来源版本、AI 输入路径/哈希、清洗索引/manifest、译文目标均一致；差异是 88 个 TM key 均从旧 `kakuyomu:` 命名变为当前 `source-edition:`。旧审批摘要 `331013b8...` 因映射身份变化不能沿用。
+- 用 `--plan-output` create-only 新建 `projects/祝福のネトラレラ/Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json`，摘要 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。新计划 `ready_for_review`，88/88 已验证、0 问题；`translation_plan_approval.load_translation_plan` 重算摘要一致。此次唯一文件写入是该新计划；旧计划未覆盖，未创建审批回执。
+- 2026-11-19 续接时重跑 `.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI`：`verified`、88 话；读取 raw 793,183 bytes，重算 AI 774,253 bytes、人读 799,293 bytes。验证器返回 AI index SHA-256 `09da2e6c...`、human index SHA-256 `f8ab7563...`；新计划绑定的 AI index SHA-256 与验证器一致。验证器本地读取原始来源和两版文件，不输出正文且不写文件。
+- 当前 `Workflow/Approvals/` 无审批回执，`Knowledge/` 尚无 reviewed summary/glossary 产物。计划预览只验证当前映射及字节/版本绑定，不代表 88 话映射或双版本清洗已人工验收，也不代表知识语义正确。校验器在本机读取 `RAWs_AI` 字节以复算哈希；正文未显示、另存或外传。未读取密钥、未调用 Provider 或网络。
+- K5 仍需人工审阅新计划与 AI/人读版、为新摘要生成匹配审批回执、审核全书概要/术语，再完成 Provider 配置与单话试点。K4 独立终审的 Provider/model、通过规则、返工上限及人工升级责任仍待用户决定。
+
+## 2026-11-19 K5 结构化计划审阅模板
+
+- 新增 `translation_plan_approval.create_plan_review_template` 与 `verify_plan_review_template`。模板只保存计划映射、AI/人读索引摘要、逐话文件路径/哈希和三项待审决定，不保存章节正文；创建和审批时都会按受限路径实际读取人读 Markdown 并复核其索引摘要，初始决定均为 `pending`。
+- `scripts/prepare_translation_plan_review.py` 以 create-only 方式生成模板，输出必须位于 `SourceArchive/` 之外。当前试点模板为 `projects/祝福のネトラレラ/Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.human-review.json`，含 88 行、264 个待审决定。人工填写每话的 `mapping_decision`、`ai_edition_decision`、`human_edition_decision` 为 `pass` 并清空 `issues` 后，`scripts/approve_translation_plan.py --review <模板> --human-index <当前 SOURCE_MAP.json>` 才会把模板摘要写入 schema v2 审批回执。
+- 验证会重算当前计划和人读索引摘要，并复核索引指向的章节文件哈希；拒绝过期映射、索引变化、缺话、文件哈希不符、字段篡改和任何未通过决定。旧 schema v1 回执仍可读取；schema v2 必须包含 `review_sha256`。回执仍是未签名的本地声明，不认证审核者身份或语义质量。
+- 合成验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_plan_approval -q`（15 项）和 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_workflow -q`（14 项）通过；覆盖索引伪报哈希、索引/章节变化、pending 拒绝及 CLI 生成 schema v2 回执。相关源码/脚本 `py_compile`、CLI `--help` 通过。当前试点没有生成模板或审批回执，人工审阅仍未完成。
+- K5 实施时的全量非 E2E 回归动态发现 625 项，621 项通过、4 项跳过、0 项失败，用时 96.068 秒；跳过仍为 Windows FIFO 1 项和符号链接 3 项能力限制。当时的 mock E2E 未重跑；后续续接复验结果见本节末尾。
+- 对当前试点计划和外部 `生肉/SOURCE_MAP.json` 的预检成功复核 88 个实际章节文件及索引摘要 `f8ab7563...`。随后 create-only 生成上述真实模板；验证器确认 264 个决定全部 pending 并以“not fully approved”拒绝审批。没有创建审批回执或输出章节正文。
+- 2026-11-19 当前续接再次对既有模板执行只读验证：读取当前计划、人读 `SOURCE_MAP.json` 与其 88 个映射章节，重新构造期望模板后因 264 项仍待人工审阅而拒绝。另以随机系统临时路径运行审批 CLI 预检，退出码 1，回执文件未创建。该检查确认模板仍绑定当前索引和章节摘要，不代表人工内容审阅或计划批准。
+- 2026-11-19 后续复验 `.venv\Scripts\python.exe tests\run_tests.py`：当前 checkout 的本地 mock E2E 7 项通过，337.441 秒，退出码 0。输出中的 Provider 内容过滤和段落数不匹配属于负向夹具的预期失败；测试 runner 汇总为 `OK`。这仍是合成接口验证，未调用真实 Provider、站点或部署服务。
+
+## 2026-11-19 K4 合成审核状态转移核
+
+- 新增 `translation_review_state.py::decide_review_transition`。它只消费 `fidelity`、`fluency`、`style` 三阶段的显式判定和调用方提供的返工次数；三阶段全部 `pass` 才返回 `passed/publishable=true`。明确失败在预算尚有余量时返回 `rework`；预算耗尽、阶段缺报、不确定或判定冲突均返回 `needs_human`。
+- 新增 `create_review_decision_record` / `verify_review_decision_record`，将转移、显式预算、策略摘要、run/episode/source 身份、候选修订号和父候选/当前候选摘要绑定为可重算 SHA-256 的内容无关记录。修订号须与已用返工次数一致；初始版本不能有父摘要，返工版本须绑定不同的父候选摘要。审核者 ID 是声明，不认证身份。
+- `translation_review.py::record_translation_review_decision` 和 `scripts/record_translation_review_decision.py` 可在现有 `review_pending` run 下追加 `ReviewDecisions/<episode_id>/` 记录：初版默认绑定精确的 `Drafts/<translation_file>`，返工版只能使用 `ReviewCandidates/<episode_id>/` 下 run 内候选文件；create-only 存储会验证连续修订、父摘要、候选路径、来源/策略/预算一致性和上一版 `rework` 状态。记录不复制正文。
+- 最大返工次数必须由调用方显式传入，允许 `0`，没有默认值。该模块不制定评分或问题阈值，不调用 Provider，不保存译文正文；后续接入发布门禁见[决策链发布门禁](#2026-11-19-k4-决策链接入审核发布门禁)。记录摘要证明字段未被改动，不证明策略、审核者、父记录或审核质量真实。
+- `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：42 项通过，覆盖状态核、链路恢复/篡改/幂等和既有人工发布器。脚本 `--help`、相关源码 `py_compile` 与 `git diff --check` 通过。未调用 Provider。
+- 跨模块回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state tests.test_kakuyomu_workflow tests.test_pipeline_contracts -q`：190 项通过。随后 `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，425.782 秒，退出码 0；负向夹具的内容过滤、段落契约、鉴权和损坏 TM 日志属于预期输出。未调用真实 Provider、站点或部署服务。
+- 当前完整非 E2E 动态回归（排除 `test_e2e.py`）运行 620 项，616 项通过、4 项跳过、0 项失败，用时 99.658 秒；跳过为当前 Windows 无法创建 FIFO 的 1 项和符号链接的 3 项。
+
+## 2026-11-19 正式项目校对/反思/润色分项轨迹
+
+- 正式 run 的既有 `StageReports` 现在把 `_run_refinement_loop` 的 `proofreading`、每次 `reflection` 和 `polishing` 分别记为尝试列表。每条只含状态、输入/输出 SHA-256、模型标识和尝试序号；校对列表另记录模型报告的 `none`/`minor`/`severe` 标签，不保存批注、原文、译文、提示词或响应正文。
+- `run_chapter` 的失败记录现在标出发生异常的具体子阶段；原质量门禁、异常传播、兼容模式回退及章节提交顺序不变。该记录细分现有调用轨迹，不代表“信、达、雅”各有独立审核、评分或人工/AI 终审。
+- 定向验证：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_kakuyomu_workflow -q`，180 项通过；覆盖流水线阶段契约、失败报告定位、配置恢复、RAG 门禁和 Kakuyomu 编排。
+- 全量非 E2E：动态发现 `tests/test_*.py` 并排除 `test_e2e.py`，596 项运行、592 项通过、4 项跳过、0 失败，用时 47.287 秒。4 项为当前 Windows 环境无法创建 FIFO 的 1 项和符号链接的 3 项。命令：`$testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName }); .\.venv\Scripts\python.exe -m unittest @testModules -q`。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，用时 205.636 秒，退出码 0。fixture 中预期的内容过滤与段落契约负例会打印失败轨迹；runner 汇总通过。
+- `.venv\Scripts\python.exe -m py_compile pipeline.py tests\test_pipeline_contracts.py` 与 `git diff --check`：通过。未调用真实 Provider、读取试点正文或部署服务。
+- 本阶段只细化运行轨迹和失败定位；模型返回的 severity 不等于语义质量证明。K4 终审规则、Provider/model、返工上限及耗尽后的人工升级责任仍待用户决定，K5 真实 Provider 与人工试点验收未完成。
+
+## 2026-11-18 正式项目翻译质量门禁
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `7ea8e10`；在保留现有文档修改与受保护未跟踪索引的前提下，新增正式项目模式的局部门禁。本节记录 K3 阶段失败策略；显式 JSON/兼容入口的已知正式输出根保护见下节，其阶段回退行为仍保持兼容。
+- `pipeline.py::_run_refinement_loop` 在 `REQUIRE_REVIEWED_PUBLICATION=True` 时，对无效校对 schema/段落、未解决的严重校对意见、无效反思结果及无效/不可读润色响应抛出 `TranslationQualityGateError`。`run_chapter` 在调用 `commit_chapter_translation` 前等待该阶段，因此本章输出和 TM 均不写入。provider/鉴权/传输异常仍按原异常传播，不转为回退译文。
+- Kakuyomu CLI 对该专用门禁异常返回非零码并显示固定的门禁原因及计划话目位置，方便定位需要重跑的阶段；不回显文件名或输入正文。其他异常仍仅显示类型，不回显可能包含输入数据的异常正文。
+- Kakuyomu 编排器不会自动把异常中的 run 标成完成或失败：未写出 `run.json` 的 run 保留 `running` 状态，操作者可用相同 `--run-id` 和同一计划重试；计划摘要改变时拒绝复用。成功写出 `run.json` 后，`run_state.json` 通过原子替换推进为 `review_pending`，与可审阅清单保持一致。流水线逐章验证并跳过已提交草稿，当前未通过质量门禁的章节没有输出/TM。CLI 对该异常返回非零状态；这不是自动重试或终审返工链。
+- `run_workflow` 现在保存并恢复其显式覆盖的 `Config` 字段（包括输入/输出根、章节映射、质量门禁、run ID、bundle 和单话知识开关），覆盖早期返回、异常和成功路径；同一 Python 进程中的嵌入式调用或续跑不会继承上一次项目状态。Kakuyomu 定向测试同时断言质量门禁异常和成功续跑后的配置恢复。
+- `STRICT_REFLECTION_MODE` 仍由操作者显式启用；默认不会因为进入项目模式而增加初译 Provider 的 `translation_text` 授权或额外请求。启用时沿用当前代码的两次反思重试；项目路径在预算耗尽且仍为 `severe` 时停止。该两次是既有实现细节，不构成用户已确认的最终返工次数策略。
+- 本轮定向验证：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_kakuyomu_workflow -q`：178 项通过，覆盖正式项目拒绝未审核 TM 检索、run-state helper、编排续跑、review_pending 成功码、CLI 安全错误呈现和阶段报告追加/恢复/损坏保护。run-state helper 验证相同 run ID/计划可续用未完成 run、保留既有草稿，并拒绝计划摘要变化；编排测试注入一次质量门禁异常后用同一 run ID 重试，确认失败时无 `run.json`、重试成功后才生成清单；pipeline 用例覆盖失败章节不写输出/TM。
+- 最新全量非 E2E：PowerShell 动态发现 `tests/test_*.py` 并排除 `test_e2e.py`，594 项运行、590 项通过、4 项因当前 Windows 符号链接/FIFO 能力跳过、0 失败，44.369 秒。此结果包含正式项目拒绝 `ALLOW_UNREVIEWED_TM=true` 的门禁用例、输出模式、阶段报告及 K4 发布产物复核/状态降级用例。命令为 `$testModules = @(Get-ChildItem -LiteralPath tests -File -Filter 'test_*.py' | Where-Object { $_.Name -ne 'test_e2e.py' } | ForEach-Object { 'tests.' + $_.BaseName }); .\.venv\Scripts\python.exe -m unittest @testModules -q`。
+- 最新完整 `.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，211.406 秒，runner 退出码 0。Kakuyomu 发布链现通过批量 run 发布入口；content-filter 和段落契约异常来自预期负向 fixture。E2E 合成译文写入 `translated/`，避免将未审核测试输出命名为正式目录 `熟肉/`。
+- `.venv\Scripts\python.exe -m py_compile pipeline.py translation_review.py rag_engine.py scripts\run_kakuyomu_workflow.py scripts\publish_reviewed_run.py tests\test_pipeline_contracts.py tests\test_kakuyomu_workflow.py tests\test_rag_engine_unit.py tests\test_translation_review.py tests\test_e2e.py`、`git diff --check`：通过。未调用真实 Provider、读取真实书籍正文或部署服务。
+- 边界：这是基于模型提供 `severity` 的确定性流程门禁，不证明模型判断准确；尚未实现“信、达、雅”独立审核职责/语义审核报告、评分阈值、终审返工链或身份认证。当前新增的 hash-only 阶段轨迹只用于运行审计。完整验收计划见[知识库与翻译闭环实施计划](end-to-end-workflow-target.md#知识库与翻译闭环实施计划)。
+- 回滚边界：该增量不改数据格式或已存数据；恢复旧兼容行为需回滚这段代码变更。不要通过关闭 `REQUIRE_REVIEWED_PUBLICATION` 回滚，因为它同时关闭项目模式其他审核与输出隔离约束。
+
+## 2026-11-18 正式项目阶段审计报告
+
+- `TranslationPipeline.run_chapter` 在正式项目模式成功提交章节后，或在阶段/提交异常时，向 `Workflow/Runs/<run_id>/StageReports/episode-<tm-key-sha256-prefix>.json` 原子追加一次尝试记录。报告包含 run/work/章节映射、来源版本与 AI 输入哈希，以及 `context`、`annotation`、`translation`、`proofreading_polishing`、`commit` 的状态、输入/输出 SHA-256、模型标识和有限元数据。
+- 报告不保存原文、译文、提示词或模型响应正文；它是运行轨迹和失败定位证据，不是“信、达、雅”独立审核报告，也不提供语义评分或质量达标证明。`proofreading_polishing` 目前表示现有校对/润色组合阶段，不能解释为两个独立审核职责。
+- 同一话目重试会保留既有 `attempts` 并追加新记录；阶段失败仍由原异常决定章节是否停止，报告写入失败只记录日志。成功提交后若报告无法持久化，正式运行返回错误并保留已写出的草稿/TM，操作者应按相同 run 继续核对和重试。
+- 已提交但缺少报告的章节在后续正式续跑中只补一条 `recovered` 记录，不重新调用模型；已有报告必须匹配当前 run 和章节映射，损坏、过大或错配报告会失败关闭并保留原文件，避免静默覆盖审计证据。
+- 本轮新增 `tests.test_pipeline_contracts.TestParagraphContracts.test_formal_stage_report_is_hash_only_and_attempts_are_append_only`，验证正式路径报告落点、失败/成功两次尝试、失败类型和正文不落盘。该增量仍不覆盖断电、多进程并发、独立终审或人工审核身份。
+
+## 2026-11-18 兼容入口正式目录保护
+
+- `TranslationPipeline` 对未审核输出强制要求 `TRANSLATION_OUTPUT_MODE="compatibility_draft"`；显式 JSON 未标记、标记非法或同时要求 reviewed publication 时失败关闭。项目加载器设置内部 `reviewed_run_draft`，Kakuyomu 编排器仅在活动 run 草稿目录中设置该模式，并由配置保护器恢复调用前状态。测试工作区使用隔离的 `test_draft`。
+- `compatibility_draft` 可使用任意兼容输出路径，但明确不属于正式发布。即使标记为 draft，pipeline 仍拒绝项目默认 `熟肉/`、`workflow_paths.json` 声明的正式输出根及这些根的子目录；符号链接按解析后的目标检查。正式译文仍只能经带审核回执的 create-only 发布器创建。直接构造 `TranslationPipeline` 的 Python 调用方也必须设置兼容 draft 模式，不能只靠选择一个看起来像草稿的目录。
+- JSON 迁移：旧显式配置若继续使用未审核兼容流水线，增加 `"TRANSLATION_OUTPUT_MODE": "compatibility_draft"`；项目正式 run 不添加该字段，由 Kakuyomu 编排器设置 reviewed 模式。现有显式 JSON 配置的解析/路径读取不受影响；仅直接执行未审核翻译的旧配置需要显式声明。
+- 验证命令：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q`，覆盖未标记 JSON 拒绝、draft 标记通过、兼容/正式模式冲突、正式目标拒绝及 Kakuyomu run 模式恢复；本轮最新结果见下方当前验证记录。
+- 回滚边界：移除模式校验会重新允许未审核调用者把任意输出目录默认为可写目标；正式目录保护仍独立生效，但不再足以证明任意输出仅作草稿。
+
+## 2026-11-18 发布回执中断恢复测试
+
+- 对现有逐话审核发布器做故障注入：正式译文 create-only 写入成功后，模拟 `Published/<episode_id>.json` 回执写入失败。首次调用留下与已审批草稿字节一致的目标且不留下回执；以相同 run 和审核文件重试时，发布器识别目标字节一致、不覆盖目标并补写已审核回执。
+- 发布时同步创建 `Published/ReviewSnapshots/<episode_id>.json`，保存本次批准审核 JSON 的原始字节；重试复用相同快照，若审核文件与已固化快照不一致则拒绝发布，避免回执只保留摘要哈希而缺少可重读的本地审核证据。该快照仍不能认证审核者身份或证明语义质量。
+- 正式目标创建前预检 run 状态及该话既有快照/回执；内容冲突、非法 run 状态或非目录发布路径会先失败，避免已知冲突留下未登记译文。
+- 当 run 内全部话目都有与清单匹配的发布回执、哈希匹配的批准审核快照和与草稿字节相同的正式译文时，`run_state.json` 原子推进为 `published`；缺少产物时保持 `review_pending`，已有 `published` 状态会先降为待审核再重新核验，冲突则失败且保留文件。旧版已有 `run.json` 但状态仍为 `running` 的 run 会在首次发布时迁移到相应状态；旧的手工 `run.json` 若没有状态文件仍可发布，但不会凭空生成生命周期状态。
+- 新增 `scripts/publish_reviewed_run.py` 批量入口：逐话复用同一审核/来源/草稿门禁，返回 `published`、`review_pending` 或 `blocked`，错误摘要只包含话目位置和异常类型，不回显正文或异常消息。
+- 本次续接定向验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_kakuyomu_workflow -q`：32 项通过，新增覆盖删除译文后的状态降级与恢复、审核快照篡改拒绝、已发布译文变更拒绝。该检查是本地合成数据，不证明任意断电、多进程并发或完整终审返工链。
+- 续接点：K4 仍需人类确认终审质量阈值、返工上限和升级责任，再实现 AI 独立终审/返工版本链；K5 需先验收试点映射与知识、配置获准 Provider 和预算，再做受控首话及人工验收。当前交付是本地 CLI，没有托管服务可部署。
+
+## 2026-11-19 人类版与 AI 版原文抽样核实
+
+- `用户报告`：已核实人类版目录中的部分单话文件和大合集文件，未发现明显问题。核实目录：`D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉`。
+- `用户报告`：已核实 AI 版的部分单话文件和大合集文件，未发现明显问题。单话核实目录：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\`；关联的大合集文件：`projects/祝福のネトラレラ/RAWs_AI/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27/book-ai.json`。
+- 本记录转述用户的抽样核实，不表示本次执行了逐文件复核；抽样文件清单、检查准则、全量覆盖、逐段语义准确性和格式/阅读器验收范围未提供或未验证。不得据此把两套版本标记为全量验收通过。
+
 ## 2026-11-18 CodeRabbit 未提交差异复核
 
 - 复核范围覆盖当前 `07efed2` 基线上的未提交工作树；CodeRabbit 多轮报告的有效问题均逐项对照代码处理，审查快照误报（当前源码签名已支持的 TM 参数）未采纳。
@@ -159,7 +282,7 @@
 - 当时未指定 `--source-edition` 的 schema v1 默认计划预览为 `ready_for_review`，88/88 归档 provenance 有效；每话的 `RAWs_AI` 镜像路径/哈希另行绑定。摘要为 `22db616990740a39427146717945deb62ea3841a508af2ac7a2b701630293299`。该旧 schema 计划已由本页后续记录的 schema v2 计划取代；它的历史 stdout 预览为 0 网络、0 Provider、0 文件写入。
 - 定向 mock E2E `.\.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`：1 项通过。当时该 E2E 验证 TM 原文等于计划绑定的不可变 AI 归档内容；由于归档版本和 `RAWs_AI` 镜像字节相同，这条旧断言本身不能证明读取发生在哪个根目录。当前直接从 `RAWs_AI` 读取的回归见本页顶部新记录。`git diff --check` 通过。上述检查不构成真实 Provider 翻译或人工清洗验收。
 - I5 离线 EPUB candidate 子项复核：`.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v` 为 23 项通过；`py_compile` 与 `scripts\build_epub_candidate.py --help` 通过。仅用合成章节调用 Pandoc；没有试点译文、EPUBCheck 或目标阅读器验证，因此 I5 整体仍为`部分实现`。
-- 新增 `kakuyomu_html_archive.py` / `scripts/validate_kakuyomu_html_archive.py`，先统计全部历史和当前 `raw_page_html` 文件大小，超出默认 1 GiB 上限时在任何 artifact 哈希扫描前拒绝；通过预检后只读检查 source manifest 全部文件哈希，并验证每个最新 HTML artifact 的 episode metadata、当前 raw lineage、标题与 parser v4 重放正文哈希；摘要不含正文。对试点运行返回 `verified`、356 个文件哈希有效、88/88 最新 HTML 正文一致，读取 HTML 4,814,835 bytes 并重放 793,183 body bytes。历史 HTML 仅核验 manifest 哈希；回放按 UTF-8 解码，因为清单未保存 HTTP Content-Type。当前 HTML 正文结构计数为 `div=88`、`p=17096`、`br=10202`、`ruby/rb/rt=51`、`rp=102`；没有 `em.emphasisDots` 或 `img`。计数不代表人工语义或阅读器验收。
+- 新增 `kakuyomu_html_archive.py` / `scripts/validate_kakuyomu_html_archive.py`，先统计全部历史和当前 `raw_page_html` 文件大小，超出默认 1 GiB 上限时在任何 artifact 哈希扫描前拒绝；通过预检后只读检查 source manifest 全部文件哈希，并验证每个最新 HTML artifact 的 episode metadata、当前 raw lineage、标题与 parser v4 重放正文哈希；摘要不含正文。对当时试点运行返回 `verified`、356 个文件哈希有效、88/88 最新 HTML 正文一致，读取 HTML 4,814,835 bytes 并重放 793,183 body bytes。历史 HTML 仅核验 manifest 哈希；当时回放固定按 UTF-8 解码，因清单未保存 HTTP Content-Type。该历史限制已由[2026-11-19 字符集续验](#2026-11-19-当前工作树回归与来源边界修复)更新：新采集记录规范化 charset，旧 metadata 缺字段时仍兼容 UTF-8。当前 HTML 正文结构计数为 `div=88`、`p=17096`、`br=10202`、`ruby/rb/rt=51`、`rp=102`；没有 `em.emphasisDots` 或 `img`。计数不代表人工语义或阅读器验收。
 - 新验证器回归：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_html_archive tests.test_source_ingestion -q`：50 项通过；新增模块 8 项通过，覆盖成功重放、损坏/错配、旧 lineage、标题不符、含历史版本的总字节上限和不回显正文。`.venv\Scripts\python.exe -m py_compile kakuyomu_html_archive.py scripts\validate_kakuyomu_html_archive.py tests\test_kakuyomu_html_archive.py` 与 CLI `--help` 通过。真实归档命令：`.venv\Scripts\python.exe scripts\validate_kakuyomu_html_archive.py --source-root projects\祝福のネトラレラ\SourceArchive`。
 
 ## 2026-11-17 项目模式已审核术语表门禁
@@ -715,7 +838,8 @@
 {
   "WORKSPACE_DIR": "D:/books/example",
   "RAW_DIR": "D:/books/example/生肉",
-  "OUTPUT_DIR": "D:/books/example/熟肉",
+  "OUTPUT_DIR": "D:/books/example/Workflow/LegacyDrafts",
+  "TRANSLATION_OUTPUT_MODE": "compatibility_draft",
   "INFO_PATH": "D:/books/example/Knowledge/作品基本信息.json",
   "GLOSSARY_PATH": "D:/books/example/Knowledge/Glossary.json",
   "GUIDELINES_PATH": "D:/books/example/Knowledge/guidelines.txt",

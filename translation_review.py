@@ -9,14 +9,21 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from book_bundles import DEFAULT_MAX_TOTAL_BUNDLE_BYTES
 from source_editions import read_verified_ai_edition_bytes, verify_ai_edition_index
 from source_manifest import verify_current_normalized_source_metadata
+from translation_review_state import (
+    create_review_decision_record,
+    load_review_decision_chain,
+    write_review_decision,
+)
 from utils import (
     open_regular_file,
     require_aligned_paragraphs,
     resolve_child_path,
     resolve_relative_path,
     split_paragraphs,
+    write_text_atomically,
     write_new_child_text,
 )
 
@@ -93,6 +100,15 @@ _REVIEW_FIELDS = frozenset(
         "checks",
         "issues",
         "notes",
+    }
+)
+_REVIEW_CHAIN_FIELDS = frozenset(
+    {
+        *(_REVIEW_FIELDS - {"draft_file", "draft_sha256"}),
+        "candidate_revision",
+        "candidate_relative_path",
+        "candidate_sha256",
+        "decision_sha256",
     }
 )
 
@@ -254,7 +270,7 @@ def _load_run(run_directory: str | Path) -> tuple[Path, dict, bytes]:
             or not _SHA256_PATTERN.fullmatch(episode["draft_sha256"])
             or isinstance(episode["draft_bytes"], bool)
             or not isinstance(episode["draft_bytes"], int)
-            or episode["draft_bytes"] < 1
+            or episode["draft_bytes"] < 0
         ):
             raise ValueError("Translation run contains invalid episode digests.")
     if run.get("created_at_utc") is not None:
@@ -334,14 +350,20 @@ def _verify_current_inputs(run: dict, episode: dict) -> bytes:
             str(ai_root),
             book_bundle["ai_bundle_relative_path"],
         )
+        ai_bundle_digest = hashlib.sha256()
+        ai_bundle_size = 0
         with open_regular_file(ai_bundle_path, binary=True) as stream:
-            ai_bundle_bytes = stream.read(_MAX_RUN_BYTES + 1)
-        if (
-            len(ai_bundle_bytes) > _MAX_RUN_BYTES
-            or not hmac.compare_digest(
-                _sha256_bytes(ai_bundle_bytes),
-                book_bundle["ai_bundle_sha256"],
-            )
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                ai_bundle_size += len(chunk)
+                if ai_bundle_size > DEFAULT_MAX_TOTAL_BUNDLE_BYTES:
+                    raise ValueError("Translation run AI book bundle is too large.")
+                ai_bundle_digest.update(chunk)
+        if not hmac.compare_digest(
+            ai_bundle_digest.hexdigest(),
+            book_bundle["ai_bundle_sha256"],
         ):
             raise ValueError("Translation run AI book bundle changed.")
     indexed = index_result["episodes_by_id"].get(episode["episode_id"])
@@ -388,9 +410,18 @@ def _load_draft(
         )
     ):
         raise ValueError("Translation draft changed after the run was completed.")
+    _validate_translation_bytes(source_bytes, draft_bytes, "Reviewed translation")
+    return draft_bytes
+
+
+def _validate_translation_bytes(
+    source_bytes: bytes,
+    translation_bytes: bytes,
+    label: str,
+) -> bytes:
     try:
         source_text = source_bytes.decode("utf-8")
-        translation_text = draft_bytes.decode("utf-8")
+        translation_text = translation_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Translation source and draft must be UTF-8.") from exc
     source_paragraphs = split_paragraphs(source_text)
@@ -398,7 +429,7 @@ def _load_draft(
     require_aligned_paragraphs(
         source_paragraphs,
         translated_paragraphs,
-        "Reviewed translation",
+        label,
     )
     if any(not paragraph.strip() for paragraph in translated_paragraphs):
         raise ValueError("Translation draft contains an empty paragraph.")
@@ -409,7 +440,7 @@ def _load_draft(
             != tuple(mark for mark in translated if mark in quote_marks)
         ):
             raise ValueError("Translation draft does not preserve source quote marks.")
-    return draft_bytes
+    return translation_bytes
 
 
 def build_translation_run_manifest(
@@ -425,6 +456,7 @@ def build_translation_run_manifest(
     draft_root: str = "Drafts",
     translation_root: str,
     book_bundle: dict | None = None,
+    episode_ids: list[str] | None = None,
 ) -> dict:
     """Bind completed draft files to the current verified AI edition."""
     if not isinstance(run_id, str) or not _RUN_ID_PATTERN.fullmatch(run_id):
@@ -460,6 +492,21 @@ def build_translation_run_manifest(
     if len(plan_by_id) != len(plan["episodes"]):
         raise ValueError("Translation plan contains duplicate or invalid episodes.")
     draft_path = Path(draft_root).resolve(strict=True)
+    if episode_ids is None:
+        selected_episode_ids = set(plan_by_id)
+    else:
+        if (
+            not isinstance(episode_ids, list)
+            or not episode_ids
+            or any(
+                not isinstance(episode_id, str)
+                or episode_id not in plan_by_id
+                for episode_id in episode_ids
+            )
+            or len(set(episode_ids)) != len(episode_ids)
+        ):
+            raise ValueError("Translation run episode selection is invalid.")
+        selected_episode_ids = set(episode_ids)
     episodes = []
     if set(plan_by_id) != set(ai_result["episodes_by_id"]):
         raise ValueError("Translation plan episode set differs from the AI edition.")
@@ -492,6 +539,8 @@ def build_translation_run_manifest(
             != plan_episode.get("source_version_id")
         ):
             raise ValueError("Translation plan archive lineage is stale.")
+        if episode_id not in selected_episode_ids:
+            continue
         source_bytes = read_verified_ai_edition_bytes(
             str(ai_path),
             indexed["ai_relative_path"],
@@ -575,7 +624,63 @@ def prepare_translation_review(
     run_root, run, run_bytes = _load_run(run_directory)
     episode = _run_episode(run, episode_id)
     source_bytes = _verify_current_inputs(run, episode)
-    _load_draft(run_root, run, episode, source_bytes)
+    chain = load_review_decision_chain(
+        run_root,
+        episode_id=episode_id,
+        expected_run_id=run["run_id"],
+        expected_work_id=run["work_id"],
+        expected_source_version_id=episode["source_version_id"],
+        expected_source_sha256=episode["source_sha256"],
+    )
+    if chain:
+        final_decision = chain[-1]
+        if final_decision["transition"]["status"] != "passed":
+            raise ValueError(
+                "A review checklist requires a final passed decision candidate."
+            )
+        candidate_bytes = _load_review_candidate(
+            run_root,
+            run,
+            episode,
+            source_bytes,
+            final_decision,
+        )
+        review = {
+            "schema_version": 2,
+            "run_id": run["run_id"],
+            "run_manifest_sha256": _sha256_bytes(run_bytes),
+            "plan_sha256": run["plan_sha256"],
+            "work_id": run["work_id"],
+            "episode_id": episode["episode_id"],
+            "position": episode["position"],
+            "source_version_id": episode["source_version_id"],
+            "source_input_file": episode["source_input_file"],
+            "source_sha256": episode["source_sha256"],
+            "candidate_revision": final_decision["candidate_revision"],
+            "candidate_relative_path": final_decision[
+                "candidate_relative_path"
+            ],
+            "candidate_sha256": final_decision["candidate_sha256"],
+            "decision_sha256": final_decision["decision_sha256"],
+        }
+        review_digest = final_decision["candidate_sha256"]
+    else:
+        candidate_bytes = _load_draft(run_root, run, episode, source_bytes)
+        review = {
+            "schema_version": 1,
+            "run_id": run["run_id"],
+            "run_manifest_sha256": _sha256_bytes(run_bytes),
+            "plan_sha256": run["plan_sha256"],
+            "work_id": run["work_id"],
+            "episode_id": episode["episode_id"],
+            "position": episode["position"],
+            "source_version_id": episode["source_version_id"],
+            "source_input_file": episode["source_input_file"],
+            "source_sha256": episode["source_sha256"],
+            "draft_file": f"{run['draft_root']}/{episode['translation_file']}",
+            "draft_sha256": episode["draft_sha256"],
+        }
+        review_digest = episode["draft_sha256"]
     reviews_root = resolve_relative_path(
         str(run_root),
         review_directory,
@@ -585,27 +690,17 @@ def prepare_translation_review(
         raise ValueError("Review directory must not be a symbolic link.")
     reviews_root.mkdir(exist_ok=True)
     resolve_relative_path(str(run_root), review_directory)
-    review = {
-        "schema_version": 1,
-        "run_id": run["run_id"],
-        "run_manifest_sha256": _sha256_bytes(run_bytes),
-        "plan_sha256": run["plan_sha256"],
-        "work_id": run["work_id"],
-        "episode_id": episode["episode_id"],
-        "position": episode["position"],
-        "source_version_id": episode["source_version_id"],
-        "source_input_file": episode["source_input_file"],
-        "source_sha256": episode["source_sha256"],
-        "draft_file": f"{run['draft_root']}/{episode['translation_file']}",
-        "draft_sha256": episode["draft_sha256"],
-        "reviewer_id": "",
-        "independence_confirmed": False,
-        "reviewed_at_utc": "",
-        "decision": "pending",
-        "checks": {name: "pending" for name in _REVIEW_CHECKS},
-        "issues": [],
-        "notes": "",
-    }
+    review.update(
+        {
+            "reviewer_id": "",
+            "independence_confirmed": False,
+            "reviewed_at_utc": "",
+            "decision": "pending",
+            "checks": {name: "pending" for name in _REVIEW_CHECKS},
+            "issues": [],
+            "notes": "",
+        }
+    )
     review_name = f"{episode['episode_id']}.json"
     review_path = resolve_child_path(
         str(reviews_root),
@@ -621,13 +716,53 @@ def prepare_translation_review(
             if stream.read() != content:
                 raise ValueError("Existing review file differs from its template.")
         created = False
-    return {
+    report = {
         "status": "review_template_ready",
         "episode_id": episode_id,
         "review_path": str(review_path),
         "created": created,
-        "draft_sha256": episode["draft_sha256"],
     }
+    if review["schema_version"] == 2:
+        report.update(
+            {
+                "candidate_revision": review["candidate_revision"],
+                "candidate_sha256": review_digest,
+            }
+        )
+    else:
+        report["draft_sha256"] = review_digest
+    return report
+
+
+def _load_review_candidate(
+    run_root: Path,
+    run: dict,
+    episode: dict,
+    source_bytes: bytes,
+    decision: dict,
+) -> bytes:
+    relative_path = decision["candidate_relative_path"]
+    if decision["candidate_revision"] == 0 and relative_path != (
+        f"{run['draft_root']}/{episode['translation_file']}"
+    ):
+        raise ValueError("Initial review candidate differs from the run draft.")
+    candidate_path = resolve_relative_path(str(run_root), relative_path)
+    with open_regular_file(candidate_path, binary=True) as stream:
+        candidate_bytes = stream.read(_MAX_TRANSLATION_BYTES + 1)
+    if (
+        len(candidate_bytes) > _MAX_TRANSLATION_BYTES
+        or not hmac.compare_digest(
+            _sha256_bytes(candidate_bytes),
+            decision["candidate_sha256"],
+        )
+    ):
+        raise ValueError("Review candidate changed after its decision.")
+    _validate_translation_bytes(source_bytes, candidate_bytes, "Review candidate")
+    if decision["candidate_revision"] == 0:
+        draft_bytes = _load_draft(run_root, run, episode, source_bytes)
+        if candidate_bytes != draft_bytes:
+            raise ValueError("Initial review candidate differs from the run draft.")
+    return candidate_bytes
 
 
 def _validate_approved_review(
@@ -637,33 +772,86 @@ def _validate_approved_review(
     run: dict,
     run_bytes: bytes,
     episode: dict,
-) -> tuple[dict, bytes]:
+) -> tuple[dict, bytes, bytes]:
     review, review_bytes = _read_json(
         review_path,
         _MAX_REVIEW_BYTES,
         "Translation review",
     )
-    if set(review) != _REVIEW_FIELDS:
-        raise ValueError("Translation review fields do not match schema v1.")
-    expected = {
-        "run_id": run["run_id"],
-        "run_manifest_sha256": _sha256_bytes(run_bytes),
-        "plan_sha256": run["plan_sha256"],
-        "work_id": run["work_id"],
-        "episode_id": episode["episode_id"],
-        "position": episode["position"],
-        "source_version_id": episode["source_version_id"],
-        "source_input_file": episode["source_input_file"],
-        "source_sha256": episode["source_sha256"],
-        "draft_file": f"{run['draft_root']}/{episode['translation_file']}",
-        "draft_sha256": episode["draft_sha256"],
-    }
+    schema_version = review.get("schema_version")
+    if schema_version == 1 and set(review) == _REVIEW_FIELDS:
+        chain = load_review_decision_chain(
+            run_root,
+            episode_id=episode["episode_id"],
+            expected_run_id=run["run_id"],
+            expected_work_id=run["work_id"],
+            expected_source_version_id=episode["source_version_id"],
+            expected_source_sha256=episode["source_sha256"],
+        )
+        if chain:
+            raise ValueError(
+                "A decision chain requires a review of its final passed candidate."
+            )
+        expected = {
+            "run_id": run["run_id"],
+            "run_manifest_sha256": _sha256_bytes(run_bytes),
+            "plan_sha256": run["plan_sha256"],
+            "work_id": run["work_id"],
+            "episode_id": episode["episode_id"],
+            "position": episode["position"],
+            "source_version_id": episode["source_version_id"],
+            "source_input_file": episode["source_input_file"],
+            "source_sha256": episode["source_sha256"],
+            "draft_file": f"{run['draft_root']}/{episode['translation_file']}",
+            "draft_sha256": episode["draft_sha256"],
+        }
+        source_bytes = _verify_current_inputs(run, episode)
+        candidate_bytes = _load_draft(run_root, run, episode, source_bytes)
+    elif schema_version == 2 and set(review) == _REVIEW_CHAIN_FIELDS:
+        chain = load_review_decision_chain(
+            run_root,
+            episode_id=episode["episode_id"],
+            expected_run_id=run["run_id"],
+            expected_work_id=run["work_id"],
+            expected_source_version_id=episode["source_version_id"],
+            expected_source_sha256=episode["source_sha256"],
+        )
+        if not chain or chain[-1]["transition"]["status"] != "passed":
+            raise ValueError("Translation review has no final passed decision.")
+        final_decision = chain[-1]
+        expected = {
+            "run_id": run["run_id"],
+            "run_manifest_sha256": _sha256_bytes(run_bytes),
+            "plan_sha256": run["plan_sha256"],
+            "work_id": run["work_id"],
+            "episode_id": episode["episode_id"],
+            "position": episode["position"],
+            "source_version_id": episode["source_version_id"],
+            "source_input_file": episode["source_input_file"],
+            "source_sha256": episode["source_sha256"],
+            "candidate_revision": final_decision["candidate_revision"],
+            "candidate_relative_path": final_decision[
+                "candidate_relative_path"
+            ],
+            "candidate_sha256": final_decision["candidate_sha256"],
+            "decision_sha256": final_decision["decision_sha256"],
+        }
+        source_bytes = _verify_current_inputs(run, episode)
+        candidate_bytes = _load_review_candidate(
+            run_root,
+            run,
+            episode,
+            source_bytes,
+            final_decision,
+        )
+    else:
+        raise ValueError("Translation review fields do not match its schema.")
+    if isinstance(schema_version, bool) or schema_version not in {1, 2}:
+        raise ValueError("Translation review schema version is unsupported.")
     if any(review.get(key) != value for key, value in expected.items()):
         raise ValueError("Translation review does not match the current run.")
     if (
-        isinstance(review.get("schema_version"), bool)
-        or review.get("schema_version") != 1
-        or review.get("decision") != "approved"
+        review.get("decision") != "approved"
         or review.get("independence_confirmed") is not True
         or not isinstance(review.get("checks"), dict)
         or set(review["checks"]) != set(_REVIEW_CHECKS)
@@ -683,12 +871,134 @@ def _validate_approved_review(
         reviewed_at
     ):
         raise ValueError("Translation review timestamp must be UTC.")
+    return review, review_bytes, candidate_bytes
+
+
+def record_translation_review_decision(
+    run_directory: str | Path,
+    episode_id: str,
+    *,
+    stage_verdicts,
+    reviewer_id: str,
+    reviewed_at_utc: str,
+    policy_sha256: str,
+    max_rework_attempts: int,
+    candidate_file: str | Path | None = None,
+) -> dict:
+    """Append a content-free, hash-bound decision for one run candidate."""
+    run_root, run, _ = _load_run(run_directory)
+    episode = _run_episode(run, episode_id)
     source_bytes = _verify_current_inputs(run, episode)
-    draft_bytes = _load_draft(run_root, run, episode, source_bytes)
-    return review, review_bytes
+
+    if candidate_file is None:
+        candidate_bytes = _load_draft(run_root, run, episode, source_bytes)
+        candidate_relative_path = (
+            f"{run['draft_root']}/{episode['translation_file']}"
+        )
+    else:
+        candidate_supplied_path = Path(candidate_file)
+        if not candidate_supplied_path.is_absolute():
+            candidate_supplied_path = run_root / candidate_supplied_path
+        candidate_supplied_path = candidate_supplied_path.absolute()
+        try:
+            supplied_relative_path = candidate_supplied_path.relative_to(run_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Review candidate must remain inside the translation run."
+            ) from exc
+        candidate_relative_path = supplied_relative_path.as_posix()
+        candidate_path = resolve_relative_path(
+            str(run_root),
+            candidate_relative_path,
+        )
+        if not candidate_path.is_file():
+            raise ValueError("Review candidate must be a regular file.")
+        with open_regular_file(candidate_path, binary=True) as stream:
+            candidate_bytes = stream.read(_MAX_TRANSLATION_BYTES + 1)
+        if len(candidate_bytes) > _MAX_TRANSLATION_BYTES:
+            raise ValueError("Review candidate exceeds the configured size limit.")
+        _validate_translation_bytes(
+            source_bytes,
+            candidate_bytes,
+            "Review candidate",
+        )
+
+    chain = load_review_decision_chain(
+        run_root,
+        episode_id=episode_id,
+        expected_run_id=run["run_id"],
+        expected_work_id=run["work_id"],
+        expected_source_version_id=episode["source_version_id"],
+        expected_source_sha256=episode["source_sha256"],
+    )
+    if chain:
+        previous = chain[-1]
+        if previous["transition"]["status"] != "rework":
+            raise ValueError(
+                "A review decision can continue only after a rework transition."
+            )
+        if previous["policy_sha256"] != policy_sha256:
+            raise ValueError("Review decision policy changed within one chain.")
+        if previous["max_rework_attempts"] != max_rework_attempts:
+            raise ValueError("Review decision retry budget changed within one chain.")
+        _load_review_candidate(
+            run_root,
+            run,
+            episode,
+            source_bytes,
+            previous,
+        )
+        candidate_revision = previous["candidate_revision"] + 1
+        parent_candidate_sha256 = previous["candidate_sha256"]
+        if candidate_file is None:
+            raise ValueError(
+                "A rework decision requires a candidate file under "
+                "ReviewCandidates/<episode_id>/."
+            )
+    else:
+        candidate_revision = 0
+        parent_candidate_sha256 = None
+        if candidate_relative_path != (
+            f"{run['draft_root']}/{episode['translation_file']}"
+        ):
+            raise ValueError("Initial review decision must bind the run draft.")
+        verified_draft = _load_draft(run_root, run, episode, source_bytes)
+        if candidate_bytes != verified_draft:
+            raise ValueError("Initial review decision must bind the verified run draft.")
+        candidate_bytes = verified_draft
+
+    record = create_review_decision_record(
+        run_id=run["run_id"],
+        work_id=run["work_id"],
+        episode_id=episode["episode_id"],
+        source_version_id=episode["source_version_id"],
+        source_sha256=episode["source_sha256"],
+        candidate_revision=candidate_revision,
+        candidate_relative_path=candidate_relative_path,
+        parent_candidate_sha256=parent_candidate_sha256,
+        candidate_sha256=_sha256_bytes(candidate_bytes),
+        policy_sha256=policy_sha256,
+        reviewer_id=reviewer_id,
+        reviewed_at_utc=reviewed_at_utc,
+        stage_verdicts=stage_verdicts,
+        max_rework_attempts=max_rework_attempts,
+    )
+    report = write_review_decision(run_root, record)
+    report.update(
+        {
+            "episode_id": episode["episode_id"],
+            "transition": record["transition"],
+            "candidate_sha256": record["candidate_sha256"],
+        }
+    )
+    return report
 
 
-def _write_new_bytes_atomically(root: str, relative_path: str, content: bytes) -> bool:
+def _create_new_bytes_atomically(
+    root: str,
+    relative_path: str,
+    content: bytes,
+) -> bool:
     target = resolve_relative_path(root, relative_path, allow_missing=True)
     descriptor, temporary_path = tempfile.mkstemp(
         prefix=f".{target.name}.",
@@ -704,10 +1014,6 @@ def _write_new_bytes_atomically(root: str, relative_path: str, content: bytes) -
             os.link(temporary_path, target)
             return True
         except FileExistsError:
-            with open_regular_file(target, binary=True) as stream:
-                existing = stream.read(len(content) + 1)
-            if existing != content:
-                raise ValueError("Existing publication differs from reviewed draft.")
             return False
     finally:
         try:
@@ -716,22 +1022,230 @@ def _write_new_bytes_atomically(root: str, relative_path: str, content: bytes) -
             pass
 
 
+def _write_new_bytes_atomically(
+    root: str,
+    relative_path: str,
+    content: bytes,
+) -> bool:
+    if _create_new_bytes_atomically(root, relative_path, content):
+        return True
+    target = resolve_relative_path(root, relative_path, allow_missing=True)
+    with open_regular_file(target, binary=True) as stream:
+        existing = stream.read(len(content) + 1)
+    if existing != content:
+        raise ValueError("Existing publication differs from reviewed draft.")
+    return False
+
+
+def _load_run_state(run_root: Path, run: dict) -> tuple[Path, dict | None]:
+    state_path = run_root / "run_state.json"
+    if state_path.is_symlink():
+        raise ValueError("Translation run state cannot be a symbolic link.")
+    if not state_path.exists():
+        return state_path, None
+    with open_regular_file(state_path, binary=True) as stream:
+        state_bytes = stream.read(64 * 1024 + 1)
+    try:
+        state = json.loads(state_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Translation run state is invalid.") from exc
+    expected_common = {
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "work_id": run["work_id"],
+        "plan_sha256": run["plan_sha256"],
+    }
+    if (
+        not isinstance(state, dict)
+        or set(state) != (set(expected_common) | {"status"})
+        or any(state.get(key) != value for key, value in expected_common.items())
+        or state.get("status") not in {"running", "review_pending", "published"}
+    ):
+        raise ValueError("Translation run state does not match the run manifest.")
+    return state_path, state
+
+
+def _demote_published_run_if_needed(run_root: Path, run: dict) -> None:
+    state_path, state = _load_run_state(run_root, run)
+    if state is None or state.get("status") != "published":
+        return
+    state["status"] = "review_pending"
+    write_text_atomically(
+        str(state_path),
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _episode_has_valid_publication(
+    run_root: Path,
+    run: dict,
+    run_bytes: bytes,
+    episode: dict,
+) -> bool:
+    published_root = run_root / "Published"
+    if not published_root.is_dir() or published_root.is_symlink():
+        return False
+    receipt_path = resolve_child_path(
+        str(published_root),
+        f"{episode['episode_id']}.json",
+        allow_missing=True,
+    )
+    if not receipt_path.exists():
+        return False
+    receipt, _ = _read_json(
+        receipt_path,
+        _MAX_REVIEW_BYTES,
+        "Publication receipt",
+    )
+
+    snapshots_root = published_root / "ReviewSnapshots"
+    if snapshots_root.is_symlink():
+        raise ValueError(
+            "Publication review snapshot directory must not be a symbolic link."
+        )
+    if not snapshots_root.exists():
+        return False
+    if not snapshots_root.is_dir():
+        raise ValueError(
+            "Publication review snapshot path must be a directory."
+        )
+    snapshot_path = resolve_child_path(
+        str(snapshots_root),
+        f"{episode['episode_id']}.json",
+        allow_missing=True,
+    )
+    if not snapshot_path.exists():
+        return False
+    review, review_bytes, candidate_bytes = _validate_approved_review(
+        snapshot_path,
+        run_root=run_root,
+        run=run,
+        run_bytes=run_bytes,
+        episode=episode,
+    )
+    expected_receipt = {
+        "schema_version": review["schema_version"],
+        "status": "published",
+        "run_id": run["run_id"],
+        "work_id": run["work_id"],
+        "episode_id": episode["episode_id"],
+        "position": episode["position"],
+        "translation_file": episode["translation_file"],
+        "source_version_id": episode["source_version_id"],
+        "source_sha256": episode["source_sha256"],
+        "draft_sha256": episode["draft_sha256"],
+    }
+    if review["schema_version"] == 2:
+        expected_receipt.update(
+            {
+                "candidate_revision": review["candidate_revision"],
+                "candidate_relative_path": review["candidate_relative_path"],
+                "candidate_sha256": review["candidate_sha256"],
+                "decision_sha256": review["decision_sha256"],
+            }
+        )
+    if (
+        set(receipt)
+        != set(expected_receipt) | {"review_sha256", "published_at_utc"}
+        or any(
+            receipt.get(key) != value
+            for key, value in expected_receipt.items()
+        )
+        or not isinstance(receipt.get("review_sha256"), str)
+        or not _SHA256_PATTERN.fullmatch(receipt["review_sha256"])
+    ):
+        raise ValueError("Publication receipt conflicts with the run manifest.")
+    if not hmac.compare_digest(
+        _sha256_bytes(review_bytes),
+        receipt["review_sha256"],
+    ):
+        raise ValueError(
+            "Publication review snapshot conflicts with its receipt."
+        )
+    try:
+        published_at = datetime.fromisoformat(
+            receipt["published_at_utc"].replace("Z", "+00:00")
+        )
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("Publication receipt has an invalid timestamp.") from exc
+    if (
+        published_at.tzinfo is None
+        or published_at.utcoffset() != timezone.utc.utcoffset(published_at)
+    ):
+        raise ValueError("Publication receipt timestamp must be UTC.")
+
+    output_root = Path(run["translation_root"]).resolve(strict=True)
+    output_path = resolve_relative_path(
+        str(output_root),
+        episode["translation_file"],
+        allow_missing=True,
+    )
+    if not output_path.exists():
+        return False
+    with open_regular_file(output_path, binary=True) as stream:
+        published_bytes = stream.read(_MAX_TRANSLATION_BYTES + 1)
+    if published_bytes != candidate_bytes:
+        raise FileExistsError(
+            "Published translation differs from its reviewed candidate."
+        )
+    return True
+
+
+def _mark_run_published_if_complete(
+    run_root: Path, run: dict, run_bytes: bytes
+) -> str | None:
+    """Advance run state only while every publication artifact still matches."""
+
+    _demote_published_run_if_needed(run_root, run)
+    state_path, state = _load_run_state(run_root, run)
+    if state is None:
+        # Older hand-created manifests did not persist a lifecycle state file.
+        return None
+
+    if not (run_root / "Published").is_dir() or (
+        run_root / "Published"
+    ).is_symlink():
+        target_status = "review_pending"
+    else:
+        complete = True
+        for episode in run["episodes"]:
+            if not _episode_has_valid_publication(
+                run_root,
+                run,
+                run_bytes,
+                episode,
+            ):
+                complete = False
+                break
+        target_status = "published" if complete else "review_pending"
+
+    if state.get("status") != target_status:
+        state["status"] = target_status
+        write_text_atomically(
+            str(state_path),
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        )
+    return target_status
+
+
 def publish_reviewed_translation(
     run_directory: str | Path,
     episode_id: str,
     review_file: str | Path,
+    *,
+    reconcile_run: bool = True,
 ) -> dict:
     run_root, run, run_bytes = _load_run(run_directory)
     episode = _run_episode(run, episode_id)
     review_path = Path(review_file).resolve(strict=True)
-    review, review_bytes = _validate_approved_review(
+    review, review_bytes, candidate_bytes = _validate_approved_review(
         review_path,
         run_root=run_root,
         run=run,
         run_bytes=run_bytes,
         episode=episode,
     )
-    del review
+    _demote_published_run_if_needed(run_root, run)
     output_root = Path(run["translation_root"]).resolve(strict=True)
     output_target = resolve_relative_path(
         str(output_root),
@@ -741,31 +1255,29 @@ def publish_reviewed_translation(
     if output_target.exists():
         with open_regular_file(output_target, binary=True) as stream:
             existing = stream.read(_MAX_TRANSLATION_BYTES + 1)
-        if existing != _load_draft(
-            run_root,
-            run,
-            episode,
-            _verify_current_inputs(run, episode),
-        ):
+        if existing != candidate_bytes:
             raise FileExistsError(
-                "Existing published translation differs from the approved draft."
+                "Existing published translation differs from the approved candidate."
             )
         created = False
     else:
-        source_bytes = _verify_current_inputs(run, episode)
-        draft_bytes = _load_draft(run_root, run, episode, source_bytes)
-        created = _write_new_bytes_atomically(
-            str(output_root),
-            episode["translation_file"],
-            draft_bytes,
-        )
+        created = False
 
     published_root = run_root / "Published"
     if published_root.is_symlink():
         raise ValueError("Publication receipt directory must not be a symbolic link.")
-    published_root.mkdir(exist_ok=True)
+    review_snapshots_root = published_root / "ReviewSnapshots"
+    if review_snapshots_root.is_symlink():
+        raise ValueError(
+            "Publication review snapshot directory must not be a symbolic link."
+        )
+    if published_root.exists() and not published_root.is_dir():
+        raise ValueError("Publication receipt path must be a directory.")
+    if review_snapshots_root.exists() and not review_snapshots_root.is_dir():
+        raise ValueError("Publication review snapshot path must be a directory.")
+
     receipt = {
-        "schema_version": 1,
+        "schema_version": review["schema_version"],
         "status": "published",
         "run_id": run["run_id"],
         "work_id": run["work_id"],
@@ -780,39 +1292,241 @@ def publish_reviewed_translation(
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
+    if review["schema_version"] == 2:
+        receipt.update(
+            {
+                "candidate_revision": review["candidate_revision"],
+                "candidate_relative_path": review["candidate_relative_path"],
+                "candidate_sha256": review["candidate_sha256"],
+                "decision_sha256": review["decision_sha256"],
+            }
+        )
     receipt_name = f"{episode['episode_id']}.json"
-    receipt_path = resolve_child_path(
-        str(published_root),
-        receipt_name,
-        allow_missing=True,
-    )
     serialized_receipt = _canonical_json(receipt)
-    try:
-        write_new_child_text(
+    stable_receipt_fields = {
+        key: value
+        for key, value in receipt.items()
+        if key != "published_at_utc"
+    }
+
+    review_snapshot_created = False
+    if review_snapshots_root.is_dir():
+        snapshot_path = resolve_child_path(
+            str(review_snapshots_root),
+            f"{episode['episode_id']}.json",
+            allow_missing=True,
+        )
+        if snapshot_path.exists():
+            with open_regular_file(snapshot_path, binary=True) as stream:
+                existing_review = stream.read(_MAX_REVIEW_BYTES + 1)
+            if existing_review != review_bytes:
+                raise ValueError("Existing publication review snapshot differs.")
+
+    receipt_created = False
+    if published_root.is_dir():
+        receipt_path = resolve_child_path(
             str(published_root),
             receipt_name,
-            serialized_receipt,
+            allow_missing=True,
         )
-        receipt_created = True
-    except FileExistsError:
+        if receipt_path.exists():
+            existing_receipt, _ = _read_json(
+                receipt_path,
+                _MAX_REVIEW_BYTES,
+                "Publication receipt",
+            )
+            if any(
+                existing_receipt.get(key) != value
+                for key, value in stable_receipt_fields.items()
+            ):
+                raise ValueError("Existing publication receipt conflicts with this run.")
+
+    if not output_target.exists():
+        created = _write_new_bytes_atomically(
+            str(output_root),
+            episode["translation_file"],
+            candidate_bytes,
+        )
+
+    published_root.mkdir(exist_ok=True)
+    review_snapshots_root.mkdir(exist_ok=True)
+    review_snapshot_created = _write_new_bytes_atomically(
+        str(review_snapshots_root),
+        f"{episode['episode_id']}.json",
+        review_bytes,
+    )
+    receipt_created = _create_new_bytes_atomically(
+        str(published_root),
+        receipt_name,
+        serialized_receipt.encode("utf-8"),
+    )
+    if not receipt_created:
         existing_receipt, _ = _read_json(
-            receipt_path,
+            resolve_child_path(
+                str(published_root),
+                receipt_name,
+                allow_missing=True,
+            ),
             _MAX_REVIEW_BYTES,
             "Publication receipt",
         )
-        stable_fields = {
-            key: value
-            for key, value in receipt.items()
-            if key != "published_at_utc"
-        }
-        if any(existing_receipt.get(key) != value for key, value in stable_fields.items()):
+        if any(
+            existing_receipt.get(key) != value
+            for key, value in stable_receipt_fields.items()
+        ):
             raise ValueError("Existing publication receipt conflicts with this run.")
-        receipt_created = False
+
+    run_status = (
+        _mark_run_published_if_complete(run_root, run, run_bytes)
+        if reconcile_run
+        else None
+    )
     return {
         "status": "published",
         "episode_id": episode_id,
         "translation_file": episode["translation_file"],
         "created": created,
         "receipt_created": receipt_created,
+        "review_snapshot_created": review_snapshot_created,
+        "run_status": run_status,
         "draft_sha256": episode["draft_sha256"],
+        "candidate_sha256": _sha256_bytes(candidate_bytes),
+    }
+
+
+def publish_reviewed_run(
+    run_directory: str | Path,
+    *,
+    review_directory: str = "Reviews",
+) -> dict:
+    """Publish all available approved reviews while preserving partial progress."""
+
+    run_root, run, run_bytes = _load_run(run_directory)
+    reviews_root = resolve_relative_path(
+        str(run_root),
+        review_directory,
+        allow_missing=True,
+    )
+    if reviews_root.is_symlink():
+        raise ValueError("Review directory must not be a symbolic link.")
+    reviews_root_exists = reviews_root.is_dir()
+    _demote_published_run_if_needed(run_root, run)
+    published = []
+    pending = []
+    failed = []
+    for episode in sorted(run["episodes"], key=lambda item: item["position"]):
+        if not reviews_root_exists:
+            review_path = None
+        else:
+            review_path = resolve_child_path(
+                str(reviews_root),
+                f"{episode['episode_id']}.json",
+                allow_missing=True,
+            )
+        if review_path is None or not review_path.exists():
+            try:
+                already_published = _episode_has_valid_publication(
+                    run_root,
+                    run,
+                    run_bytes,
+                    episode,
+                )
+            except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
+                failed.append(
+                    {
+                        "episode_id": episode["episode_id"],
+                        "position": episode["position"],
+                        "error": type(exc).__name__,
+                    }
+                )
+                continue
+            if already_published:
+                published.append(
+                    {
+                        "episode_id": episode["episode_id"],
+                        "position": episode["position"],
+                        "created": False,
+                        "receipt_created": False,
+                        "review_snapshot_created": False,
+                        "run_status": None,
+                    }
+                )
+            else:
+                pending.append(
+                    {
+                        "episode_id": episode["episode_id"],
+                        "position": episode["position"],
+                        "reason": "review_missing",
+                    }
+                )
+            continue
+        try:
+            report = publish_reviewed_translation(
+                run_root,
+                episode["episode_id"],
+                review_path,
+                reconcile_run=False,
+            )
+        except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
+            failed.append(
+                {
+                    "episode_id": episode["episode_id"],
+                    "position": episode["position"],
+                    "error": type(exc).__name__,
+                }
+            )
+            continue
+        published.append(
+            {
+                "episode_id": report["episode_id"],
+                "position": episode["position"],
+                "created": report["created"],
+                "receipt_created": report["receipt_created"],
+                "review_snapshot_created": report["review_snapshot_created"],
+                "run_status": report["run_status"],
+            }
+        )
+
+    run_status = None
+    if failed:
+        _, state = _load_run_state(run_root, run)
+        run_status = state.get("status") if state is not None else None
+    else:
+        try:
+            run_status = _mark_run_published_if_complete(
+                run_root,
+                run,
+                run_bytes,
+            )
+        except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
+            failed.append(
+                {
+                    "episode_id": None,
+                    "position": None,
+                    "scope": "run",
+                    "error": type(exc).__name__,
+                }
+            )
+    for item in published:
+        item["run_status"] = run_status
+
+    if failed:
+        status = "blocked"
+    elif pending:
+        status = "review_pending"
+    else:
+        status = (
+            "review_pending"
+            if run_status == "review_pending"
+            else "published"
+        )
+    return {
+        "status": status,
+        "run_id": run["run_id"],
+        "published_count": len(published),
+        "pending_count": len(pending),
+        "failed_count": len(failed),
+        "published": published,
+        "pending": pending,
+        "failed": failed,
     }

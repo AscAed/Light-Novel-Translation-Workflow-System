@@ -22,6 +22,8 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 
 翻译读取边界：清洗/导出和显式归档验证器可读取 `SourceArchive/` 中的原始或派生 artifact；正式翻译、概要/术语来源核验及运行前计划检查只从归档 manifest/catalog 读取版本、lineage 和已登记摘要，不打开归档章节正文。实际 AI 正文及其文件字节哈希只从 `RAWs_AI/` 读取；该哈希与归档 manifest 中 AI artifact 的 `content_sha256` 元数据比较。需要重新验证归档正文实字节时，运行 `scripts/validate_source_manifest.py` 或 `scripts/validate_source_editions.py`。
 
+`raw_page_html` 保存响应体原始 bytes，不按字符集转码。新采集会将 HTTP `Content-Type` 中解析并规范化的 charset 写入 episode metadata；该 metadata 是 HTML artifact 的父版本，归档 validator 按绑定的 charset 重放。旧 metadata 无 `page_charset` 时兼容按 UTF-8 解码；这只能兼容既有假设，不能追溯证明历史响应头字符集。
+
 显式 JSON 的 `CHAPTER_MAP` 为嵌套项目提供逐章映射：可由操作者逐项指定，也可由 `scripts/run_kakuyomu_workflow.py` 根据 catalog 中明确列出的 episode ID/position 生成确定性映射；译文文件名和 TM 键由稳定 episode ID 派生，不依赖标题或原文文件名推断。`chapter_position` 是可选的正整数；提供时优先用于摘要窗口和章节指导选择，避免从内容哈希或平台 ID 推断章节号。若使用 `source_version_id`，还须配置相对 `RAW_DIR` 的 `SOURCE_MANIFEST_PATH`，程序会验证所选 artifact 类型、路径和文件哈希。Kakuyomu 工作流默认将 AI 清洗版作为翻译输入；映射以 `raw_file`/`source_version_id` 指向 `SourceArchive/editions/ai-efficient-v1/` 中不可变的 AI artifact（其 manifest artifact kind 为 `normalized_source`）保留来源 provenance，再以 `source_input_file`/`source_sha256` 指向并核验 `RAWs_AI/` 中的实际正文。翻译运行时只比较 AI 镜像字节哈希与归档 manifest 登记的 artifact digest，并依据归档元数据检查 lineage；不读取归档章节正文。归档物理字节与镜像/profile 的逐字节核验由显式来源验证器完成。运行入口会在目录发现和正文获取前拒绝 `SourceArchive`、人读根、`RAWs_AI` 根与译文根的重叠；共享 AI 索引校验器也会拒绝归档根与 AI 根相同或重叠，覆盖通用项目模式。只有显式 `--source-edition normalized_source` 才选择采集器的规范化来源作为兼容覆盖。流水线、对齐器、知识抽取和 TM 来源审计消费同一映射；省略新增字段时保持旧契约。Kakuyomu 编排重试时，仅跳过输出、TM 词对、段落映射和当前来源版本 provenance 均匹配的已提交章节；冲突内容不覆盖。该 CLI 不发现页面。
 
 ## 章节映射预览
@@ -32,7 +34,7 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 
 | 模块 | 当前责任 | 主要输入/输出 |
 | --- | --- | --- |
-| `pipeline.py` | 配置解析、项目模式 AI 默认选源/版本映射、章节循环、阶段调用、输出保存 | `RAWs_AI` AI 清洗镜像/显式 JSON 来源映射、归档 manifest provenance、项目知识文件、模型响应 |
+| `pipeline.py` | 配置解析、项目模式 AI 默认选源/版本映射、章节循环、阶段调用、输出保存与正式运行阶段轨迹 | `RAWs_AI` AI 清洗镜像/显式 JSON 来源映射、归档 manifest provenance、项目知识文件、模型响应；正式 run 另写 hash-only `StageReports` |
 | `rag_engine.py` | TM 相似检索、词条匹配、指导检索、TM 更新 | `Knowledge` 文件；可选审核 TM 快照；写入完整 JSON TM 和可选来源索引 |
 | `scripts/align_chapters.py` | 对已有双语章节做段落对齐、生成嵌入与段落来源映射 | `生肉/`、`熟肉/` -> `translation_memory.json` |
 | `scripts/validate_tm_provenance.py` | 只读核对 TM 来源哈希、段落索引、原译词对及 manifest 当前来源版本 | TM JSON、`生肉/`、`熟肉/`、可选 manifest -> 状态报告 |
@@ -61,13 +63,15 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 
 默认项目模式还固定使用 `Knowledge/STORY_SUMMARY_reviewed.json` 和 `Knowledge/Glossary_reviewed.json`。概要须覆盖完整 AI 章节映射，术语 bundle 须通过来源版本核验；缺失、旧式或过期的知识输入在创建翻译请求前失败关闭。显式 JSON 配置保留调用者指定旧格式的兼容路径。
 
+`TranslationPipeline` 输出也有显式模式边界：项目/Kakuyomu run 使用内部 `reviewed_run_draft` 并要求活动 run；未审核兼容调用必须设置 `TRANSLATION_OUTPUT_MODE="compatibility_draft"`，测试工作区使用独立 `test_draft`。显式 JSON 配置只接受兼容 draft 标记，缺失或与 reviewed publication 冲突时拒绝创建 pipeline。兼容输出即使位于任意外部目录也不具备正式发布资格；正式译文只能由审核发布器从有效 run 草稿 create-only 创建。直接使用 Python API 的调用方也必须明确指定输出模式。
+
 Kakuyomu run 还要求每个待翻译的非空章节拥有来源版本和当前整书 bundle 均匹配的 `ChapterDrafts/.../STORY_SUMMARY_reviewed.json`。启动预检覆盖全部待翻译章节，避免后续章节缺少回执时前面章节已调用模型；每章上下文构建时再次复核。局部 `Glossary_reviewed.json` 可选；与全书批准词条冲突时失败关闭。
 
 1. `Config.load_config` 从项目参数、JSON 配置或环境变量解析路径；代码还会尝试读取仓库根目录 `.env`。项目名模式要求 `SourceArchive/` 和 `RAWs_AI/` 都存在，默认验证 AI 索引、其 catalog 摘要与 ID/title/position 完整覆盖、清洗清单、镜像字节哈希及归档 manifest lineage；生成的 `CHAPTER_MAP` 分开保存归档溯源路径/版本与 `RAWs_AI` 实际输入路径/哈希。pipeline 从 AI 镜像读取正文，并将镜像字节哈希与归档 manifest 登记的 `content_sha256` 比较；它读取归档 metadata，不读取归档章节正文。缺失、过期或不完整时失败关闭，不读取人读版 `生肉/`。项目名模式同时把概要路径设为 `Knowledge/STORY_SUMMARY_reviewed.json` 并启用全书审核门禁。显式 JSON `RAW_DIR`/`CHAPTER_MAP` 仍由调用者指定，可用于迁移旧版目录。项目根可选 `workflow_paths.json`（schema v1）设置已存在的 `output_dir` 和可选 `human_edition_root`；路径可相对项目根或绝对指定，不接受原文根或章节映射覆盖，译文根不得与原文目录重叠。没有该文件时，默认 `熟肉/` 若含子目录仍须通过显式 `--config` 指定译文根。
 2. `TranslationPipeline` 在加载作品信息、RAG 和翻译阶段前，验证项目模式的概要 bundle 已批准、覆盖完整 AI 章节映射，并与每章 AI 文件名及 `source_version_id` 一致；缺失、过期或不匹配时失败关闭。显式 JSON 兼容配置仍可配置旧概要路径。显式配置 `TM_REVIEWED_PATH` 时同时传入译文根目录以核验审核快照。
-3. 每章检索指导、词条和概要上下文；RAG 默认只从显式设置且通过当前来源核验的 `TM_REVIEWED_PATH` 快照检索。未设置快照时不注入 TM 示例，也不生成查询 embedding。完整可写 TM 仍接收候选写入；`ALLOW_UNREVIEWED_TM=true` 可显式启用兼容检索，但已配置快照始终优先。
+3. 每章检索指导、词条和概要上下文；RAG 默认只从显式设置且通过当前来源核验的 `TM_REVIEWED_PATH` 快照检索。未设置快照时不注入 TM 示例，也不生成查询 embedding。完整可写 TM 仍接收候选写入；`ALLOW_UNREVIEWED_TM=true` 仅可用于兼容调用，正式项目翻译会拒绝此配置；已配置快照始终优先。
 4. 按阶段调用上下文标注、初译、逻辑校对、润色。
-5. 校验阶段结果是非空文本数组、段落数与原文一致，并在每段内核对 `「」『』` 的字符数量和序列；验证失败时不创建译文/TM。通过后、提交前复读源文，并在配置 `source_version_id` 时复核 manifest artifact 的类型、路径和版本状态。AI 映射下复读正文只从 `RAWs_AI` 取字节，归档侧只读 manifest 元数据并比对登记 digest；显式非 AI 映射仍按 manifest 路径读取并校验来源文件。源文变化时拒绝发布，但复读与后续写入之间仍无并发写锁。随后 `chapter_transaction.py` 在输出目录排他创建逐章恢复日志，再排他写译文、原子更新 TM，成功后移除日志。重跑时先检查待处理日志，再决定跳过已有译文；恢复前核验章节映射、源文/译文哈希、格式门禁、输出内容和 TM 基线，冲突时停止且不覆盖已有内容。日志记录完整译文文本，临时保存在本地输出目录；日志 SHA-256 用于一致性校验，不认证审核者或文件来源。此机制只支持单写入者的进程中断恢复，不保证多进程并发、断电后的目录项持久性或自动解决外部冲突。TM 以同目录临时文件加原子替换写入；嵌入失败时保留词对但不写入伪造向量。格式门禁不验证语义准确性，也不构成知识审核。
+5. 校验阶段结果是非空文本数组、段落数与原文一致，并在每段内核对 `「」『』` 的字符数量和序列；验证失败时不创建译文/TM。通过后、提交前复读源文，并在配置 `source_version_id` 时复核 manifest artifact 的类型、路径和版本状态。AI 映射下复读正文只从 `RAWs_AI` 取字节，归档侧只读 manifest 元数据并比对登记 digest；显式非 AI 映射仍按 manifest 路径读取并校验来源文件。正式 run 同时向 `Workflow/Runs/<run_id>/StageReports/` 追加按话目的阶段状态、输入/输出摘要、模型标识和失败类型；报告不含正文/提示词，也不等同于独立语义审核。源文变化时拒绝发布，但复读与后续写入之间仍无并发写锁。随后 `chapter_transaction.py` 在输出目录排他创建逐章恢复日志，再排他写译文、原子更新 TM，成功后移除日志。重跑时先检查待处理日志，再决定跳过已有译文；恢复前核验章节映射、源文/译文哈希、格式门禁、输出内容和 TM 基线，冲突时停止且不覆盖已有内容。日志记录完整译文文本，临时保存在本地输出目录；日志 SHA-256 用于一致性校验，不认证审核者或文件来源。此机制只支持单写入者的进程中断恢复，不保证多进程并发、断电后的目录项持久性或自动解决外部冲突。TM 以同目录临时文件加原子替换写入；嵌入失败时保留词对但不写入伪造向量。格式门禁不验证语义准确性，也不构成知识审核。
 6. `align_chapters.py` 按 `CHAPTER_MAP` 或平铺扫描结果读取原译文件；锚点不匹配时使用 Gale-Church 对齐，验证 embedding 数量后原子更新 TM。溯源记录保存原文/译文相对路径；只读审计用相同路径验证文件哈希和段落引用。
 
 ## 外部集成与约束

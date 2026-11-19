@@ -266,6 +266,89 @@ class BookBundleTests(unittest.TestCase):
         self.assertTrue(resumed["created"]["human"])
         self.assertTrue(resumed["created"]["bundle_set"])
 
+    def test_immutable_bundle_file_is_not_visible_before_atomic_link(self):
+        root = self.root / "immutable"
+        root.mkdir()
+        target = root / "bundle.json"
+
+        with patch(
+            "book_bundles.os.link",
+            side_effect=OSError("synthetic publication interruption"),
+        ):
+            with self.assertRaisesRegex(OSError, "publication interruption"):
+                book_bundles._write_immutable(root, "bundle.json", b"complete")
+
+        self.assertFalse(target.exists())
+        self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_export_and_loader_accept_custom_edition_index_paths(self):
+        ai_custom_root = self.ai_root / "metadata"
+        human_custom_root = self.human_root / "metadata"
+        ai_custom_root.mkdir()
+        human_custom_root.mkdir()
+        (self.ai_root / "catalog.json").rename(
+            ai_custom_root / "edition-index.json"
+        )
+        (self.human_root / "SOURCE_MAP.json").rename(
+            human_custom_root / "edition-index.json"
+        )
+
+        report = self._export(
+            ai_index_relative_path="metadata/edition-index.json",
+            human_index_relative_path="metadata/edition-index.json",
+        )
+        verified = load_verified_ai_book_bundle(
+            source_root=str(self.source_root),
+            catalog_relative_path="catalog.json",
+            checkpoint_relative_path="source_checkpoint.json",
+            bundle_set_relative_path=report["bundle_set_relative_path"],
+            human_root=str(self.human_root),
+            ai_root=str(self.ai_root),
+        )
+
+        self.assertEqual(verified["status"], "verified")
+        self.assertEqual(verified["episode_count"], 2)
+
+    def test_catalog_change_after_parse_is_detected(self):
+        original_loader = book_bundles._load_catalog_snapshot
+        changed = [False]
+
+        def load_then_change(source_root, relative_path, **kwargs):
+            snapshot = original_loader(source_root, relative_path, **kwargs)
+            if not changed[0]:
+                changed[0] = True
+                self.catalog_path.write_bytes(
+                    self.catalog_path.read_bytes() + b"\n"
+                )
+            return snapshot
+
+        with patch(
+            "book_bundles._load_catalog_snapshot",
+            side_effect=load_then_change,
+        ):
+            with self.assertRaisesRegex(
+                (RuntimeError, ValueError),
+                "inputs changed|stale for the current catalog",
+            ):
+                self._export()
+
+        self.assertFalse((self.source_root / "collections").exists())
+
+    def test_source_snapshot_identity_includes_checkpoint_provenance(self):
+        first = self._export()
+        checkpoint = self.source_root / "source_checkpoint.json"
+        alternate_checkpoint = self.source_root / "alternate_checkpoint.json"
+        alternate_checkpoint.write_bytes(checkpoint.read_bytes())
+
+        second = self._export(
+            checkpoint_relative_path="alternate_checkpoint.json"
+        )
+
+        self.assertNotEqual(
+            first["source_snapshot_id"],
+            second["source_snapshot_id"],
+        )
+
     def test_incomplete_checkpoint_fails_before_writing(self):
         checkpoint_path = self.source_root / "source_checkpoint.json"
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))

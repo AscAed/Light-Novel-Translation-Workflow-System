@@ -14,9 +14,11 @@ from source_ingestion import (
     materialize_episode_markdown,
 )
 from story_summary_review import (
+    _validate_claim_evidence_text,
     create_summary_review_template,
     load_reviewed_story_summary,
     publish_reviewed_summary,
+    verify_summary_sources,
 )
 from utils import read_relative_text
 
@@ -116,20 +118,22 @@ class StorySummaryReviewTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _publish(self, output_filename=None):
+    def _publish(self, output_filename=None, *, source_input_root=None):
         return publish_reviewed_summary(
             str(self.knowledge_root),
             str(self.archive_root),
             "source_manifest.json",
             self.template_path.name,
             output_filename or self.output_path.name,
+            source_input_root=source_input_root,
         )
 
-    def _load(self):
+    def _load(self, *, source_input_root=None):
         return load_reviewed_story_summary(
             str(self.output_path),
             str(self.archive_root),
             "source_manifest.json",
+            source_input_root=source_input_root,
         )
 
     def test_template_binds_candidates_and_starts_pending(self):
@@ -154,6 +158,37 @@ class StorySummaryReviewTests(unittest.TestCase):
             "Synthetic source text.",
             json.dumps(template, ensure_ascii=False),
         )
+
+    def test_claim_evidence_compares_crlf_and_lf_equivalently(self):
+        _validate_claim_evidence_text(
+            {"claim_evidence": [{"claim_text": "First\r\nSecond"}]},
+            "First\nSecond",
+        )
+
+    def test_full_book_paragraph_count_must_match_source(self):
+        source = {
+            **self.provenance["source_files"][0],
+            "included_paragraph_count": 1,
+        }
+        provenance = {
+            "source_files": [source],
+            "summary_source_chapters": [source["filename"]],
+            "input_coverage": {
+                "scope": "all_configured_chapters",
+                "complete_for_configured_chapters": True,
+                "configured_chapter_count": 1,
+                "included_chapter_count": 1,
+                "input_characters": 100,
+                "input_character_limit": 500,
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "paragraph coverage"):
+            verify_summary_sources(
+                str(self.archive_root),
+                "source_manifest.json",
+                provenance,
+            )
 
     def test_template_mode_does_not_require_current_source_files(self):
         self.source_file.unlink()
@@ -684,9 +719,6 @@ class StorySummaryReviewTests(unittest.TestCase):
             json.dumps(provenance, ensure_ascii=False),
             encoding="utf-8",
         )
-        self._create_template()
-        self._complete_receipt()
-        self._publish()
         ai_root = self.root / "RAWs_AI"
         ai_root.mkdir()
         ai_input = ai_root / "episode.md"
@@ -694,6 +726,8 @@ class StorySummaryReviewTests(unittest.TestCase):
             (self.archive_root / self.artifact["relative_path"]).read_bytes()
         )
         source_sha256 = hashlib.sha256(ai_input.read_bytes()).hexdigest()
+        self._create_template()
+        self._complete_receipt()
 
         with (
             patch(
@@ -705,6 +739,7 @@ class StorySummaryReviewTests(unittest.TestCase):
                 side_effect=AssertionError("archive body read during translation"),
             ),
         ):
+            self._publish(source_input_root=str(ai_root))
             summary = load_reviewed_story_summary(
                 str(self.output_path),
                 str(self.archive_root),
@@ -791,7 +826,7 @@ class StorySummaryReviewTests(unittest.TestCase):
         # chapter-local identity has been written.
         self._create_template()
         self._complete_receipt()
-        self._publish()
+        self._publish(source_input_root=str(ai_root))
 
         expected_bundle = provenance["book_bundle"]
         expected_chapter = provenance["chapter_local"]

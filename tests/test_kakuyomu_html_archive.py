@@ -21,16 +21,19 @@ from source_manifest import append_artifact, load_manifest
 
 
 class _HtmlArchiveAdapter:
-    def __init__(self, *, metadata, page_html, visible_text):
+    def __init__(self, *, metadata, page_html, visible_text, page_charset=None):
         self.metadata = metadata
         self.page_html = page_html
         self.visible_text = visible_text
+        self.page_charset = page_charset
         fingerprint_input = (
             metadata.title.encode("utf-8")
             + b"\0"
             + visible_text
             + b"\0"
             + page_html
+            + b"\0"
+            + (page_charset or "utf-8").encode("ascii")
         )
         self.source_fingerprint = hashlib.sha256(fingerprint_input).hexdigest()
 
@@ -46,6 +49,7 @@ class _HtmlArchiveAdapter:
             self.metadata,
             self.visible_text,
             self.page_html,
+            self.page_charset,
         )
 
 
@@ -70,7 +74,9 @@ class KakuyomuHtmlArchiveTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def _collect(self, *, visible_text=None, page_html=None, title=None):
+    def _collect(
+        self, *, visible_text=None, page_html=None, title=None, page_charset=None
+    ):
         metadata = EpisodeMetadata(
             "ep-1",
             title if title is not None else "Episode One",
@@ -84,6 +90,7 @@ class KakuyomuHtmlArchiveTests(unittest.TestCase):
             metadata=metadata,
             page_html=selected_html,
             visible_text=selected_text,
+            page_charset=page_charset,
         )
         collect_source(
             adapter,
@@ -99,6 +106,77 @@ class KakuyomuHtmlArchiveTests(unittest.TestCase):
         self.assertEqual(report["episode_count"], 1)
         self.assertEqual(report["files_verified"], 3)
         self.assertEqual(report["body_bytes"], len(self.visible_text))
+
+    def test_replays_html_using_its_archived_response_charset(self):
+        page_text = (
+            "<html><div class='widget-episodeTitle'>Episode One</div>"
+            "<div class='widget-episodeBody'><p>日本語の本文。</p></div></html>"
+        )
+        page_html = page_text.encode("shift_jis")
+        parser = _EpisodePageParser()
+        parser.feed(page_text)
+        parser.close()
+        visible_text = parser.extracted_body().encode("utf-8")
+        self._collect(
+            visible_text=visible_text,
+            page_html=page_html,
+            page_charset="shift_jis",
+        )
+
+        manifest = load_manifest(self.root / "source_manifest.json")
+        episode_artifact = next(
+            item
+            for item in reversed(manifest["artifacts"])
+            if item["kind"] == "episode"
+        )
+        metadata = json.loads(
+            (self.root / episode_artifact["relative_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        report = validate_kakuyomu_html_archive(source_root=self.root)
+
+        self.assertEqual(metadata["page_charset"], "shift_jis")
+        self.assertEqual(report["status"], "verified")
+        html_artifact = next(
+            item
+            for item in reversed(manifest["artifacts"])
+            if item["kind"] == "raw_page_html"
+        )
+        self.assertEqual(
+            (self.root / html_artifact["relative_path"]).read_bytes(),
+            page_html,
+        )
+
+    def test_replays_legacy_utf8_html_without_charset_metadata(self):
+        manifest_path = self.root / "source_manifest.json"
+        manifest = load_manifest(manifest_path)
+        episode_artifact = next(
+            item
+            for item in reversed(manifest["artifacts"])
+            if item["kind"] == "episode"
+        )
+        metadata_path = self.root / episode_artifact["relative_path"]
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("page_charset", None)
+        metadata_bytes = json.dumps(
+            metadata,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        metadata_path.write_bytes(metadata_bytes)
+        episode_artifact["content_sha256"] = hashlib.sha256(
+            metadata_bytes
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        report = validate_kakuyomu_html_archive(source_root=self.root)
+
+        self.assertEqual(report["status"], "verified")
 
     def test_rejects_html_that_does_not_match_archived_raw_source(self):
         self._collect(visible_text=b"unrelated visible text")

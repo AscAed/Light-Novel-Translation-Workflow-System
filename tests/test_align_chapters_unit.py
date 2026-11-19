@@ -26,6 +26,7 @@ from scripts.align_chapters import (
     _find_ordered_paragraph_indices,
     generate_embeddings_batched,
     load_existing_tm,
+    _verify_bound_sources_current,
     main as align_main,
 )
 from utils import split_paragraphs
@@ -437,6 +438,8 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                     ).hexdigest(),
                 }
             ]
+            (raw_dir / "第一卷" / "第1話.md").unlink()
+            raw_source_path.unlink()
             stdout = io.StringIO()
             with patch("sys.argv", ["align_chapters.py"]):
                 with patch("pipeline.Config.load_config"):
@@ -489,6 +492,66 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                 provenance["source_version_id"], source_version_id
             )
             self.assertIn("Successfully aligned chapter", stdout.getvalue())
+
+    def test_ai_bound_source_revalidation_checks_mirror_without_archive_bodies(self):
+        from source_manifest import new_manifest
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "SourceArchive"
+            ai_root = root / "RAWs_AI"
+            raw_dir.mkdir()
+            ai_root.mkdir()
+            ai_path = ai_root / "chapters" / "episode-1.md"
+            ai_path.parent.mkdir()
+            ai_bytes = b"synthetic AI edition"
+            ai_path.write_bytes(ai_bytes)
+            manifest_path = raw_dir / "source_editions_manifest.json"
+            manifest = new_manifest()
+            manifest["artifacts"] = [
+                {
+                    "artifact_id": "synthetic-raw",
+                    "version_id": "raw-source-version-1",
+                    "kind": "raw_source",
+                    "content_sha256": hashlib.sha256(b"raw source").hexdigest(),
+                    "relative_path": "raw/episode-1.txt",
+                    "parent_version_ids": [],
+                },
+                {
+                    "artifact_id": "synthetic-ai",
+                    "version_id": "ai-source-version-1",
+                    "kind": "normalized_source",
+                    "content_sha256": hashlib.sha256(ai_bytes).hexdigest(),
+                    "relative_path": "editions/ai/episode-1.md",
+                    "parent_version_ids": ["raw-source-version-1"],
+                },
+            ]
+            manifest_path.write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+            spec = SimpleNamespace(
+                raw_file="editions/ai/episode-1.md",
+                source_version_id="ai-source-version-1",
+                source_input_file="chapters/episode-1.md",
+                source_sha256=hashlib.sha256(ai_bytes).hexdigest(),
+            )
+
+            _verify_bound_sources_current(
+                str(raw_dir),
+                "source_editions_manifest.json",
+                [spec],
+                str(ai_root),
+            )
+
+            ai_path.write_bytes(b"changed AI edition")
+            with self.assertRaisesRegex(ValueError, "AI edition source"):
+                _verify_bound_sources_current(
+                    str(raw_dir),
+                    "source_editions_manifest.json",
+                    [spec],
+                    str(ai_root),
+                )
 
     def test_cli_does_not_save_when_bound_source_changes_during_alignment(self):
         from pipeline import Config

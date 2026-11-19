@@ -42,9 +42,16 @@ _RESERVED_WINDOWS_NAME = re.compile(
     re.IGNORECASE,
 )
 _MAX_COMPONENT_UTF16_UNITS = 100
+_MAX_COMPONENT_UTF8_BYTES = 255
 _SOURCE_ANNOTATION = re.compile(
     r"｜(?P<base>[^《\n]+)《(?P<reading>[^》\n]*)》"
 )
+
+
+class StaleAIEditionCatalogError(ValueError):
+    """The current catalog no longer matches its AI edition index."""
+
+
 _AI_CLEANING_PROFILE = {
     "id": "ai-efficient-v1",
     "rules": [
@@ -488,6 +495,30 @@ def verify_ai_edition_index(
         != _AI_CLEANING_PROFILE["id"]
     ):
         raise ValueError("AI edition index has an unsupported profile or schema.")
+    catalog_record = index.get("catalog")
+    if (
+        not isinstance(catalog_record, dict)
+        or not isinstance(catalog_record.get("relative_path"), str)
+        or not isinstance(catalog_record.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", catalog_record["sha256"])
+    ):
+        raise ValueError("AI edition index has invalid catalog provenance.")
+    catalog_relative_path = catalog_record["relative_path"]
+    catalog = _load_catalog_snapshot(
+        str(source_path),
+        catalog_relative_path,
+    )
+    if (
+        catalog_record
+        != {
+            "relative_path": catalog_relative_path.replace("\\", "/"),
+            "sha256": catalog["sha256"],
+        }
+        or index["work_id"] != catalog["work_id"]
+    ):
+        raise StaleAIEditionCatalogError(
+            "AI edition index is stale for the current catalog."
+        )
     source_record = index.get("source_manifest")
     edition_record = index.get("edition_manifest")
     if (
@@ -517,6 +548,14 @@ def verify_ai_edition_index(
     episodes = index.get("episodes")
     if not isinstance(episodes, list):
         raise ValueError("AI edition index episodes must be an array.")
+    catalog_by_episode_id = {
+        episode.metadata.episode_id: episode.metadata
+        for episode in catalog["episodes"]
+    }
+    if len(episodes) != len(catalog_by_episode_id):
+        raise StaleAIEditionCatalogError(
+            "AI edition index is stale for the current catalog."
+        )
     by_episode_id = {}
     normalized_by_id = latest_artifacts_by_kind(
         source_manifest,
@@ -528,6 +567,15 @@ def verify_ai_edition_index(
         episode_id = episode.get("episode_id")
         if not isinstance(episode_id, str) or episode_id in by_episode_id:
             raise ValueError("AI edition index contains a duplicate episode.")
+        catalog_episode = catalog_by_episode_id.get(episode_id)
+        if (
+            catalog_episode is None
+            or episode.get("title") != catalog_episode.title
+            or episode.get("position") != catalog_episode.position
+        ):
+            raise StaleAIEditionCatalogError(
+                "AI edition index is stale for the current catalog."
+            )
         normalized_id = _source_artifact_id(
             index["work_id"],
             "normalized_source",
@@ -807,6 +855,7 @@ def validate_source_editions(
         human_base = safe_path_component(
             metadata.title or "",
             fallback=f"未命名话目_{episode_id}",
+            extension=".md",
         )
         used_names = used_human_names[chapter["group_id"]]
         human_name = human_base
@@ -814,11 +863,13 @@ def validate_source_editions(
             human_name = safe_path_component(
                 f"{human_base}_{metadata.position:04d}",
                 fallback=f"话目_{metadata.position:04d}_{episode_id}",
+                extension=".md",
             )
         if human_name.casefold() in used_names:
             human_name = safe_path_component(
                 f"{human_name}_{episode_id}",
                 fallback=f"话目_{metadata.position:04d}_{episode_id}",
+                extension=".md",
             )
         if human_name.casefold() in used_names:
             raise ValueError("Catalog episode titles map to duplicate files.")
@@ -982,7 +1033,12 @@ def _component_utf16_units(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
-def safe_path_component(value: str, *, fallback: str) -> str:
+def safe_path_component(
+    value: str,
+    *,
+    fallback: str,
+    extension: str = "",
+) -> str:
     """Keep readable Unicode names while removing Windows path hazards."""
     if not isinstance(value, str):
         value = ""
@@ -995,11 +1051,21 @@ def safe_path_component(value: str, *, fallback: str) -> str:
     if _RESERVED_WINDOWS_NAME.fullmatch(component):
         component = f"_{component}"
 
-    if _component_utf16_units(component) > _MAX_COMPONENT_UTF16_UNITS:
-        suffix = hashlib.sha256(component.encode("utf-8")).hexdigest()[:10]
-        while _component_utf16_units(component) > _MAX_COMPONENT_UTF16_UNITS - 11:
+    if (
+        _component_utf16_units(component + extension)
+        > _MAX_COMPONENT_UTF16_UNITS
+        or len((component + extension).encode("utf-8"))
+        > _MAX_COMPONENT_UTF8_BYTES
+    ):
+        suffix = "_" + hashlib.sha256(component.encode("utf-8")).hexdigest()[:10]
+        while (
+            _component_utf16_units(component + suffix + extension)
+            > _MAX_COMPONENT_UTF16_UNITS
+            or len((component + suffix + extension).encode("utf-8"))
+            > _MAX_COMPONENT_UTF8_BYTES
+        ):
             component = component[:-1]
-        component = f"{component}_{suffix}"
+        component = f"{component}{suffix}"
     return component
 
 
@@ -1241,6 +1307,8 @@ def prepare_source_editions(
         edition_manifest_relative_path,
         allow_missing=True,
     )
+    if manifest_path == edition_manifest_path:
+        raise ValueError("Source and edition manifests must be different files.")
     if edition_manifest_path.is_symlink():
         raise ValueError("Symbolic links are not allowed for edition manifests.")
     existing_edition_bytes = _load_output_file(edition_manifest_path)
@@ -1353,6 +1421,7 @@ def prepare_source_editions(
         human_episode_base = safe_path_component(
             metadata.title or "",
             fallback=f"未命名话目_{episode_id}",
+            extension=".md",
         )
         chapter_names_used = used_human_names[chapter["group_id"]]
         human_episode = human_episode_base
@@ -1360,11 +1429,13 @@ def prepare_source_editions(
             human_episode = safe_path_component(
                 f"{human_episode_base}_{metadata.position:04d}",
                 fallback=f"话目_{metadata.position:04d}_{episode_id}",
+                extension=".md",
             )
         if human_episode.casefold() in chapter_names_used:
             human_episode = safe_path_component(
                 f"{human_episode}_{episode_id}",
                 fallback=f"话目_{metadata.position:04d}_{episode_id}",
+                extension=".md",
             )
         if human_episode.casefold() in chapter_names_used:
             raise ValueError("Catalog episode titles map to a duplicate file.")

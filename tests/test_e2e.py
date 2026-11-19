@@ -20,7 +20,12 @@ from story_summary_review import (
     create_summary_review_template,
     publish_reviewed_summary,
 )
-from translation_plan_approval import create_approval_receipt, write_new_json
+from translation_plan_approval import (
+    create_approval_receipt,
+    create_plan_review_template,
+    verify_plan_review_template,
+    write_new_json,
+)
 from tests.test_kakuyomu_page_source import (
     EPISODE_ID as KAKUYOMU_EPISODE_ID,
     EXPECTED_TEXT as KAKUYOMU_EXPECTED_TEXT,
@@ -65,7 +70,7 @@ class E2ETestSuite(unittest.TestCase):
         # Create temp workspace
         self.test_dir = tempfile.mkdtemp()
         self.raw_dir = os.path.join(self.test_dir, "生肉")
-        self.output_dir = os.path.join(self.test_dir, "熟肉")
+        self.output_dir = os.path.join(self.test_dir, "translated")
         self.knowledge_dir = os.path.join(self.test_dir, "Knowledge")
         
         os.makedirs(self.raw_dir, exist_ok=True)
@@ -346,6 +351,7 @@ class E2ETestSuite(unittest.TestCase):
                 GEMINI_FALLBACK_ENABLED=False,
                 STRICT_REFLECTION_MODE=False,
                 REQUIRE_REVIEWED_PUBLICATION=False,
+                TRANSLATION_OUTPUT_MODE="test_draft",
                 TRANSLATION_RUN_ID=None,
                 EXPECTED_BOOK_BUNDLE=None,
                 MIN_JITTER=0,
@@ -413,11 +419,35 @@ class E2ETestSuite(unittest.TestCase):
             receipt_path = os.path.join(
                 self.test_dir, "translation-plan-approval.json"
             )
+            human_index_path = os.path.join(
+                self.test_dir,
+                "human-edition",
+                "SOURCE_MAP.json",
+            )
+            review_path = os.path.join(
+                self.test_dir,
+                "translation-plan-review.json",
+            )
+            review_template = create_plan_review_template(
+                preview_report["plan"],
+                human_index_path,
+            )
+            for episode in review_template["episodes"]:
+                episode["mapping_decision"] = "pass"
+                episode["ai_edition_decision"] = "pass"
+                episode["human_edition_decision"] = "pass"
+            write_new_json(review_path, review_template)
+            _, review_sha256 = verify_plan_review_template(
+                review_path,
+                preview_report["plan"],
+                human_index_path,
+            )
             write_new_json(
                 receipt_path,
                 create_approval_receipt(
                     preview_report["plan"],
                     "synthetic reviewer",
+                    review_sha256=review_sha256,
                 ),
             )
             bundle_report = run_workflow(
@@ -533,6 +563,7 @@ class E2ETestSuite(unittest.TestCase):
                 "source_editions_manifest.json",
                 os.path.basename(summary_receipt),
                 "STORY_SUMMARY_reviewed.json",
+                source_input_root=os.path.join(self.test_dir, "RAWs_AI"),
             )
             episode = planned_episodes[0]
             local_source = source_files[0]
@@ -622,6 +653,7 @@ class E2ETestSuite(unittest.TestCase):
                 "source_editions_manifest.json",
                 local_receipt.name,
                 "STORY_SUMMARY_reviewed.json",
+                source_input_root=os.path.join(self.test_dir, "RAWs_AI"),
             )
             report = run_workflow(
                 source_root=self.raw_dir,
@@ -671,7 +703,7 @@ class E2ETestSuite(unittest.TestCase):
         from translation_review import (
             _REVIEW_CHECKS,
             prepare_translation_review,
-            publish_reviewed_translation,
+            publish_reviewed_run,
         )
 
         run_dir = Path(report["run_manifest"]).parent
@@ -694,12 +726,11 @@ class E2ETestSuite(unittest.TestCase):
             json.dumps(review, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        publication = publish_reviewed_translation(
-            str(run_dir),
-            KAKUYOMU_EPISODE_ID,
-            str(review_path),
-        )
+        publication = publish_reviewed_run(str(run_dir))
         self.assertEqual(publication["status"], "published")
+        self.assertEqual(publication["published_count"], 1)
+        self.assertEqual(publication["pending_count"], 0)
+        self.assertEqual(publication["failed_count"], 0)
         translated = Path(self.output_dir, translation_file).read_text(
             encoding="utf-8"
         )
@@ -709,8 +740,9 @@ class E2ETestSuite(unittest.TestCase):
         tm = json.loads(tm_path.read_text(encoding="utf-8"))
         tm_key = f"source-edition:{KAKUYOMU_WORK_ID}:{KAKUYOMU_EPISODE_ID}"
         planned_ai_source = Path(
-            self.raw_dir,
-            planned_episodes[0]["source_file"],
+            self.test_dir,
+            "RAWs_AI",
+            planned_episodes[0]["source_input_file"],
         ).read_text(encoding="utf-8")
         self.assertEqual(
             "\n\n".join(pair["raw"] for pair in tm["chapters"][tm_key]),
@@ -762,6 +794,7 @@ class E2ETestSuite(unittest.TestCase):
                 GEMINI_FALLBACK_ENABLED=False,
                 STRICT_REFLECTION_MODE=False,
                 REQUIRE_REVIEWED_PUBLICATION=False,
+                TRANSLATION_OUTPUT_MODE="test_draft",
                 TRANSLATION_RUN_ID=None,
                 EXPECTED_BOOK_BUNDLE=None,
                 MIN_JITTER=0,

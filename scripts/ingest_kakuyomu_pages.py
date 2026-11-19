@@ -565,6 +565,13 @@ def _ai_edition_index_freshness(
             not isinstance(episode, dict)
             or not isinstance(episode.get("ai_archive_relative_path"), str)
             or not isinstance(episode.get("ai_edition_version_id"), str)
+            or not isinstance(episode.get("ai_relative_path"), str)
+            or not isinstance(episode.get("output_sha256"), str)
+            or len(episode["output_sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in episode["output_sha256"]
+            )
         ):
             valid_episode_records = False
             break
@@ -572,6 +579,8 @@ def _ai_edition_index_freshness(
             {
                 "filename": episode["ai_archive_relative_path"],
                 "source_version_id": episode["ai_edition_version_id"],
+                "source_input_file": episode["ai_relative_path"],
+                "source_sha256": episode["output_sha256"],
             }
         )
     if not valid_episode_records:
@@ -719,6 +728,14 @@ def _record_project_ingestion_freshness(
     )
     summary_present = summary_path.exists() or summary_path.is_symlink()
     can_audit_summary = summary_present and expected_sources is not None
+    source_input_map = {
+        item["filename"]: {
+            "source_version_id": item["source_version_id"],
+            "source_input_file": item["source_input_file"],
+            "source_sha256": item["source_sha256"],
+        }
+        for item in expected_sources or []
+    }
     snapshot = build_downstream_freshness_snapshot(
         tm_data=tm_data,
         source_root=str(context["source_root"]),
@@ -731,6 +748,8 @@ def _record_project_ingestion_freshness(
             str(summary_path) if can_audit_summary else None
         ),
         expected_sources=expected_sources if can_audit_summary else None,
+        source_input_root=str(context["ai_root"]),
+        source_input_map=source_input_map,
     )
     ai_status = ai_finding["status"]
     snapshot["consumers"]["ai_edition_index"] = {

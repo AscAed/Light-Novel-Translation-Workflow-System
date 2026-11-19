@@ -116,7 +116,7 @@
 
 - 当前 checkout 的 source manifest 为 356/356，edition manifest 为 532/532；双版本 validator 重新计算 88 话并返回 `verified`。外部人读目录参数在 PowerShell 中需加引号以保护括号路径，实际目录与 `workflow_paths.json` 一致。
 - 当时的 schema v1 计划摘要为 `22db616990740a39427146717945deb62ea3841a508af2ac7a2b701630293299`；它已由本交接顶部的 schema v2 当前计划取代。
-- `scripts/validate_kakuyomu_html_archive.py` 已加入当前验证入口；真实试点返回 88/88 HTML replay 一致、356 个 manifest 文件有效。UTF-8 解码假设、历史版本仅做哈希检查及合成回归见[开发与验证](../development.md#2026-11-17-续接时当前-ai-来源复核)。
+- `scripts/validate_kakuyomu_html_archive.py` 已加入当前验证入口；当时真实试点返回 88/88 HTML replay 一致、356 个 manifest 文件有效。历史记录中的 UTF-8 解码假设已由[2026-11-19 字符集续验](../development.md#2026-11-19-当前工作树回归与来源边界修复)更新；历史版本仍只做哈希检查。
 - 离线 EPUB candidate builder 的当前合成回归为 23 项通过，语法检查及 CLI `--help` 通过；没有使用试点译文，EPUBCheck 与阅读器验收仍未做，I5 保持`部分实现`。
 - 下一步仍需人类验收 88 话映射和两版清洗效果、发布匹配 AI 版本的已审核概要/术语表、创建匹配当前计划摘要的审批回执，并在本地配置可用 Provider 凭据后才能做受控单话翻译。未代替用户做内容批准；作品授权与无需官方澄清维持已确认状态。
 

@@ -36,6 +36,10 @@ _ARTIFACT_FIELDS = frozenset(
 )
 
 
+class StaleSourceVersionError(ValueError):
+    """The referenced normalized version exists but is no longer current."""
+
+
 def new_manifest() -> dict:
     return {"schema_version": SCHEMA_VERSION, "artifacts": []}
 
@@ -326,11 +330,13 @@ def verify_current_normalized_source_metadata(
         artifact["artifact_id"]
     )
     if latest is None or latest["version_id"] != version_id:
-        raise ValueError("Normalized source version is stale; it is not current.")
+        raise StaleSourceVersionError(
+            "Normalized source version is stale; it is not current."
+        )
 
     latest_raw = latest_raw_parent_for_normalized(manifest, latest)
     if latest_raw["version_id"] not in latest["parent_version_ids"]:
-        raise ValueError(
+        raise StaleSourceVersionError(
             "Normalized source is stale because its raw parent is not current."
         )
     return artifact

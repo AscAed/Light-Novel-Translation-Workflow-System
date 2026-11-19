@@ -1,5 +1,6 @@
 """Adapter-independent source collection and resumable local persistence."""
 
+import codecs
 import hashlib
 import json
 import os
@@ -78,6 +79,7 @@ class FetchedEpisode:
     metadata: EpisodeMetadata
     content: bytes
     page_html: bytes | None = None
+    page_charset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +295,15 @@ def _valid_source_ref(value) -> bool:
         and value.strip() == value
         and not any(ord(character) < 32 for character in value)
     )
+
+
+def normalize_charset_name(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Source page charset must be a non-empty string.")
+    try:
+        return codecs.lookup(value).name
+    except LookupError as exc:
+        raise ValueError("Source page charset is not supported.") from exc
 
 
 def _validate_cursor(value) -> None:
@@ -1371,6 +1382,7 @@ def _persist_episode(
     content: bytes,
     *,
     page_html: bytes | None = None,
+    page_charset: str | None = None,
     max_archive_bytes: int | None = None,
     current_archive_bytes: int | None = None,
 ) -> int | None:
@@ -1380,6 +1392,13 @@ def _persist_episode(
         or len(page_html) > DEFAULT_MAX_EPISODE_BYTES
     ):
         raise ValueError("Source page HTML must be bytes within the episode limit.")
+    if page_html is None:
+        if page_charset is not None:
+            raise ValueError("Source page charset requires archived HTML bytes.")
+    else:
+        page_charset = normalize_charset_name(
+            "utf-8" if page_charset is None else page_charset
+        )
     manifest = (
         load_manifest(manifest_path)
         if manifest_path.exists()
@@ -1388,15 +1407,18 @@ def _persist_episode(
     episode_key = hashlib.sha256(
         f"{work_id}\0{episode.episode_id}".encode("utf-8")
     ).hexdigest()
+    metadata_value = {
+        "schema_version": 1,
+        "work_id": work_id,
+        "episode_id": episode.episode_id,
+        "title": episode.title,
+        "position": episode.position,
+        "source_ref": episode.source_ref,
+    }
+    if page_html is not None:
+        metadata_value["page_charset"] = page_charset
     metadata = json.dumps(
-        {
-            "schema_version": 1,
-            "work_id": work_id,
-            "episode_id": episode.episode_id,
-            "title": episode.title,
-            "position": episode.position,
-            "source_ref": episode.source_ref,
-        },
+        metadata_value,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -1741,17 +1763,19 @@ def _load_episode_metadata(
         )
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("Episode metadata is not valid UTF-8 JSON.") from exc
+    metadata_fields = {
+        "schema_version",
+        "work_id",
+        "episode_id",
+        "title",
+        "position",
+        "source_ref",
+    }
+    metadata_keys = set(metadata) if isinstance(metadata, dict) else set()
     if (
         not isinstance(metadata, dict)
-        or set(metadata)
-        != {
-            "schema_version",
-            "work_id",
-            "episode_id",
-            "title",
-            "position",
-            "source_ref",
-        }
+        or metadata_keys
+        not in (metadata_fields, metadata_fields | {"page_charset"})
         or isinstance(metadata["schema_version"], bool)
         or metadata["schema_version"] != 1
         or metadata["work_id"] != work_id
@@ -1763,6 +1787,12 @@ def _load_episode_metadata(
         or not _valid_source_ref(metadata["source_ref"])
     ):
         raise ValueError("Episode metadata does not match the requested identity.")
+    if "page_charset" in metadata:
+        try:
+            if normalize_charset_name(metadata["page_charset"]) != metadata["page_charset"]:
+                raise ValueError("Episode metadata charset is not canonical.")
+        except ValueError as exc:
+            raise ValueError("Episode metadata has an invalid page charset.") from exc
     return metadata_artifact, metadata
 
 
@@ -2340,9 +2370,11 @@ def collect_source(
                 episode = fetched.metadata
                 content = fetched.content
                 page_html = fetched.page_html
+                page_charset = fetched.page_charset
             else:
                 content = fetched
                 page_html = None
+                page_charset = None
             if not isinstance(content, bytes):
                 raise ValueError("Source adapter must return episode content as bytes.")
             if page_html is not None and not isinstance(page_html, bytes):
@@ -2356,6 +2388,7 @@ def collect_source(
                     episode,
                     content,
                     page_html=page_html,
+                    page_charset=page_charset,
                     max_archive_bytes=max_archive_bytes,
                     current_archive_bytes=archive_bytes,
                 )

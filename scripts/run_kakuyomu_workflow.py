@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import functools
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ from kakuyomu_page_source import (  # noqa: E402
 from pipeline import (  # noqa: E402
     Config,
     TranslationPipeline,
+    TranslationQualityGateError,
     _resolve_project_human_edition_root,
     validate_provider_configuration,
 )
@@ -36,6 +38,7 @@ from book_bundles import (  # noqa: E402
 )
 from scripts.ingest_kakuyomu_pages import (  # noqa: E402
     _load_catalog,
+    _load_catalog_snapshot,
     _validate_output_paths,
 )
 from scripts.snapshot_downstream_freshness import (  # noqa: E402
@@ -61,6 +64,7 @@ from source_manifest import (  # noqa: E402
     verify_current_normalized_source_metadata,
 )
 from source_editions import (  # noqa: E402
+    StaleAIEditionCatalogError,
     prepare_source_editions,
     read_verified_ai_edition_bytes,
     verify_ai_edition_index,
@@ -81,7 +85,30 @@ from utils import (  # noqa: E402
     resolve_relative_path,
     split_paragraphs,
     validate_tm_source_provenance,
+    write_text_atomically,
 )
+
+
+def _preserve_workflow_config(function):
+    """Restore explicit workflow overrides for embedded callers and retries."""
+
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        previous = {
+            field: value
+            for field, value in vars(Config).items()
+            if field.isupper()
+        }
+        try:
+            return function(*args, **kwargs)
+        finally:
+            for field in tuple(vars(Config)):
+                if field.isupper() and field not in previous:
+                    delattr(Config, field)
+            for field, value in previous.items():
+                setattr(Config, field, value)
+
+    return wrapped
 
 
 def _positive_int(value: str) -> int:
@@ -191,6 +218,11 @@ def _prepare_translation_run_directory(
         draft_path = run_path / existing_run["draft_root"]
         if draft_path.is_symlink() or not draft_path.is_dir():
             raise ValueError("Existing translation run has an invalid draft directory.")
+        _mark_translation_run_review_pending(
+            run_path,
+            run_id=run_id,
+            plan=plan,
+        )
         return run_id, run_path, draft_path, True
 
     state_path = run_path / "run_state.json"
@@ -215,6 +247,46 @@ def _prepare_translation_run_directory(
         raise ValueError("Translation draft directory cannot be a symbolic link.")
     draft_path.mkdir(exist_ok=True)
     return run_id, run_path, draft_path, False
+
+
+def _mark_translation_run_review_pending(
+    run_path: Path,
+    *,
+    run_id: str,
+    plan: dict,
+) -> None:
+    """Advance a successfully materialized run from execution to review."""
+
+    state_path = run_path / "run_state.json"
+    if state_path.is_symlink():
+        raise ValueError("Translation run state cannot be a symbolic link.")
+    with open_regular_file(state_path, binary=True) as stream:
+        state_bytes = stream.read(64 * 1024 + 1)
+    try:
+        state = json.loads(state_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Translation run state is invalid.") from exc
+    expected_common = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "work_id": plan["work_id"],
+        "plan_sha256": plan["plan_sha256"],
+    }
+    if (
+        not isinstance(state, dict)
+        or set(state) != set(expected_common) | {"status"}
+        or any(state.get(key) != value for key, value in expected_common.items())
+        or state.get("status") not in {"running", "review_pending", "published"}
+    ):
+        raise ValueError("Translation run state changed before completion.")
+    if state["status"] != "running":
+        return
+    completed_state = dict(expected_common)
+    completed_state["status"] = "review_pending"
+    write_text_atomically(
+        str(state_path),
+        json.dumps(completed_state, ensure_ascii=False, indent=2) + "\n",
+    )
 
 
 def _validate_plan_output_location(source_root: str, plan_output: str) -> None:
@@ -359,6 +431,8 @@ def preview_translation_plan(
                     ):
                         ai_edition_issue = "stale_ai_edition_catalog"
                         break
+        except StaleAIEditionCatalogError:
+            ai_edition_issue = "stale_ai_edition_catalog"
         except (OSError, UnicodeError, ValueError, KeyError, TypeError):
             ai_edition_issue = "invalid_ai_edition"
 
@@ -753,6 +827,7 @@ def _refresh_downstream_freshness_snapshot(
     }
 
 
+@_preserve_workflow_config
 def run_workflow(
     *,
     source_root: str,
@@ -827,6 +902,7 @@ def run_workflow(
         )
 
     discovery = None
+    catalog_work_metadata = None
     if work_url:
         discover = discovery_factory or discover_kakuyomu_work_catalog
         discovery = discover(
@@ -842,9 +918,11 @@ def run_workflow(
             allow_missing=True,
         )
     else:
-        work_id, episodes, catalog_path = _load_catalog(
-            str(source_path), catalog
-        )
+        catalog_snapshot = _load_catalog_snapshot(str(source_path), catalog)
+        work_id = catalog_snapshot["work_id"]
+        episodes = catalog_snapshot["episodes"]
+        catalog_path = catalog_snapshot["path"]
+        catalog_work_metadata = catalog_snapshot["work_metadata"]
     uses_discovered_catalog = catalog_path == discovered_catalog_path
     _validate_output_paths(
         str(source_path),
@@ -886,7 +964,7 @@ def run_workflow(
         work_metadata=(
             discovery.work_metadata.to_catalog_record()
             if discovery is not None
-            else None
+            else catalog_work_metadata
         ),
     )
     if source_report["status"] != "complete":
@@ -1143,6 +1221,7 @@ def run_workflow(
                 "Translation drafts must be disjoint from source editions and publication."
             )
     Config.OUTPUT_DIR = str(draft_path)
+    Config.TRANSLATION_OUTPUT_MODE = "reviewed_run_draft"
     Config.REQUIRE_REVIEWED_PUBLICATION = True
     Config.TRANSLATION_RUN_ID = resolved_run_id
     Config.EXPECTED_BOOK_BUNDLE = expected_book_bundle
@@ -1156,6 +1235,7 @@ def run_workflow(
         )
         tm_data = pipeline.rag.tm_data
         tm_chapters = tm_data.get("chapters", {})
+        completed_publication_ids = set()
         for target, chapter in zip(targets, chapter_map):
             publication_path = resolve_relative_path(
                 str(translation_path),
@@ -1178,6 +1258,7 @@ def run_workflow(
                         "pre_translation_freshness": pre_translation_freshness,
                         "plan": plan,
                     }
+                completed_publication_ids.add(target["episode_id"])
                 continue
             pending = has_pending_chapter_transaction(
                 str(draft_path),
@@ -1206,6 +1287,21 @@ def run_workflow(
                     "Existing translation output or memory does not match the current source."
                 )
 
+        pending_episodes = [
+            episode
+            for episode in plan["episodes"]
+            if episode["episode_id"] not in completed_publication_ids
+        ]
+        if not pending_episodes:
+            raise ValueError("Translation run has no pending episodes.")
+        pending_episode_ids = [
+            episode["episode_id"] for episode in pending_episodes
+        ]
+        Config.CHAPTER_MAP = [
+            chapter
+            for chapter, episode in zip(chapter_map, plan["episodes"])
+            if episode["episode_id"] not in completed_publication_ids
+        ]
         asyncio.run(pipeline.run_all())
     finally:
         Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = (
@@ -1232,8 +1328,14 @@ def run_workflow(
                 "ai_bundle_sha256",
             )
         },
+        episode_ids=pending_episode_ids,
     )
     write_new_json(run_path / "run.json", run_manifest)
+    _mark_translation_run_review_pending(
+        run_path,
+        run_id=resolved_run_id,
+        plan=plan,
+    )
     post_translation_freshness = _refresh_downstream_freshness_snapshot(
         source_root=source_path,
         translation_root=translation_path,
@@ -1437,6 +1539,18 @@ def main(argv: list[str] | None = None) -> int:
                 max_episodes=args.max_episodes,
                 request_delay_seconds=args.request_delay_seconds,
             )
+    except TranslationQualityGateError as exc:
+        position = exc.chapter_position
+        position_context = (
+            f" at chapter position {position}"
+            if isinstance(position, int) and not isinstance(position, bool)
+            else ""
+        )
+        print(
+            f"ERROR: {type(exc).__name__}{position_context}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     except (
         OSError,
         UnicodeError,

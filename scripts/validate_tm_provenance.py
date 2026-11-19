@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_manifest import (
+    StaleSourceVersionError,
     latest_artifacts_by_kind,
     latest_raw_parent_for_normalized,
     load_manifest,
@@ -127,6 +128,14 @@ def _audit_chapter(
                         raw_dir,
                         source_manifest,
                         provenance["source_version_id"],
+                    )
+                )
+            except StaleSourceVersionError:
+                findings.append(
+                    _finding(
+                        "stale",
+                        chapter,
+                        "Recorded normalized source version is no longer current.",
                     )
                 )
             except ValueError:

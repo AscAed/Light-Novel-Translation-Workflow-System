@@ -18,6 +18,7 @@ from utils import (
     open_regular_file,
     resolve_child_path,
     resolve_relative_path,
+    split_paragraphs,
     write_new_child_text,
 )
 
@@ -952,8 +953,10 @@ def _validate_summary_text(value: object) -> str:
 
 
 def _validate_claim_evidence_text(source_provenance: dict, summary: str) -> None:
+    normalized_summary = summary.replace("\r\n", "\n").replace("\r", "\n")
     for item in source_provenance.get("claim_evidence", []):
-        if item["claim_text"] not in summary:
+        claim_text = item["claim_text"].replace("\r\n", "\n").replace("\r", "\n")
+        if claim_text not in normalized_summary:
             raise ValueError(
                 "Summary draft is missing text bound by claim-level provenance."
             )
@@ -995,14 +998,25 @@ def verify_summary_sources(
         if latest_raw["version_id"] not in current["parent_version_ids"]:
             raise ValueError("Summary source versions are not current.")
 
-        if source_input_root is not None:
+        source_input_file = source.get("source_input_file")
+        if source_input_file is not None:
+            if source_input_root is None:
+                raise ValueError(
+                    "AI edition summary sources require an AI input root."
+                )
             source_input = (source_input_map or {}).get(filename)
+            if source_input_map is None:
+                source_input = {
+                    "source_version_id": version_id,
+                    "source_input_file": source_input_file,
+                    "source_sha256": artifact["content_sha256"],
+                }
             if (
                 not isinstance(source_input, dict)
                 or source_input.get("source_version_id") != version_id
+                or source_input.get("source_input_file") != source_input_file
                 or artifact["content_sha256"]
                 != source_input.get("source_sha256")
-                or not isinstance(source_input.get("source_input_file"), str)
             ):
                 raise ValueError(
                     "Summary source does not match the current AI edition map."
@@ -1014,6 +1028,10 @@ def verify_summary_sources(
                 max_bytes=_MAX_SOURCE_BYTES,
             )
         else:
+            if source_input_map is not None and filename in source_input_map:
+                raise ValueError(
+                    "Summary source does not match the current AI edition map."
+                )
             verify_manifest_artifact(
                 source_root, manifest, latest_raw["version_id"]
             )
@@ -1035,6 +1053,17 @@ def verify_summary_sources(
             "source_sha256"
         ]:
             raise ValueError("Summary source text does not match its provenance.")
+        coverage = normalized.get("input_coverage")
+        paragraph_count = source.get("included_paragraph_count")
+        if (
+            isinstance(coverage, dict)
+            and coverage.get("scope") == "all_configured_chapters"
+            and paragraph_count is not None
+            and len(split_paragraphs(normalized_text)) != paragraph_count
+        ):
+            raise ValueError(
+                "Full-book summary paragraph coverage does not match its source."
+            )
 
 
 def _candidate_inputs(knowledge_root: str) -> tuple[bytes, str, bytes, dict, dict]:
@@ -1130,6 +1159,9 @@ def publish_reviewed_summary(
     manifest_relative_path: str,
     receipt_filename: str,
     output_filename: str,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> dict:
     """Publish one approved summary bound to current source versions."""
     if (
@@ -1155,6 +1187,8 @@ def publish_reviewed_summary(
         source_root,
         manifest_relative_path,
         source_provenance,
+        source_input_root=source_input_root,
+        source_input_map=source_input_map,
     )
 
     summary_digest = hashlib.sha256(summary_bytes).hexdigest()
