@@ -85,12 +85,12 @@ Kakuyomu run 还要求每个待翻译的非空章节拥有来源版本和当前�
 - `source_ingestion.py` 通过 `SourceAdapter` 接收目录页和原文 bytes；适配器必须提供稳定的 `source_fingerprint`。checkpoint v5 绑定目录/额度快照、目标 manifest 相对路径和已完成 episode 的 raw 版本 ID；v1/v2 因无来源指纹拒绝迁移，v3/v4 仅在无已完成 episode 且来源指纹匹配时迁移。完整 checkpoint 导出还会核对 raw 版本仍是 manifest 当前版本。`LocalFileAdapter` 的指纹涵盖显式 catalog 顺序、元数据、路径和源文件 SHA-256，并在读取时复核内容；CLI 为 `scripts/ingest_local_sources.py`。`KakuyomuPageAdapter` 位于 `kakuyomu_page_source.py`：可从作品主页 Next.js Apollo 目录发现并校验所有公开 episode ID/title，或读取显式 catalog；校验条目数与 `publicEpisodeCount` 相等后生成普通 episode URL。运行前检查 robots，随后由 checkpoint 核心逐话请求页面、校验标题/唯一正文区域并即时归档解析文本及原始响应体 bytes；`raw_page_html` 以当前 episode metadata 和对应 `raw_source` 版本为父节点。访问失败时保留已完成版本，下次从首个未完成话继续，不重抓已完成正文。它拒绝 robots disallow、非 200/重定向、429、非 HTML、缺失/重复目标区域、标题不符和超限；不登录、不访问 `/read`。Kakuyomu 来源指纹绑定 parser、robots、目录 ID/title/顺序和限额，不绑定正文；可见正文及 HTML 响应分别由 artifact 哈希记录。续传是按话滚动采集，不是同一时刻的原子全书快照；目录未变时完整 checkpoint 不自动重抓正文，需要刷新时使用新 checkpoint。`scripts/ingest_kakuyomu_pages.py --work-url` 可独立发现并归档全部公开目录话目，不需 Provider；`scripts/run_kakuyomu_workflow.py --work-url` 还可物化版本、生成确定性 `CHAPTER_MAP` 并调用现有流水线。公开目录不含草稿/私有话，也不证明平台声明外的完整性；缺失/删除差分、并发锁仍未实现。
 - Gemini embedding 未获 `source_text` 授权时，RAG 查询/写入按现有异常降级处理，不发送文本；查询不返回语义匹配，TM 可保留无向量条目。章节对齐和知识抽取若缺少必要授权则停止，避免写入部分结果。用户对 JOJO/JYQF 的最小职责类别授权不包括 Gemini embedding 或其他未指定接收方。
 - `rag_engine.py` 与对齐脚本当前请求 `gemini-embedding-2`；本地 mock 仅用于测试，不能证明真实模型可用。
-- 翻译、对齐、知识抽取、TM 审计、来源 manifest 和来源采集的静态路径检查拒绝绝对路径、路径穿越和符号链接；嵌套输出目录必须预先存在。普通文件读取先以 `O_NONBLOCK`/`O_NOFOLLOW`（平台支持时）打开，再用 `fstat` 拒绝 FIFO 等特殊文件；这避免特殊文件阻塞，但不消除目录被另一个本地进程并发替换时的 TOCTOU 风险。跨平台目录句柄级 containment 和跨进程写锁仍未实现。TM 更新采用原子替换；译文和知识草稿使用排他新建。
+- 翻译、对齐、知识抽取、TM 审计、来源 manifest 和来源采集的静态路径检查拒绝绝对路径、路径穿越和符号链接；嵌套输出目录必须预先存在。普通文件读取先以 `O_NONBLOCK`/`O_NOFOLLOW`（平台支持时）打开，再用 `fstat` 拒绝 FIFO 等特殊文件；这避免特殊文件阻塞，但不消除目录被另一个本地进程并发替换时的 TOCTOU 风险。跨平台目录句柄级 containment 和通用跨进程写锁仍未实现；审核决定链是例外，按话目使用专用 append lock 串行化链校验和决定文件创建。TM 更新采用原子替换；译文和知识草稿使用排他新建。
 - 本地来源 CLI 只处理显式 catalog 列出的文件；catalog 有界读取、章节快照/归档读取有单章与单批上限，另提供无默认值的 `--max-archive-bytes` 逻辑清单内容上限。该额度不计物理分配、未登记孤儿/临时文件，也不约束其他工具后续写入；不是物理磁盘配额。当前仍按本地、人工选择的导入试点使用；不可信输入上线前还需评估网络响应流大小、并发写入和真正的磁盘配额。
 - 项目名解析会检查已解析路径仍位于 `projects/` 下；显式 JSON 配置路径不存在时立即报错。JSON 配置中的目录仍可由操作者显式指定到仓库外。
 - README 曾描述的 Sakura/DeepSeek/Gemini 型号、`DEVELOPMENT_PLAN.md` 的旧模型栈与现行源码不完全一致。以源码默认值为实现事实，以真实账户/服务实测为可用性事实。
 - 项目级数据目录 `projects/*` 默认被忽略，仅示例项目例外。真实项目知识、译文和 TM 通常不在版本控制中。
-- 当前 JSON 文件适用于现有单机代码路径；逐章恢复日志覆盖经测试的进程中断重试，不提供多进程写锁，也未验证断电恢复或规模化查询。
+- 当前 JSON 文件适用于现有单机代码路径；逐章恢复日志覆盖经测试的进程中断重试，不提供通用多进程写锁，也未验证断电恢复或规模化查询。审核决定链的按话目 append lock 只保护该决定链，不扩展为其他 JSON、TM 或多文件事务的并发协调。
 
 ## 目标边界（建议，非现状）
 
