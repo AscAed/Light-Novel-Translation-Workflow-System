@@ -10,7 +10,7 @@
 - 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review tests.test_translation_plan_approval -q`：77 项通过。
 - 关联工作流回归 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_knowledge_extraction_unit tests.test_source_editions tests.test_source_pipeline_linkage tests.test_source_ingestion tests.test_translation_plan_approval tests.test_translation_review_state tests.test_translation_review -q`：347 项通过。
 - 本轮完整非 E2E 动态回归（排除 `test_e2e.py`）运行 666 项、662 项通过、4 项跳过、0 项失败；3 项符号链接用例因普通进程缺少 `WinError 1314` 权限跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
-- 本轮 `.venv\Scripts\python.exe tests\run_tests.py` 本地 loopback mock E2E 运行 7 项、全部通过，200.694 秒，退出码 0；内容拦截、认证失败、段落错配和损坏 TM 等负向输出是预期 fixture。
+- 本轮 `.venv\Scripts\python.exe tests\run_tests.py` 本地 loopback mock E2E 运行 7 项、全部通过，201.455 秒，退出码 0；内容拦截、认证失败、段落错配和损坏 TM 等负向输出是预期 fixture。
 - `py_compile` 覆盖本次修改的生产/测试模块，`git diff --check`：通过。真实 Provider、人工审批、线上部署仍未验证。
 - `未优化` 审核发布批处理仍可能在每话重复读取并摘要整本 AI bundle；这不改变完整性校验，但在大 bundle/多话 run 上会增加 I/O，后续可在单次批量校验范围内复用已验证 bundle 身份。
 
