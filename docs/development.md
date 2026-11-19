@@ -9,7 +9,6 @@
 - 本次修改后的定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review -q`：33 项通过。
 - 本次修改后的非 E2E 回归：PowerShell 动态发现全部 `test_*.py` 并排除 `test_e2e.py`，663 项运行、659 项通过、4 项跳过、0 项失败。普通权限进程下 3 项符号链接用例因 `WinError 1314` 跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
 - 获准提权后单独复跑 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、10 项通过、1 项 FIFO 能力跳过；3 项符号链接用例均实际执行并通过。该提升权限结果只覆盖安全路径模块，不与普通权限的全量回归合并计数。
-- 用户另行提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 结果：9 项运行、耗时 0.032 秒、3 项跳过。该简略输出未提供跳过名称或原因，因此不据此归因权限问题；它与上面的提升权限详细结果分开记录。
 - 本次修改后的 `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，200.376 秒，退出码 0。runner 同时打印的拦截与段落数异常来自预期负向 fixture；没有调用真实 Provider 或线上服务。
 - 本次修改后的 `.venv\Scripts\python.exe -m py_compile translation_review.py tests\test_translation_review.py` 与 `git diff --check`：通过。试点书籍文件未被本轮修改。
 - 验证边界：以上自动测试使用合成数据或本地 mock，不能替代试点人类/AI 原文的全量人工验收、真实 Provider 试译或部署验证；用户报告的单话与合集抽样结论另见[抽样核实记录](#2026-11-19-人类版与-ai-版原文抽样核实)。
