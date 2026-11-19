@@ -1076,22 +1076,22 @@ def _demote_published_run_if_needed(run_root: Path, run: dict) -> None:
     )
 
 
-def _episode_has_valid_publication(
+def _load_verified_publication_candidate(
     run_root: Path,
     run: dict,
     run_bytes: bytes,
     episode: dict,
-) -> bool:
+) -> bytes | None:
     published_root = run_root / "Published"
     if not published_root.is_dir() or published_root.is_symlink():
-        return False
+        return None
     receipt_path = resolve_child_path(
         str(published_root),
         f"{episode['episode_id']}.json",
         allow_missing=True,
     )
     if not receipt_path.exists():
-        return False
+        return None
     receipt, _ = _read_json(
         receipt_path,
         _MAX_REVIEW_BYTES,
@@ -1104,7 +1104,7 @@ def _episode_has_valid_publication(
             "Publication review snapshot directory must not be a symbolic link."
         )
     if not snapshots_root.exists():
-        return False
+        return None
     if not snapshots_root.is_dir():
         raise ValueError(
             "Publication review snapshot path must be a directory."
@@ -1115,7 +1115,7 @@ def _episode_has_valid_publication(
         allow_missing=True,
     )
     if not snapshot_path.exists():
-        return False
+        return None
     review, review_bytes, candidate_bytes = _validate_approved_review(
         snapshot_path,
         run_root=run_root,
@@ -1173,7 +1173,23 @@ def _episode_has_valid_publication(
         or published_at.utcoffset() != timezone.utc.utcoffset(published_at)
     ):
         raise ValueError("Publication receipt timestamp must be UTC.")
+    return candidate_bytes
 
+
+def _episode_has_valid_publication(
+    run_root: Path,
+    run: dict,
+    run_bytes: bytes,
+    episode: dict,
+) -> bool:
+    candidate_bytes = _load_verified_publication_candidate(
+        run_root,
+        run,
+        run_bytes,
+        episode,
+    )
+    if candidate_bytes is None:
+        return False
     output_root = Path(run["translation_root"]).resolve(strict=True)
     output_path = resolve_relative_path(
         str(output_root),
@@ -1486,7 +1502,29 @@ def publish_reviewed_run(
                 allow_missing=True,
             )
         if review_path is None or not review_path.exists():
+            restored_output = False
             try:
+                candidate_bytes = _load_verified_publication_candidate(
+                    run_root,
+                    run,
+                    run_bytes,
+                    episode,
+                )
+                if candidate_bytes is not None:
+                    output_root = Path(run["translation_root"]).resolve(
+                        strict=True
+                    )
+                    output_path = resolve_relative_path(
+                        str(output_root),
+                        episode["translation_file"],
+                        allow_missing=True,
+                    )
+                    if not output_path.exists():
+                        restored_output = _write_new_bytes_atomically(
+                            str(output_root),
+                            episode["translation_file"],
+                            candidate_bytes,
+                        )
                 already_published = _episode_has_valid_publication(
                     run_root,
                     run,
@@ -1507,7 +1545,7 @@ def publish_reviewed_run(
                     {
                         "episode_id": episode["episode_id"],
                         "position": episode["position"],
-                        "created": False,
+                        "created": restored_output,
                         "receipt_created": False,
                         "review_snapshot_created": False,
                         "run_status": None,

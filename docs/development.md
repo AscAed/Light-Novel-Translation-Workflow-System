@@ -4,11 +4,14 @@
 
 - `已实现` `write_review_decision` 在写入返工决定前，拒绝候选 SHA-256 与同话既有决定链任一候选重复；拒绝发生在文件写入前，已有决定链保持可加载。
 - `已实现` 新增只读发布证明查询：仅当既有 run 的 work/episode、来源版本与 SHA-256、译文根和相对目标均匹配，且发布回执、审阅快照、最终批准候选与当前正式译文字节全部有效时，才确认该话已发布。Kakuyomu 工作流在计划标为 blocked 且译文目标已存在时，先按原 TM/provenance 规则检查；不匹配时再核验该发布证明，从而正确恢复返工候选已发布、但原始 TM 仍绑定初稿的部分计划。
+- `已实现` 批量发布在可编辑审阅文件与正式译文都缺失时，可先验证发布回执、已批准审阅快照和候选摘要，再用 create-only 原子写入恢复缺失译文；目标已存在且字节不同则阻止并保留现有内容。新增回归覆盖恢复成功与冲突拒绝。
 - 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review tests.test_kakuyomu_workflow -q`：70 项通过，覆盖跨修订候选摘要重用拒绝、返工发布凭据与目标/来源绑定、篡改后拒绝，以及只续跑剩余话目。
-- 当前非 E2E 回归：PowerShell 动态发现全部 `test_*.py` 并排除 `test_e2e.py`，661 项运行、657 项通过、4 项跳过、0 项失败。普通权限进程下 3 项符号链接用例因 `WinError 1314` 跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- 本次修改后的定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review -q`：33 项通过。
+- 本次修改后的非 E2E 回归：PowerShell 动态发现全部 `test_*.py` 并排除 `test_e2e.py`，663 项运行、659 项通过、4 项跳过、0 项失败。普通权限进程下 3 项符号链接用例因 `WinError 1314` 跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
 - 获准提权后单独复跑 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、10 项通过、1 项 FIFO 能力跳过；3 项符号链接用例均实际执行并通过。该提升权限结果只覆盖安全路径模块，不与普通权限的全量回归合并计数。
-- `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，202.630 秒，退出码 0。日志中的内容过滤与段落数不匹配来自预期负向 fixture；没有调用真实 Provider 或线上服务。
-- `.venv\Scripts\python.exe -m py_compile translation_review_state.py translation_review.py scripts\run_kakuyomu_workflow.py tests\test_translation_review_state.py tests\test_translation_review.py tests\test_kakuyomu_workflow.py` 与 `git diff --check`：通过。试点书籍文件未被本轮修改。
+- 用户另行提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 结果：9 项运行、耗时 0.032 秒、3 项跳过。该简略输出未提供跳过名称或原因，因此不据此归因权限问题；它与上面的提升权限详细结果分开记录。
+- 本次修改后的 `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，200.376 秒，退出码 0。runner 同时打印的拦截与段落数异常来自预期负向 fixture；没有调用真实 Provider 或线上服务。
+- 本次修改后的 `.venv\Scripts\python.exe -m py_compile translation_review.py tests\test_translation_review.py` 与 `git diff --check`：通过。试点书籍文件未被本轮修改。
 - 验证边界：以上自动测试使用合成数据或本地 mock，不能替代试点人类/AI 原文的全量人工验收、真实 Provider 试译或部署验证；用户报告的单话与合集抽样结论另见[抽样核实记录](#2026-11-19-人类版与-ai-版原文抽样核实)。
 
 ## 2026-11-19 当前工作树回归与来源边界修复

@@ -943,6 +943,47 @@ class TranslationReviewTests(unittest.TestCase):
             "published",
         )
 
+    def test_batch_restores_missing_output_from_verified_snapshot(self):
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+        review_path.unlink()
+        output_path = self.translation_root / "episode-0001.md"
+        output_path.unlink()
+
+        report = publish_reviewed_run(self.run_root)
+
+        self.assertEqual(report["status"], "published")
+        self.assertEqual(report["published_count"], 1)
+        self.assertEqual(report["failed_count"], 0)
+        self.assertTrue(report["published"][0]["created"])
+        self.assertEqual(output_path.read_bytes(), self.draft_bytes)
+
+    def test_batch_does_not_overwrite_conflicting_output_without_review(self):
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+        review_path.unlink()
+        output_path = self.translation_root / "episode-0001.md"
+        output_path.write_bytes(b"preserve this translation")
+
+        report = publish_reviewed_run(self.run_root)
+
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["published_count"], 0)
+        self.assertEqual(report["failed_count"], 1)
+        self.assertEqual(report["failed"][0]["error"], "FileExistsError")
+        self.assertEqual(
+            output_path.read_bytes(),
+            b"preserve this translation",
+        )
+
     def test_batch_attributes_run_reconciliation_conflict_to_run(self):
         self._approved_review()
         with patch(
