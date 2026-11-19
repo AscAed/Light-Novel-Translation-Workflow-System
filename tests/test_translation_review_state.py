@@ -340,6 +340,27 @@ class TranslationReviewStateTests(unittest.TestCase):
             ).exists()
         )
 
+    def test_decision_chain_ignores_interrupted_staging_file(self):
+        run_root = self.root / "run"
+        run_root.mkdir()
+        first = decision_record(stage_verdicts=verdicts(style="fail"))
+        write_review_decision(run_root, first)
+        decision_root = run_root / "ReviewDecisions" / first["episode_id"]
+        (decision_root / ".revision-0001-interrupted.tmp").write_bytes(
+            b'{"incomplete":'
+        )
+
+        chain = load_review_decision_chain(
+            run_root,
+            episode_id=first["episode_id"],
+            expected_run_id=first["run_id"],
+            expected_work_id=first["work_id"],
+            expected_source_version_id=first["source_version_id"],
+            expected_source_sha256=first["source_sha256"],
+        )
+
+        self.assertEqual(chain, [first])
+
     def test_decision_chain_rejects_tampered_file(self):
         run_root = self.root / "run"
         run_root.mkdir()

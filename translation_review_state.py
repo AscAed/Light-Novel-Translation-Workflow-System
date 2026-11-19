@@ -448,6 +448,12 @@ def load_review_decision_chain(
             if not path.is_file():
                 raise ValueError("Review decision lock must be a regular file.")
             continue
+        if path.name.startswith(".") and path.name.endswith(".tmp"):
+            if not path.is_file():
+                raise ValueError(
+                    "Review decision staging entries must be regular files."
+                )
+            continue
         if not path.is_file() or path.suffix.lower() != ".json":
             raise ValueError("Review decision directory contains an invalid entry.")
         records.append(_read_decision(path))
