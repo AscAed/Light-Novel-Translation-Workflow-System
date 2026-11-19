@@ -884,8 +884,16 @@ def record_translation_review_decision(
     policy_sha256: str,
     max_rework_attempts: int,
     candidate_file: str | Path | None = None,
+    reviewed_candidate_sha256: str | None = None,
 ) -> dict:
     """Append a content-free, hash-bound decision for one run candidate."""
+    if (
+        not isinstance(reviewed_candidate_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(reviewed_candidate_sha256)
+    ):
+        raise ValueError(
+            "A valid reviewed candidate SHA-256 is required to record a decision."
+        )
     run_root, run, _ = _load_run(run_directory)
     episode = _run_episode(run, episode_id)
     source_bytes = _verify_current_inputs(run, episode)
@@ -967,6 +975,14 @@ def record_translation_review_decision(
             raise ValueError("Initial review decision must bind the verified run draft.")
         candidate_bytes = verified_draft
 
+    candidate_sha256 = _sha256_bytes(candidate_bytes)
+    if not hmac.compare_digest(
+        candidate_sha256,
+        reviewed_candidate_sha256,
+    ):
+        raise ValueError(
+            "Review candidate changed after its digest was recorded for review."
+        )
     record = create_review_decision_record(
         run_id=run["run_id"],
         work_id=run["work_id"],
@@ -976,7 +992,7 @@ def record_translation_review_decision(
         candidate_revision=candidate_revision,
         candidate_relative_path=candidate_relative_path,
         parent_candidate_sha256=parent_candidate_sha256,
-        candidate_sha256=_sha256_bytes(candidate_bytes),
+        candidate_sha256=candidate_sha256,
         policy_sha256=policy_sha256,
         reviewer_id=reviewer_id,
         reviewed_at_utc=reviewed_at_utc,
@@ -1419,12 +1435,11 @@ def publish_reviewed_translation(
             ):
                 raise ValueError("Existing publication receipt conflicts with this run.")
 
-    if not output_target.exists():
-        created = _write_new_bytes_atomically(
-            str(output_root),
-            episode["translation_file"],
-            candidate_bytes,
-        )
+    created = _write_new_bytes_atomically(
+        str(output_root),
+        episode["translation_file"],
+        candidate_bytes,
+    )
 
     published_root.mkdir(exist_ok=True)
     review_snapshots_root.mkdir(exist_ok=True)

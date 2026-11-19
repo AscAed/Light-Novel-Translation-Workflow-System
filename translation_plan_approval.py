@@ -12,6 +12,7 @@ from utils import (
     resolve_relative_path,
     write_new_child_text,
 )
+from source_ingestion import source_artifact_id
 from source_editions import verify_ai_edition_index
 
 
@@ -288,7 +289,14 @@ def _load_human_edition_index(
             raise ValueError("Human edition index contains an invalid episode ID.")
         if episode_id in indexed:
             raise ValueError("Human edition index contains duplicate episodes.")
-        for field in ("title", "human_relative_path"):
+        for field in (
+            "title",
+            "human_relative_path",
+            "human_edition_artifact_id",
+            "human_edition_version_id",
+            "human_archive_relative_path",
+            "edition_input_version_id",
+        ):
             _require_text(item.get(field), field, maximum=4096)
         position = item.get("position")
         if (
@@ -369,6 +377,17 @@ def _verify_human_edition_lineage(
         raise ValueError("Human edition work metadata differs from the AI edition.")
 
     ai_episodes = ai_result["episodes_by_id"]
+    edition_manifest = ai_result.get("edition_manifest")
+    if (
+        not isinstance(edition_manifest, dict)
+        or not isinstance(edition_manifest.get("artifacts"), list)
+    ):
+        raise ValueError("Verified edition manifest is missing from the AI index.")
+    edition_by_version = {
+        artifact["version_id"]: artifact
+        for artifact in edition_manifest["artifacts"]
+        if isinstance(artifact, dict) and isinstance(artifact.get("version_id"), str)
+    }
     if set(ai_episodes) != {episode["episode_id"] for episode in episodes}:
         raise ValueError("AI edition episode coverage differs from the plan.")
     human_episodes = {
@@ -377,6 +396,14 @@ def _verify_human_edition_lineage(
     for episode in episodes:
         ai_episode = ai_episodes[episode["episode_id"]]
         human_episode = human_episodes[episode["episode_id"]]
+        human_artifact_id = source_artifact_id(
+            plan["work_id"],
+            "human-reading-v1",
+            episode["episode_id"],
+        )
+        human_artifact = edition_by_version.get(
+            human_episode.get("human_edition_version_id")
+        )
         if (
             ai_episode.get("ai_edition_version_id")
             != episode["source_version_id"]
@@ -397,9 +424,23 @@ def _verify_human_edition_lineage(
             != ai_episode.get("edition_input_version_id")
             or human_episode.get("edition_input_sha256")
             != ai_episode.get("edition_input_sha256")
+            or human_episode.get("human_edition_artifact_id")
+            != human_artifact_id
+            or not isinstance(human_artifact, dict)
+            or human_artifact.get("artifact_id") != human_artifact_id
+            or human_artifact.get("version_id")
+            != human_episode.get("human_edition_version_id")
+            or human_artifact.get("kind") != "export"
+            or human_artifact.get("relative_path")
+            != human_episode.get("human_archive_relative_path")
+            or human_artifact.get("content_sha256")
+            != human_episode.get("output_sha256")
+            or human_episode.get("edition_input_version_id")
+            not in human_artifact.get("parent_version_ids", [])
         ):
             raise ValueError(
-                "Human edition episode lineage differs from the AI source revision."
+                "Human edition episode lineage or archived artifact identity "
+                "is stale or differs from the verified AI source revision."
             )
 
 

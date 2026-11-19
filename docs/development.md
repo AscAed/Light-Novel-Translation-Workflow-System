@@ -1,5 +1,17 @@
 # 开发与验证
 
+## 2026-11-19 审核决定并发与人读版身份绑定修复
+
+- `已实现` 审核决定按话目使用跨进程 append lock；链读取、连续修订/父摘要校验和 create-only JSON 发布在锁内完成。决定 JSON 先完整写入临时文件并 fsync，再通过硬链接原子创建；`.append.lock` 不计入链记录。
+- `已实现` `record_translation_review_decision` 和对应 CLI 要求调用方传入审阅时取得的候选 `reviewed_candidate_sha256`；程序重新读取候选后才生成决定记录，候选在审阅期间被替换时失败关闭。
+- `已实现` 计划审阅逐话验证人读版 artifact ID、版本 ID、归档相对路径、文件摘要、父版本及清洗类型，均须与已验证 edition manifest 和 AI 版来源一致。
+- `已实现` 正式译文发布的缺失目标统一经过 create-or-compare 原子写入；并发写入相同字节可复用，冲突字节拒绝，回执/快照不会为未发布的内容登记成功。
+- 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review tests.test_translation_plan_approval -q`：76 项通过。
+- 关联工作流回归 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_knowledge_extraction_unit tests.test_source_editions tests.test_source_pipeline_linkage tests.test_source_ingestion tests.test_translation_plan_approval tests.test_translation_review_state tests.test_translation_review -q`：346 项通过。
+- 本轮完整非 E2E 动态回归（排除 `test_e2e.py`）运行 665 项、661 项通过、4 项跳过、0 项失败；3 项符号链接用例因普通进程缺少 `WinError 1314` 权限跳过，1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- 本轮 `.venv\Scripts\python.exe tests\run_tests.py` 本地 loopback mock E2E 运行 7 项、全部通过，202.899 秒，退出码 0；内容拦截、认证失败、段落错配和损坏 TM 等负向输出是预期 fixture。
+- `py_compile` 覆盖本次修改的生产/测试模块，`git diff --check`：通过。真实 Provider、人工审批、线上部署仍未验证。
+
 ## 2026-11-19 返工发布续跑完整性修复
 
 - `已实现` `write_review_decision` 在写入返工决定前，拒绝候选 SHA-256 与同话既有决定链任一候选重复；拒绝发生在文件写入前，已有决定链保持可加载。
@@ -41,6 +53,9 @@
 
 - 决策摘要现在绑定 run-relative 候选路径。初版必须精确指向 `Drafts/<translation_file>`；返工版必须放在 `ReviewCandidates/<episode_id>/`，路径不能复用。记录只保存哈希、阶段判定和声明字段，不保存译文正文。
 - `record_translation_review_decision` 续写前会重验上一候选字节；返工候选必须位于当前 run、通过路径/符号链接检查、符合现有段落/引号契约，并且内容摘要不同于父版本。返工次数与策略摘要在同一链内固定，须由调用方显式传入，没有生产默认值。
+- 审核决定新增候选摘要契约：调用方必须传入审阅时取得的 `reviewed_candidate_sha256`；程序重新读取候选并在追加前比较，避免审核期间候选被替换。每个话目的决定目录使用跨进程 append lock，链校验和 create-only 原子 JSON 发布在同一锁内；锁文件不计入决定链。
+- 计划审批现在把人读版每话的 `human_edition_artifact_id`、`human_edition_version_id`、`human_archive_relative_path`、父版本和文件摘要与已验证 `source_editions_manifest.json` 逐项核对，交换两个索引行的路径和摘要不会再被接受。
+- 发布译文的缺失输出路径统一经过 create-or-compare 原子写入；并发创建相同字节时复用现有文件，不同字节则失败关闭后才会写入回执/快照。
 - 发布路径现消费决策链：没有决策链的旧 schema v1 人工 checklist 保持兼容；存在决策链时，旧 checklist 不能绕过门禁。只有链尾 `passed` 候选可以生成 schema v2 checklist，且绑定最终修订号、路径、候选摘要和决策摘要；八项人工检查仍须全部通过、无 issues、声明独立性并填写 UTC 审核时间。
 - 发布回执 schema v2 绑定最终候选和决策摘要。发布、重试与 run 完成核验会复核决策链、审核快照和候选字节，正式译文字节必须等于本次批准的最终候选；返工时原始 `Drafts/` 保持不变。`rework`、`needs_human`、候选篡改或既有输出冲突时不会写入新正式译文。
 - `needs_human` 当前是终止门禁：没有同一 run 内的人类仲裁回执/恢复入口。为失败或耗尽设定可覆盖权限前，不能将人工 checklist 当作绕过方式；仲裁责任与允许结果仍需明确。

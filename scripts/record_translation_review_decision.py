@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reviewed-at-utc", required=True)
     parser.add_argument("--policy-sha256", required=True)
     parser.add_argument("--max-rework-attempts", required=True, type=int)
+    parser.add_argument("--reviewed-candidate-sha256", required=True)
     parser.add_argument(
         "--stage-verdicts",
         required=True,
@@ -51,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             policy_sha256=args.policy_sha256,
             max_rework_attempts=args.max_rework_attempts,
             candidate_file=args.candidate_file,
+            reviewed_candidate_sha256=args.reviewed_candidate_sha256,
         )
     except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
         print(

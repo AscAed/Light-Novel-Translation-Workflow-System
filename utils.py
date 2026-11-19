@@ -229,6 +229,38 @@ def write_new_child_text(root: str, filename: str, content: str) -> None:
         stream.write(content)
 
 
+def write_new_child_bytes_atomically(
+    root: str,
+    filename: str,
+    content: bytes,
+) -> None:
+    """Publish complete bytes as a new child without replacing an existing file."""
+    if not isinstance(content, bytes):
+        raise TypeError("New child content must be bytes.")
+    root_path = Path(root)
+    root_path.mkdir(parents=True, exist_ok=True)
+    target = resolve_child_path(str(root_path), filename, allow_missing=True)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, target)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
 def write_new_relative_text(root: str, relative_path: str, content: str) -> None:
     """Create a mapped file under root without replacing an existing file."""
     path = resolve_relative_path(root, relative_path, allow_missing=True)

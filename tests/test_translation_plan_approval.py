@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.approve_translation_plan import main
+from source_ingestion import source_artifact_id
 from translation_plan_approval import (
     create_plan_review_template,
     create_approval_receipt,
@@ -304,6 +305,29 @@ class TranslationPlanApprovalTests(unittest.TestCase):
             "index_sha256": plan["source_edition"]["index_sha256"],
             "episodes_by_id": {ai_episode["episode_id"]: ai_episode},
         }
+        human_output_sha256 = hashlib.sha256(
+            b"synthetic human edition"
+        ).hexdigest()
+        human_artifact_id = source_artifact_id(
+            plan["work_id"],
+            "human-reading-v1",
+            ai_episode["episode_id"],
+        )
+        human_artifact = {
+            "artifact_id": human_artifact_id,
+            "version_id": "human-edition-version-1",
+            "kind": "export",
+            "content_sha256": human_output_sha256,
+            "relative_path": (
+                "editions/human-reading-v1/123456789/"
+                "human-edition-version-1.md"
+            ),
+            "parent_version_ids": ["raw-source-version-1"],
+        }
+        ai_index_result["edition_manifest"] = {
+            "schema_version": 1,
+            "artifacts": [human_artifact],
+        }
         self.enterContext(
             patch(
                 "translation_plan_approval.verify_ai_edition_index",
@@ -333,10 +357,11 @@ class TranslationPlanApprovalTests(unittest.TestCase):
                     "edition_input_sha256": ai_episode[
                         "edition_input_sha256"
                     ],
+                    "human_edition_artifact_id": human_artifact_id,
+                    "human_edition_version_id": "human-edition-version-1",
+                    "human_archive_relative_path": human_artifact["relative_path"],
                     "human_relative_path": "Chapter/Synthetic episode.md",
-                    "output_sha256": hashlib.sha256(
-                        b"synthetic human edition"
-                    ).hexdigest(),
+                    "output_sha256": human_output_sha256,
                 }
             ],
         }
@@ -349,6 +374,26 @@ class TranslationPlanApprovalTests(unittest.TestCase):
             encoding="utf-8",
         )
         return plan, human_index_path
+
+    def test_plan_review_rejects_human_output_not_bound_to_episode_artifact(self):
+        plan, human_index_path = self._ai_plan_with_human_index()
+        human_index = json.loads(human_index_path.read_text(encoding="utf-8"))
+        alternate_path = self.root / "Chapter" / "Other episode.md"
+        alternate_bytes = b"alternate human edition"
+        alternate_path.write_bytes(alternate_bytes)
+        human_index["episodes"][0]["human_relative_path"] = (
+            "Chapter/Other episode.md"
+        )
+        human_index["episodes"][0]["output_sha256"] = hashlib.sha256(
+            alternate_bytes
+        ).hexdigest()
+        human_index_path.write_text(
+            json.dumps(human_index, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "archived artifact identity"):
+            create_plan_review_template(plan, human_index_path)
 
     def test_plan_review_template_requires_all_three_explicit_passes(self):
         plan, human_index_path = self._ai_plan_with_human_index()

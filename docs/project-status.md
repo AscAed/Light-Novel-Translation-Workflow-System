@@ -5,7 +5,7 @@
 - `已实现` 版本化空来源通过章节事务提交空产物和 provenance，支持一致性复核及正式 run 阶段记录；重试验证后跳过。
 - `已实现` 新采集的原始 HTML 响应字符集已规范化并写入 episode metadata，沿 metadata parent 关系绑定到 HTML artifact；回放按 charset 解码，旧记录缺字段时兼容 UTF-8，原始响应 bytes 不变。
 - `已实现` AI 索引验证会复核索引绑定的 catalog 当前字节摘要和完整 episode 映射；catalog 原路径内容变化、重排或删项会阻断使用。
-- `已验证` 当前分支最近一次非 E2E 回归 663 项运行、659 项通过、4 项跳过：普通权限下 3 项符号链接用例因 `WinError 1314` 跳过、1 项 FIFO 用例因 Windows 能力限制跳过；另一次提升权限安全路径模块运行 11 项、10 项通过，3 个符号链接用例通过、1 项 FIFO 跳过。本次 mock E2E 7 项通过，200.376 秒；试点 HTML archive validator 另有 88/88、356 文件有效、`verified` 的只读结果。命令和证据范围见[开发与验证](development.md#2026-11-19-返工发布续跑完整性修复)。
+- `已验证` 当前分支最近一次非 E2E 回归 665 项运行、661 项通过、4 项跳过：普通权限下 3 项符号链接用例因 `WinError 1314` 跳过、1 项 FIFO 用例因 Windows 能力限制跳过；另一次提升权限安全路径模块运行 11 项、10 项通过，3 个符号链接用例通过、1 项 FIFO 跳过。本次 mock E2E 7 项通过，202.899 秒；试点 HTML archive validator 另有 88/88、356 文件有效、`verified` 的只读结果。命令和证据范围见[开发与验证](development.md#2026-11-19-审核决定并发与人读版身份绑定修复)。
 - `未验证` Shift_JIS 仅经合成 fixture 验证，未对站点做 live 请求；真实 Provider、译文质量、人工试点映射/双版验收及线上部署仍未验证。
 
 ## 2026-11-19 续跑与结构化审批回归
@@ -17,7 +17,7 @@
 
 ## 2026-11-19 K4 决策链发布门禁
 
-- `部分实现` `translation_review_state.py` 要求 `fidelity`、`fluency`、`style` 三阶段均明确通过；显式预算内失败进入返工，缺报、不确定、冲突或耗尽转人工。`record_translation_review_decision` 将 run/episode/source、候选修订、run-relative 路径、父摘要、策略摘要和状态绑定为 create-only 决策链。
+- `部分实现` `translation_review_state.py` 要求 `fidelity`、`fluency`、`style` 三阶段均明确通过；显式预算内失败进入返工，缺报、不确定、冲突或耗尽转人工。`record_translation_review_decision` 将 run/episode/source、候选修订、run-relative 路径、父摘要、策略摘要和状态绑定为 create-only 决策链；调用者必须提供审阅时的候选 SHA-256，写入按话目串行并以完整 JSON 原子创建。审核发布还会校验人读版索引中登记的 artifact ID、版本、归档路径和摘要与已验证清单一致。
 - `已实现` 发布器消费决策链：链尾未通过不能发布；链尾通过后，schema v2 人工 checklist 和回执绑定最终候选路径、版本及决策摘要。返工候选位于 `ReviewCandidates/<episode_id>/`，原始草稿不变；发布与 run 状态复核均比较批准候选的实际字节。没有决策链的旧 schema v1 checklist 仍可走原人工审核路径。
 - `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：47 项合成测试通过，覆盖旧路径、直通和返工发布、绕过拒绝、篡改、排他写入与状态恢复。该结果不证明真实 Provider、语义判定或审核身份。
 - `未验证` 终审 Provider/model、语义阈值、生产返工上限、冲突/耗尽时人工响应仍未确定；`needs_human` 目前硬停止，尚无同一 run 的人类仲裁回执/恢复入口，不能把旧 checklist 当作绕过。hash 不认证审核者或策略执行。当前仅为本地 CLI，没有部署服务。当前试点尚未生成 run/译文；计划模板 88 话、264 个决定仍为 pending，未创建计划回执或 reviewed 知识。

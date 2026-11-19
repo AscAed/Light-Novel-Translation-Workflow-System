@@ -27,8 +27,40 @@ from translation_review import (
     prepare_translation_review,
     publish_reviewed_run,
     publish_reviewed_translation,
-    record_translation_review_decision,
+    record_translation_review_decision as _record_translation_review_decision,
 )
+
+
+def record_translation_review_decision(run_directory, episode_id, **kwargs):
+    """Keep existing fixtures concise while passing the reviewed digest explicitly."""
+    if "reviewed_candidate_sha256" not in kwargs:
+        run_root = Path(run_directory)
+        candidate = kwargs.get("candidate_file")
+        candidate_path = (
+            Path(candidate)
+            if candidate is not None and Path(candidate).is_absolute()
+            else run_root
+            / (
+                candidate
+                if candidate is not None
+                else "Drafts/"
+                + next(
+                    item["translation_file"]
+                    for item in json.loads((run_root / "run.json").read_text())[
+                        "episodes"
+                    ]
+                    if item["episode_id"] == episode_id
+                )
+            )
+        )
+        kwargs["reviewed_candidate_sha256"] = hashlib.sha256(
+            candidate_path.read_bytes()
+        ).hexdigest()
+    return _record_translation_review_decision(
+        run_directory,
+        episode_id,
+        **kwargs,
+    )
 
 
 class TranslationReviewTests(unittest.TestCase):
@@ -289,6 +321,22 @@ class TranslationReviewTests(unittest.TestCase):
             (self.run_root / "ReviewDecisions" / self.episode_id).glob("*.json")
         )
         self.assertEqual(len(decision_files), 2)
+
+    def test_record_decision_requires_reviewed_candidate_digest(self):
+        with self.assertRaisesRegex(ValueError, "reviewed candidate SHA-256"):
+            _record_translation_review_decision(
+                self.run_root,
+                self.episode_id,
+                stage_verdicts={
+                    "fidelity": ["pass"],
+                    "fluency": ["pass"],
+                    "style": ["pass"],
+                },
+                reviewer_id="synthetic reviewer",
+                reviewed_at_utc="2026-11-19T00:00:00Z",
+                policy_sha256="d" * 64,
+                max_rework_attempts=1,
+            )
 
     def test_decision_chain_requires_final_candidate_review_before_publish(self):
         legacy_review = self._approved_review()

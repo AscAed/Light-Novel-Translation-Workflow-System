@@ -1,13 +1,22 @@
 """Policy-neutral transitions for synthetic final-review workflows."""
 
+import errno
 import hashlib
 import json
+import os
 import re
+import stat
+import time
+from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 
-from utils import open_regular_file, resolve_relative_path, write_new_child_text
+from utils import (
+    open_regular_file,
+    resolve_relative_path,
+    write_new_child_bytes_atomically,
+)
 
 
 REVIEW_STAGES = ("fidelity", "fluency", "style")
@@ -348,7 +357,7 @@ def _decision_directory(
     if not decisions_root.exists():
         if not create:
             return decisions_root / episode_id
-        decisions_root.mkdir()
+        decisions_root.mkdir(exist_ok=True)
     if not decisions_root.is_dir():
         raise ValueError("Review decision root must be a directory.")
     episode_root = resolve_relative_path(
@@ -365,6 +374,57 @@ def _decision_directory(
     if not episode_root.is_dir():
         raise ValueError("Review decision path must be a directory.")
     return episode_root
+
+
+@contextmanager
+def _lock_episode_decisions(episode_root: Path):
+    lock_path = episode_root / ".append.lock"
+    if lock_path.is_symlink():
+        raise ValueError("Review decision lock must not be a symbolic link.")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    locked = False
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Review decision lock must be a regular file.")
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            while True:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError as exc:
+                    if (
+                        exc.errno != errno.EACCES
+                        and getattr(exc, "winerror", None) != 33
+                    ):
+                        raise
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def load_review_decision_chain(
@@ -384,6 +444,10 @@ def load_review_decision_chain(
     for path in sorted(episode_root.iterdir(), key=lambda item: item.name):
         if path.is_symlink():
             raise ValueError("Review decision files must not be symbolic links.")
+        if path.name == ".append.lock":
+            if not path.is_file():
+                raise ValueError("Review decision lock must be a regular file.")
+            continue
         if not path.is_file() or path.suffix.lower() != ".json":
             raise ValueError("Review decision directory contains an invalid entry.")
         records.append(_read_decision(path))
@@ -451,58 +515,57 @@ def write_review_decision(
         f"revision-{verified['candidate_revision']:04d}-"
         f"{verified['decision_sha256']}.json"
     )
-    existing_root = _decision_directory(
-        run_directory,
-        verified["episode_id"],
-        create=False,
-    )
-    if existing_root.exists():
-        existing_path = existing_root / filename
-        if existing_path.is_symlink():
-            raise ValueError("Review decision files must not be symbolic links.")
-        if existing_path.exists():
-            raise FileExistsError("Review decision already exists.")
-    existing = load_review_decision_chain(
-        run_directory,
-        episode_id=verified["episode_id"],
-        expected_run_id=verified["run_id"],
-        expected_work_id=verified["work_id"],
-        expected_source_version_id=verified["source_version_id"],
-        expected_source_sha256=verified["source_sha256"],
-    )
-    if existing:
-        previous = existing[-1]
-        if verified["candidate_sha256"] in {
-            decision["candidate_sha256"] for decision in existing
-        }:
-            raise ValueError("Review decision chain reuses a candidate digest.")
-        if previous["transition"]["status"] != "rework":
-            raise ValueError(
-                "A new review decision requires a rework transition."
-            )
-        if (
-            verified["candidate_revision"]
-            != previous["candidate_revision"] + 1
-            or verified["parent_candidate_sha256"]
-            != previous["candidate_sha256"]
-            or verified["policy_sha256"] != previous["policy_sha256"]
-            or verified["max_rework_attempts"]
-            != previous["max_rework_attempts"]
-            or verified["candidate_relative_path"]
-            in {record["candidate_relative_path"] for record in existing}
-        ):
-            raise ValueError("Review decision does not continue its chain.")
-    elif (
-        verified["candidate_revision"] != 0
-        or verified["parent_candidate_sha256"] is not None
-    ):
-        raise ValueError("Review decision chain must begin at revision zero.")
     episode_root = _decision_directory(
         run_directory,
         verified["episode_id"],
         create=True,
     )
-    write_new_child_text(str(episode_root), filename, _canonical_json(verified))
+    with _lock_episode_decisions(episode_root):
+        existing_path = episode_root / filename
+        if existing_path.is_symlink():
+            raise ValueError("Review decision files must not be symbolic links.")
+        if existing_path.exists():
+            raise FileExistsError("Review decision already exists.")
+        existing = load_review_decision_chain(
+            run_directory,
+            episode_id=verified["episode_id"],
+            expected_run_id=verified["run_id"],
+            expected_work_id=verified["work_id"],
+            expected_source_version_id=verified["source_version_id"],
+            expected_source_sha256=verified["source_sha256"],
+        )
+        if existing:
+            previous = existing[-1]
+            if verified["candidate_sha256"] in {
+                decision["candidate_sha256"] for decision in existing
+            }:
+                raise ValueError("Review decision chain reuses a candidate digest.")
+            if previous["transition"]["status"] != "rework":
+                raise ValueError(
+                    "A new review decision requires a rework transition."
+                )
+            if (
+                verified["candidate_revision"]
+                != previous["candidate_revision"] + 1
+                or verified["parent_candidate_sha256"]
+                != previous["candidate_sha256"]
+                or verified["policy_sha256"] != previous["policy_sha256"]
+                or verified["max_rework_attempts"]
+                != previous["max_rework_attempts"]
+                or verified["candidate_relative_path"]
+                in {item["candidate_relative_path"] for item in existing}
+            ):
+                raise ValueError("Review decision does not continue its chain.")
+        elif (
+            verified["candidate_revision"] != 0
+            or verified["parent_candidate_sha256"] is not None
+        ):
+            raise ValueError("Review decision chain must begin at revision zero.")
+        write_new_child_bytes_atomically(
+            str(episode_root),
+            filename,
+            _canonical_json(verified).encode("utf-8"),
+        )
     return {
         "status": "created",
         "path": str(episode_root / filename),
