@@ -1,5 +1,13 @@
 # 项目现状
 
+## 2026-11-21 持续集成基线
+
+- `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
+- `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
+- `已验证` 当前 Windows/Python 3.14.7 本地预检：784 项非 E2E 测试中 780 项通过、4 项能力跳过、0 失败；loopback mock E2E 7 项通过。`pip check`、YAML 语法和 runner 编译通过。
+- `未验证` 新增 workflow 的首次 GitHub 托管执行结果；依赖仍未锁版本。该矩阵是 Ubuntu/Windows 的当前兼容性检查，不代表其他 Python 版本支持，也不验证真实 Provider、语义质量、K5 人审或部署。
+- 实现和复现命令见[开发与验证](development.md#持续集成)；在首次 hosted run 成功前，CI 风险不视作已关闭。
+
 ## 2026-11-21 I4 已发布译文新鲜度审计
 
 - `已实现` I4 freshness snapshot 新增 `published_translations` consumer：依据当前版本化话目映射，扫描对应输出根下的 K4 runs，校验历史来源 artifact、审核快照、发布回执及可见译文字节；仅当输出与有效发布证据一致时标为 `verified`，来源版本变化标为 `stale`，缺失或无有效回执按具体情况标为 `unindexed`/`unverified`/`invalid`/`mismatch`。

@@ -42,3 +42,10 @@
 - 本审计没有发现需要删除的直接依赖或当前环境已知漏洞，因此没有升级/移除依赖；依赖漂移由 AUD-04 跟踪。
 - 本审计没有修改业务代码、依赖声明或运行配置。自检结论不能写成“没有任何遗漏”：真实 Provider、完整人审、跨平台兼容和部署仍缺乏证据。
 - README/项目导航入口见[README](../../README.md)。路线图任务与依赖关系见[路线图](../roadmap.md)；该路线图保持目标/计划与当前实现状态分离。
+
+## 后续状态更新
+
+- 本报告覆盖其基线 `3c2f6c6`。2026-11-21 随后新增 GitHub Actions Ubuntu/Windows Python 3.14 workflow 与统一非 E2E 单测入口；该项把 AUD-03 的“没有 CI”问题从未实施推进为“已配置、首次托管结果未验证”。当前实现和限制见[持续集成](../development.md#持续集成)。
+- `已验证` 新入口在当前 Windows/Python 3.14 环境运行 784 项测试，780 项通过、4 项跳过、0 失败；同一 checkout 的 loopback mock E2E 7 项通过（216.055 秒）。`pip check`、YAML 语法、runner 编译与 `git diff --check` 通过。此本机结果不验证 Ubuntu 兼容。
+- `未验证` 新增 workflow 的首次 GitHub 托管运行及 PR check 状态；本地通过不关闭 AUD-03 对托管回归的验证门槛。
+- 其余人工试点、真实 Provider/质量、依赖锁定以及是否建立分支保护等门槛不因 CI 配置而关闭。

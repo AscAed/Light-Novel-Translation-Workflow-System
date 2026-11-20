@@ -2,6 +2,8 @@
 
 2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射校验历史来源、审核快照/回执与译文字节；AI edition index 不可信时将下游译文状态传播为 `stale`/`unverified`，并由最终状态重算 consumer 摘要。项目采集在无当前映射但检测到已有 run/译文时写聚合 `current_mapping_unavailable` finding；空输出根不生成噪声状态。完整非 E2E 784 项（780 通过、4 项 Windows 能力跳过）；loopback mock E2E 7 项通过（229.117 秒）。该能力不回写译文/TM/知识、不自动重译。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
 
+2026-11-21 CI 基线增量：新增 GitHub Actions workflow，在 Ubuntu/Windows Python 3.14 上安装当前 requirements、执行依赖一致性检查、完整非 E2E 单测及 loopback mock E2E。GitHub 首次运行尚待确认；这只补自动回归与双平台兼容性信号，不等于依赖锁定、真实 Provider 质量或部署验收。实现见[开发与验证](development.md#持续集成)，阶段 5 的用户交互/部署决策仍独立。
+
 2026-11-21 批量审核/发布校验优化：完整 AI book bundle 改为批次入口验证并在 run 状态协调前复核，保留单话发布的完整校验和逐话来源验证；16 MiB 以上合成 bundle 回归覆盖复核次数及批内改写拒绝。历史非 E2E 772 项（768 通过、4 项 Windows 能力跳过）、loopback mock E2E 7 项通过。未做真实 88 话性能基准；不改变翻译阶段或 K5 人工验收状态。详情见[开发记录](development.md#2026-11-21-pr-71-批量发布-bundle-校验优化)。
 
 > `计划` 2026-11-20 用户要求细分 AI 职责，并在统一向导中配置生成与嵌入端点、模型、凭据及逐 Provider 数据授权；按现有模型配置 M1–M6 细化为 R1–R5，涉及阶段 0–3，详见[职责细分与统一嵌入规划](model-provider-configuration-plan.md#2026-11-20-职责细分与统一嵌入规划)。这些工作包不改变项目阶段完成状态。用户已同意 AI 模型接收履行职责所需数据；旧日期中更窄的 JOJO/JYQF 授权及本机状态为历史快照，当前 Key、运行时 allowlist、渠道可用性与服务政策未在本轮核验。Notion 等非 AI 接收方不因该决定自动获授权。
@@ -59,7 +61,7 @@
 | 2 书籍知识审核闭环 | 部分实现 | 抽取候选有结构/字段/冲突校验和来源清单；术语与概要可生成绑定候选哈希的本地审核回执并发布 approved-only bundle；TM 可生成逐原译对回执并排他发布来源核验过的快照；RAG 默认只检索该快照，未配置时不检索候选。显式全书模式按本地 tokenizer/context/output/safety/message 预算切分配置章节段落，覆盖每段恰好一次；2026-11-18 增加候选级分层跨批模型综合，保留原始批次、综合轮次、候选 lineage 与段落证据，并由概要审核器复核。Kakuyomu 正式编排入口与通用项目名翻译模式均要求 approved 全书概要覆盖并匹配当前 AI 章节映射。 | tokenizer JSON、模型 context 和消息开销由操作者提供，真实端点及 tokenizer/template 匹配和候选语义仍未验证；综合输出可有合法引用但语义仍可能错误，需人工/评测；通用显式配置的章节集完整性、回执未签名/身份未认证、`ALLOW_UNREVIEWED_TM=true` 兼容绕过、人物专门审核、风险分层/升级、更正/废弃、审核质量评测和迁移未完成；显式 JSON 兼容配置仍可绕过默认项目概要门禁 |
 | 3 可替换 Provider 与工作流边界 | 部分实现 | 集中管理 Sakura/Qwen/DeepSeek 及显式 JOJO/JYQF 别名的 URL/Key 解析；`gpt-6-luna*` 指向 JOJO，精确的 `deepseek-v4.1-flash` 指向 JYQF，通用 `deepseek-flash` 保留 DeepSeek 路由；未知模型名和非 loopback HTTP/无效 base URL 在读取章节前拒绝。生成流程按标注/初译 `source_text + book_knowledge`、校对/润色三类全集、严格反思三类全集做阶段预检；阶段模型可由环境变量覆盖 JSON 配置；本机试点忽略配置已按用户授权为 JOJO/JYQF 配置最小类别和有限回退。`PROVIDER_DATA_POLICY` 代码默认仍为空并拒绝远端数据；本机无凭据、端点/模型兼容及真实翻译未验证 | 尚无通用 Provider 抽象、模型能力目录、独立阶段模型 UI、限流/用量管理或第二站点 adapter；回退未实接真实端点且可能重复计费；`CODING_PLAN_*` 暂不作为独立 Provider 支持；需安全配置凭据并完成真实端点、翻译质量验收 |
 | 4 通用化评估 | 计划 | 当前场景为日译中轻小说 | 需选择第二个语言/文本场景和验收样本 |
-| 5 交互与部署 | 计划 | 仓库没有 UI、CI、容器或云部署清单 | 先确认用户、隐私、预算、任务恢复和运维责任 |
+| 5 交互与部署 | 计划 | 仓库仍没有 UI、容器或云部署清单；CI 只自动验证代码和本地 mock | 先确认用户、隐私、预算、任务恢复和运维责任 |
 
 验证命令与限制见[开发与验证](development.md)；此表只汇总阶段状态，不替代阶段验收。
 

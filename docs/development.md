@@ -2,6 +2,14 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 持续集成
+
+- `.github/workflows/tests.yml` 在 push、pull request 和手动触发时运行 Python 3.14 的 Ubuntu/Windows 矩阵；workflow 只授予 `contents: read`，不读取项目数据、不配置 Provider 凭据。
+- `scripts/run_unit_tests.py` 按文件名稳定排序并运行 `tests/test_*.py` 中除 runner 专用 `test_e2e.py` 外的模块。`tests/run_tests.py` 单独启动 loopback mock server 并运行 E2E，不连接真实 Provider。
+- CI 安装未锁版本的 `requirements.txt`，所以它检查当前可解析依赖集合，不保证历史环境可复现。CI 通过也不证明真实 API、翻译语义质量、试点人审或部署验收。
+- 首次 hosted run 尚未核实；上线后以对应 commit 的 GitHub Actions 结果记录矩阵是否全绿及跳过原因。
+- 本机预检：Windows、Python 3.14.7 执行 `.\.venv\Scripts\python.exe scripts\run_unit_tests.py`，784 项运行、780 项通过、4 项因 Windows symlink/FIFO 能力跳过、0 失败；`.\.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（216.055 秒，退出码 0）。`.venv\Scripts\python.exe -m pip check`、runner `py_compile`、workflow YAML 解析和 `git diff --check` 通过。此结果尚未绑定新增提交的 hosted run，Ubuntu 矩阵仍未验证。
+
 ## 2026-11-21 依赖与漏洞公告复查
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `bf4bbb6a65497387d5f63394ecf499244e0276ed`；Python 3.14.7，忽略的 `.venv`。未改动依赖清单或环境。
