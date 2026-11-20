@@ -278,6 +278,30 @@ class DownstreamFreshnessSnapshotTests(unittest.TestCase):
         self.assertEqual(self.tm_path.read_bytes(), original_tm)
         self.assertEqual(self.knowledge_path.read_bytes(), original_knowledge)
 
+    def test_manifest_bound_tm_without_source_version_is_persisted_unverified(self):
+        provenance = self.tm_data["source_provenance"]["episode-1"]
+        del provenance["source_version_id"]
+        self.tm_path.write_text(
+            json.dumps(self.tm_data, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        original_tm = self.tm_path.read_bytes()
+        output_path = self.root / "freshness.json"
+
+        result, stdout, stderr = self._run_cli(
+            output_path,
+            knowledge=False,
+        )
+
+        snapshot = json.loads(output_path.read_text(encoding="utf-8"))
+        finding = snapshot["consumers"]["translation_memory"]["findings"][0]
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("unverified=1", stdout)
+        self.assertEqual(finding["status"], "unverified")
+        self.assertIn("No source_version_id", finding["detail"])
+        self.assertEqual(self.tm_path.read_bytes(), original_tm)
+
     def test_persists_stale_findings_without_overwriting_snapshot(self):
         output_path = self.root / "freshness.json"
         output_path.write_text("preserve this", encoding="utf-8")

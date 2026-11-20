@@ -402,6 +402,7 @@ class Config:
     INITIAL_MODEL = "sakura-14b"
     PROOFREAD_MODEL = "deepseek-v4-flash"
     STYLE_MODEL = "deepseek-v4-pro"
+    FINAL_REVIEW_MODEL = None
     JYQF_FALLBACK_ENABLED = False
     
     # Sampling Parameters
@@ -444,13 +445,19 @@ class Config:
 
     @classmethod
     def _apply_model_environment_overrides(cls):
-        for name in ("INITIAL_MODEL", "PROOFREAD_MODEL", "STYLE_MODEL"):
+        for name in (
+            "INITIAL_MODEL",
+            "PROOFREAD_MODEL",
+            "STYLE_MODEL",
+            "FINAL_REVIEW_MODEL",
+        ):
             value = os.environ.get(name)
             if value is not None:
                 setattr(cls, name, value)
 
     @classmethod
     def load_config(cls, project: Optional[str] = None, config_file: Optional[str] = None):
+        cls.FINAL_REVIEW_MODEL = None
         cls.TRANSLATION_OUTPUT_MODE = None
         cls.CHAPTER_MAP = None
         cls.SOURCE_MANIFEST_PATH = None
@@ -1086,6 +1093,7 @@ class PrimaryProviderRoute:
     provider_id: str
     base_url: str
     api_key_env: str
+    request_model: Optional[str] = None
 
 
 SOURCE_AND_KNOWLEDGE_CATEGORIES = (
@@ -1104,6 +1112,14 @@ def get_primary_provider_route(model_name: str) -> PrimaryProviderRoute:
         raise ValueError("A non-empty model name is required for provider routing.")
     if model_name != model_name.strip():
         raise ValueError("Model names must not contain leading or trailing whitespace.")
+
+    if model_name.startswith("pool:"):
+        from api_pool import resolve_pool_route
+
+        entry = resolve_pool_route(model_name)
+        return PrimaryProviderRoute(
+            entry["provider_id"], entry["base_url"], entry["key_env"], entry["model"]
+        )
 
     lowered_name = model_name.lower()
     if (
@@ -1190,6 +1206,20 @@ def validate_provider_configuration() -> None:
         )
         if not endpoint_is_local:
             required_keys.add(route.api_key_env)
+        from api_pool import FALLBACK_ENV
+        pool_fallback = os.environ.get(FALLBACK_ENV, "") if model.startswith("pool:") else ""
+        if pool_fallback:
+            if not pool_fallback.startswith("pool:") or pool_fallback == model:
+                raise ValueError("API pool fallback must be a different configured pool slot.")
+            fallback_route = get_primary_provider_route(pool_fallback)
+            fallback_url = validate_provider_base_url(get_base_url(fallback_route.base_url))
+            fallback_is_local = _is_loopback_url(fallback_url)
+            require_provider_data_authorized(
+                fallback_route.provider_id, data_categories,
+                Config.PROVIDER_DATA_POLICY, endpoint_is_local=fallback_is_local,
+            )
+            if not fallback_is_local:
+                required_keys.add(fallback_route.api_key_env)
         if route.provider_id == "jojo":
             has_jojo_stage = True
             if Config.JYQF_FALLBACK_ENABLED:
@@ -1212,7 +1242,11 @@ def validate_provider_configuration() -> None:
             Config.JYQF_FALLBACK_ENABLED
             and route.provider_id == "jojo"
         )
-        if Config.GEMINI_FALLBACK_ENABLED and not jyqf_handles_jojo_failures:
+        if (
+            Config.GEMINI_FALLBACK_ENABLED
+            and not jyqf_handles_jojo_failures
+            and not pool_fallback
+        ):
             require_provider_data_authorized(
                 "gemini",
                 data_categories,
@@ -1233,6 +1267,133 @@ def validate_provider_configuration() -> None:
     if missing:
         raise RuntimeError(
             f"Missing required provider credentials: {', '.join(missing)}"
+        )
+
+
+def _resolve_provider_route_identity(model_name: str):
+    route = get_primary_provider_route(model_name)
+    base_url = validate_provider_base_url(get_base_url(route.base_url))
+    parsed = urlsplit(base_url)
+    port = parsed.port
+    if (parsed.scheme.lower(), port) in {("http", 80), ("https", 443)}:
+        port = None
+    identity = (
+        parsed.scheme.lower(),
+        (parsed.hostname or "").lower(),
+        port,
+        parsed.path.rstrip("/"),
+        route.request_model or model_name,
+    )
+    return route, base_url, identity
+
+
+def _provider_routes_are_independent(
+    first_identity: tuple,
+    second_identity: tuple,
+) -> bool:
+    return (
+        first_identity[:-1] != second_identity[:-1]
+        and first_identity[-1] != second_identity[-1]
+    )
+
+
+def validate_final_review_provider_configuration() -> None:
+    """Validate the optional final-review route without starting a review call."""
+    model = Config.FINAL_REVIEW_MODEL
+    if not isinstance(model, str) or not model.strip():
+        raise RuntimeError("FINAL_REVIEW_MODEL is not configured.")
+
+    reviewer, reviewer_url, reviewer_identity = _resolve_provider_route_identity(
+        model
+    )
+    _, _, translator_identity = _resolve_provider_route_identity(
+        Config.INITIAL_MODEL
+    )
+    if not _provider_routes_are_independent(
+        reviewer_identity,
+        translator_identity,
+    ):
+        raise ValueError(
+            "Final review must use a different endpoint and model from translation."
+        )
+
+    reviewer_is_local = _is_loopback_url(reviewer_url)
+    require_provider_data_authorized(
+        reviewer.provider_id,
+        FULL_TRANSLATION_CATEGORIES,
+        Config.PROVIDER_DATA_POLICY,
+        endpoint_is_local=reviewer_is_local,
+    )
+    required_keys = set()
+    if not reviewer_is_local:
+        required_keys.add(reviewer.api_key_env)
+
+    from api_pool import FALLBACK_ENV
+
+    pool_fallback = (
+        os.environ.get(FALLBACK_ENV, "") if model.startswith("pool:") else ""
+    )
+    if pool_fallback:
+        if not pool_fallback.startswith("pool:") or pool_fallback == model:
+            raise ValueError("API pool fallback must be a different configured pool slot.")
+        fallback = get_primary_provider_route(pool_fallback)
+        fallback_url = validate_provider_base_url(get_base_url(fallback.base_url))
+        fallback_is_local = _is_loopback_url(fallback_url)
+        require_provider_data_authorized(
+            fallback.provider_id,
+            FULL_TRANSLATION_CATEGORIES,
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=fallback_is_local,
+        )
+        if not fallback_is_local:
+            required_keys.add(fallback.api_key_env)
+    elif reviewer.provider_id == "jojo" and Config.JYQF_FALLBACK_ENABLED:
+        fallback = get_primary_provider_route("deepseek-v4.1-flash")
+        fallback_url = validate_provider_base_url(get_base_url(fallback.base_url))
+        fallback_is_local = _is_loopback_url(fallback_url)
+        require_provider_data_authorized(
+            fallback.provider_id,
+            FULL_TRANSLATION_CATEGORIES,
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=fallback_is_local,
+        )
+        if not fallback_is_local:
+            required_keys.add(fallback.api_key_env)
+    elif Config.GEMINI_FALLBACK_ENABLED:
+        require_provider_data_authorized(
+            "gemini",
+            FULL_TRANSLATION_CATEGORIES,
+            Config.PROVIDER_DATA_POLICY,
+        )
+        required_keys.add("GEMINI_API_KEY")
+
+    missing = sorted(name for name in required_keys if not get_api_key(name))
+    if os.environ.get("MOCK_SERVER_PORT"):
+        missing = [name for name in missing if name != "GEMINI_API_KEY"]
+    if missing:
+        raise RuntimeError(
+            f"Missing required provider credentials: {', '.join(missing)}"
+        )
+
+
+def validate_translation_rework_provider_configuration() -> None:
+    """Validate the proofreading route used to generate bounded rework."""
+    if not isinstance(Config.FINAL_REVIEW_MODEL, str) or not Config.FINAL_REVIEW_MODEL.strip():
+        raise RuntimeError("FINAL_REVIEW_MODEL is not configured.")
+    validate_provider_configuration()
+    _, _, rework_identity = _resolve_provider_route_identity(
+        Config.PROOFREAD_MODEL
+    )
+    _, _, reviewer_identity = _resolve_provider_route_identity(
+        Config.FINAL_REVIEW_MODEL
+    )
+    if not _provider_routes_are_independent(
+        rework_identity,
+        reviewer_identity,
+    ):
+        raise ValueError(
+            "Translation rework must use a different endpoint and model "
+            "from the final reviewer."
         )
 
 
@@ -1338,7 +1499,7 @@ class UnifiedAgent:
         max_retries: Optional[int] = None,
     ) -> Any:
         route = route or get_primary_provider_route(self.model_name)
-        request_model = model_name or self.model_name
+        request_model = route.request_model or model_name or self.model_name
         api_key = get_api_key(route.api_key_env)
         
         client_options = {}
@@ -1472,6 +1633,19 @@ class UnifiedAgent:
             ):
                 raise
             primary_route = get_primary_provider_route(self.model_name)
+            from api_pool import FALLBACK_ENV
+            pool_fallback = (
+                os.environ.get(FALLBACK_ENV, "")
+                if self.model_name.startswith("pool:") else ""
+            )
+            if pool_fallback:
+                if not pool_fallback.startswith("pool:") or pool_fallback == self.model_name:
+                    raise ValueError("API pool fallback must be a different configured pool slot.")
+                fallback_route = get_primary_provider_route(pool_fallback)
+                logger.warning("Primary API pool request failed; attempting the authorized fallback once.")
+                return await self._call_primary(
+                    user_prompt, full_sys, route=fallback_route, max_retries=0
+                )
             if (
                 Config.JYQF_FALLBACK_ENABLED
                 and primary_route.provider_id == "jojo"

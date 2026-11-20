@@ -1229,7 +1229,9 @@ def run_workflow(
     previous_chapter_knowledge_requirement = (
         Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE
     )
+    previous_glossary_requirement = Config.REQUIRE_REVIEWED_GLOSSARY
     Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = True
+    Config.REQUIRE_REVIEWED_GLOSSARY = True
     try:
         pipeline = TranslationPipeline(
             reviewed_tm_translation_root=str(translation_path)
@@ -1319,6 +1321,7 @@ def run_workflow(
         Config.REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE = (
             previous_chapter_knowledge_requirement
         )
+        Config.REQUIRE_REVIEWED_GLOSSARY = previous_glossary_requirement
     run_manifest = build_translation_run_manifest(
         run_id=resolved_run_id,
         plan=plan,

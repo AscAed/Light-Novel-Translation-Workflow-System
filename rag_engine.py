@@ -8,9 +8,13 @@ import json
 import re
 import hashlib
 import numpy as np
-import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from embedding_provider import (
+    embedding_identity_for_vector,
+    generate_embeddings,
+    is_compatible_embedding,
+)
 from utils import (
     extract_chapter_num,
     open_regular_file,
@@ -152,58 +156,14 @@ class RAGEngine:
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
-        mock_port = os.environ.get("MOCK_SERVER_PORT")
-        if mock_port:
-            import urllib.request
-            url = f"http://127.0.0.1:{mock_port}/gemini/embedContent"
-            payload = {"model": "gemini-embedding-2", "contents": [text]}
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=self.api_timeout) as resp:
-                    res_data = json.loads(resp.read().decode("utf-8"))
-                    values = res_data.get("embedding", {}).get("values")
-                    if not isinstance(values, list) or not values:
-                        raise RuntimeError("Mock embedding response did not contain vector values.")
-                    return values
-            except (TimeoutError, urllib.error.URLError) as e:
-                logger.warning(
-                    "Mock server request failed (timeout or URL error; %s).",
-                    type(e).__name__,
-                )
-                raise RuntimeError("Mock embedding request failed.") from e
-            except Exception as e:
-                logger.warning(
-                    "Mock server request failed with unexpected error (%s).",
-                    type(e).__name__,
-                )
-                raise RuntimeError("Mock embedding request failed.") from e
-        else:
-            require_provider_data_authorized(
-                "gemini",
-                {"source_text"},
-                self.provider_data_policy,
-            )
-            from google import genai
-            from google.genai import types
-
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                raise RuntimeError("GEMINI_API_KEY is required for Gemini embeddings.")
-            client = genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(
-                    timeout=int(self.api_timeout * 1000)
-                ),
-            )
-            response = client.models.embed_content(
-                model="gemini-embedding-2",
-                contents=[text]
-            )
-            return response.embeddings[0].values
+        vectors, _ = generate_embeddings(
+            [text],
+            batch_size=1,
+            api_timeout=self.api_timeout,
+            provider_data_policy=self.provider_data_policy,
+            require_api_key=True,
+        )
+        return vectors[0]
 
     @property
     def tm_retrieval_data(self) -> dict:
@@ -225,8 +185,11 @@ class RAGEngine:
             for pair in pairs:
                 if isinstance(pair, dict) and "raw" in pair and "translated" in pair:
                     emb = pair.get("embedding")
-                    if emb and isinstance(emb, list) and len(emb) > 0:
-                        candidates.append((pair["raw"], pair["translated"], emb))
+                    identity = pair.get("embedding_identity")
+                    if is_compatible_embedding(emb, identity):
+                        candidates.append(
+                            (pair["raw"], pair["translated"], emb, identity)
+                        )
 
         if not candidates:
             return []
@@ -238,13 +201,18 @@ class RAGEngine:
                 "Failed to generate embedding for query (%s).",
                 type(e).__name__,
             )
-            return []
+            raise RuntimeError(
+                "Translation-memory embedding failed; the chapter was not processed."
+            ) from None
 
         q_arr = np.array(q_emb)
         q_norm = np.linalg.norm(q_arr) or 1e-9
 
+        query_identity = embedding_identity_for_vector(q_emb)
         scores = []
-        for raw, trans, emb in candidates:
+        for raw, trans, emb, identity in candidates:
+            if identity != query_identity:
+                continue
             c_arr = np.array(emb)
             c_norm = np.linalg.norm(c_arr) or 1e-9
             sim = np.dot(q_arr, c_arr) / (q_norm * c_norm)
@@ -520,35 +488,48 @@ class RAGEngine:
                 return fn
         return None
 
-    def _get_chapter_tm_embedding(self, filename: str) -> Optional[np.ndarray]:
+    def _get_chapter_tm_embedding(
+        self, filename: str, expected_identity: dict
+    ) -> Optional[np.ndarray]:
         """Compute the average paragraph embedding for chapter in TM."""
         if not hasattr(self, '_chapter_tm_embeddings_cache'):
             self._chapter_tm_embeddings_cache = {}
-        if filename in self._chapter_tm_embeddings_cache:
-            return self._chapter_tm_embeddings_cache[filename]
+        identity_key = json.dumps(expected_identity, sort_keys=True)
+        cache_key = (filename, identity_key)
+        if cache_key in self._chapter_tm_embeddings_cache:
+            return self._chapter_tm_embeddings_cache[cache_key]
 
         pairs = self.tm_retrieval_data.get("chapters", {}).get(filename, [])
         vectors = []
         for pair in pairs:
+            if not isinstance(pair, dict):
+                continue
             emb = pair.get("embedding")
-            if emb and isinstance(emb, list) and len(emb) > 0:
+            identity = pair.get("embedding_identity")
+            if (
+                identity == expected_identity
+                and is_compatible_embedding(emb, identity)
+            ):
                 vectors.append(emb)
         result = np.mean(vectors, axis=0) if vectors else None
-        self._chapter_tm_embeddings_cache[filename] = result
+        self._chapter_tm_embeddings_cache[cache_key] = result
         return result
 
     def _find_best_semantic_match(self, curr_emb: np.ndarray, candidates: list) -> Optional[float]:
         """Compare current chapter embedding with candidates and select highest similarity."""
         best_sim = -1.0
         best_chap = None
+        curr_identity = embedding_identity_for_vector(curr_emb.tolist())
         for num in candidates:
             fn = self._find_tm_filename(num)
             if not fn:
                 continue
-            cand_emb = self._get_chapter_tm_embedding(fn)
+            cand_emb = self._get_chapter_tm_embedding(fn, curr_identity)
             if cand_emb is None:
                 continue
-            sim = np.dot(curr_emb, cand_emb) / (np.linalg.norm(curr_emb) * np.linalg.norm(cand_emb))
+            curr_norm = np.linalg.norm(curr_emb) or 1e-9
+            cand_norm = np.linalg.norm(cand_emb) or 1e-9
+            sim = np.dot(curr_emb, cand_emb) / (curr_norm * cand_norm)
             if sim > best_sim:
                 best_sim = sim
                 best_chap = num
@@ -716,7 +697,8 @@ class RAGEngine:
             if not raw_text.strip() or not translated_text.strip():
                 continue
             embedding = pair.get("embedding")
-            if not embedding:
+            embedding_identity = pair.get("embedding_identity")
+            if not is_compatible_embedding(embedding, embedding_identity):
                 try:
                     embedding = self._generate_embedding_sync(raw_text)
                 except Exception as e:
@@ -724,11 +706,15 @@ class RAGEngine:
                         "Failed to generate embedding for raw text (%s).",
                         type(e).__name__,
                     )
-                    embedding = []
+                    raise RuntimeError(
+                        "Translation-memory embedding failed; the TM update was aborted."
+                    ) from None
+                embedding_identity = embedding_identity_for_vector(embedding)
             new_pairs.append({
                 "raw": raw_text,
                 "translated": translated_text,
-                "embedding": embedding
+                "embedding": embedding,
+                "embedding_identity": embedding_identity,
             })
 
         updated_tm_data = dict(self.tm_data)
@@ -765,4 +751,9 @@ class RAGEngine:
         self.tm_data = updated_tm_data
         self._tm_disk_sha256 = hashlib.sha256(content).hexdigest()
         if hasattr(self, "_chapter_tm_embeddings_cache"):
-            self._chapter_tm_embeddings_cache.pop(chapter_filename, None)
+            for cache_key in list(self._chapter_tm_embeddings_cache):
+                if (
+                    isinstance(cache_key, tuple)
+                    and cache_key[0] == chapter_filename
+                ) or cache_key == chapter_filename:
+                    self._chapter_tm_embeddings_cache.pop(cache_key, None)

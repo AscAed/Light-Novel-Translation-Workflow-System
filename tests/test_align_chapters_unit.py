@@ -481,6 +481,19 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             self.assertEqual(raised.exception.code, 0)
             tm_data = save_tm.call_args.args[1]
             self.assertIn("Volume1/第1話.md", tm_data["chapters"])
+            self.assertEqual(
+                tm_data["chapters"]["Volume1/第1話.md"][0][
+                    "embedding_identity"
+                ],
+                {
+                    "schema_version": 1,
+                    "provider": "gemini",
+                    "protocol": "google-genai",
+                    "model": "gemini-embedding-2",
+                    "task_type": "default",
+                    "dimensions": 1,
+                },
+            )
             provenance = tm_data["source_provenance"]["Volume1/第1話.md"]
             self.assertEqual(
                 provenance["raw_file"], "第一卷/第1話.md"

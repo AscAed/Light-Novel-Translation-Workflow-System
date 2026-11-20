@@ -333,7 +333,7 @@ class E2ETestSuite(unittest.TestCase):
                 SOURCE_MANIFEST_PATH=None,
                 TM_REVIEWED_PATH=None,
                 GLOSSARY_PATH=os.path.join(
-                    self.knowledge_dir, "Glossary.json"
+                    self.knowledge_dir, "Glossary_reviewed.json"
                 ),
                 GUIDELINES_PATH=os.path.join(
                     self.knowledge_dir, "guidelines.txt"
@@ -654,6 +654,64 @@ class E2ETestSuite(unittest.TestCase):
                 local_receipt.name,
                 "STORY_SUMMARY_reviewed.json",
                 source_input_root=os.path.join(self.test_dir, "RAWs_AI"),
+            )
+            reviewed_terms = {"東京": "东京"}
+            canonical_terms = json.dumps(
+                reviewed_terms,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            source_files_bytes = json.dumps(
+                source_files,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            reviewed_glossary = {
+                "_knowledge_review_schema": 1,
+                "artifact_status": "complete",
+                "approval_status": "approved_terms_only",
+                "terms": reviewed_terms,
+                "review": {
+                    "candidate_glossary_sha256": hashlib.sha256(
+                        canonical_terms
+                    ).hexdigest(),
+                    "candidate_provenance_sha256": hashlib.sha256(
+                        source_files_bytes
+                    ).hexdigest(),
+                    "review_receipt_sha256": hashlib.sha256(
+                        b"synthetic glossary review receipt"
+                    ).hexdigest(),
+                    "terms_sha256": hashlib.sha256(canonical_terms).hexdigest(),
+                    "reviewer": {
+                        "provider_id": "synthetic-reviewer",
+                        "model_id": "fixture-v1",
+                        "review_id": "glossary-review-001",
+                    },
+                    "reviewed_at_utc": "2026-11-20T00:00:00Z",
+                    "source_files": source_files,
+                    "decisions": [
+                        {
+                            "src": "東京",
+                            "decision": "approved",
+                            "rationale": "Synthetic glossary fixture.",
+                            "evidence": [
+                                {
+                                    "chapter": source_files[0]["filename"],
+                                    "paragraph_indices": [1],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            }
+            self.write_file(
+                os.path.join(
+                    self.knowledge_dir, "Glossary_reviewed.json"
+                ),
+                reviewed_glossary,
+                is_json=True,
             )
             report = run_workflow(
                 source_root=self.raw_dir,

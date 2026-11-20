@@ -868,7 +868,8 @@ async def _synthesize_full_book_candidates(
                 for paragraph in batch["paragraphs"]
             ]
             response = await client.chat.completions.create(
-                model=Config.PROOFREAD_MODEL,
+                model=(get_primary_provider_route(Config.PROOFREAD_MODEL).request_model
+                       or Config.PROOFREAD_MODEL),
                 messages=[
                     {
                         "role": "system",
@@ -1398,7 +1399,7 @@ async def extract_knowledge(
         batch_records = []
         for batch_index, batch in enumerate(batches, start=1):
             response = await client.chat.completions.create(
-                model=Config.PROOFREAD_MODEL,
+                model=(provider_route.request_model or Config.PROOFREAD_MODEL),
                 messages=[
                     {"role": "system", "content": _FULL_BOOK_SYSTEM_PROMPT},
                     {"role": "user", "content": batch["user_text"]},
@@ -1548,7 +1549,7 @@ async def extract_knowledge(
     else:
         print("Calling LLM for analysis...")
         response = await client.chat.completions.create(
-            model=Config.PROOFREAD_MODEL, # Flash is good enough for extraction
+            model=(provider_route.request_model or Config.PROOFREAD_MODEL),
             messages=[
                 {"role": "system", "content": "你是一个专业的日文轻小说设定提取器。"},
                 {"role": "user", "content": prompt}
@@ -1566,7 +1567,7 @@ async def extract_knowledge(
         chapter_inputs,
         sample_text,
         glossary_entries,
-        Config.PROOFREAD_MODEL,
+        provider_route.request_model or Config.PROOFREAD_MODEL,
         provider_id,
         reading_scope=(
             "all_configured_chapters"

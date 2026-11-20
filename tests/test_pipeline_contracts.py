@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pipeline as pipeline_module
+from api_pool import FALLBACK_ENV
 from openai import APIConnectionError, APIStatusError
 
 from chapter_transaction import commit_chapter_translation
@@ -27,6 +28,8 @@ from pipeline import (
     get_openai_client,
     get_primary_provider_route,
     validate_provider_configuration,
+    validate_final_review_provider_configuration,
+    validate_translation_rework_provider_configuration,
     validate_provider_base_url,
     _read_chapter_source_text,
     _resolve_project_content_dir,
@@ -57,6 +60,94 @@ def make_api_status_error(status_code):
 
 
 class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
+    def test_translation_rework_requires_a_distinct_reviewer_route(self):
+        with (
+            patch("pipeline.validate_provider_configuration") as preflight,
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (None, None, ("https", "writer.example", 443, "/v1", "writer")),
+                    (None, None, ("https", "reviewer.example", 443, "/v1", "reviewer")),
+                ],
+            ),
+            patch.object(Config, "PROOFREAD_MODEL", "pool:writer"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+        ):
+            validate_translation_rework_provider_configuration()
+
+        preflight.assert_called_once_with()
+
+    def test_translation_rework_rejects_reviewer_route_reuse(self):
+        cases = (
+            (
+                ("https", "shared.example", 443, "/v1", "writer"),
+                ("https", "shared.example", 443, "/v1", "reviewer"),
+            ),
+            (
+                ("https", "writer.example", 443, "/v1", "shared-model"),
+                ("https", "reviewer.example", 443, "/v1", "shared-model"),
+            ),
+            (
+                ("https", "shared.example", 443, "/v1", "same-model"),
+                ("https", "shared.example", 443, "/v1", "same-model"),
+            ),
+        )
+        for rework_identity, reviewer_identity in cases:
+            with self.subTest(
+                rework_identity=rework_identity,
+                reviewer_identity=reviewer_identity,
+            ):
+                with (
+                    patch("pipeline.validate_provider_configuration"),
+                    patch(
+                        "pipeline._resolve_provider_route_identity",
+                        side_effect=[
+                            (None, None, rework_identity),
+                            (None, None, reviewer_identity),
+                        ],
+                    ),
+                    patch.object(Config, "PROOFREAD_MODEL", "pool:writer"),
+                    patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "different endpoint and model",
+                    ):
+                        validate_translation_rework_provider_configuration()
+
+    def test_final_review_rejects_shared_endpoint_or_model(self):
+        cases = (
+            (
+                ("https", "shared.example", 443, "/v1", "translator"),
+                ("https", "shared.example", 443, "/v1", "reviewer"),
+            ),
+            (
+                ("https", "translator.example", 443, "/v1", "shared-model"),
+                ("https", "reviewer.example", 443, "/v1", "shared-model"),
+            ),
+        )
+        for translator_identity, reviewer_identity in cases:
+            with self.subTest(
+                translator_identity=translator_identity,
+                reviewer_identity=reviewer_identity,
+            ):
+                with (
+                    patch(
+                        "pipeline._resolve_provider_route_identity",
+                        side_effect=[
+                            (None, None, reviewer_identity),
+                            (None, None, translator_identity),
+                        ],
+                    ),
+                    patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+                    patch.object(Config, "INITIAL_MODEL", "pool:translator"),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "different endpoint and model",
+                    ):
+                        validate_final_review_provider_configuration()
+
     async def test_local_http_base_url_is_allowed(self):
         with patch.object(Config, "API_TIMEOUT", 2.0):
             with patch("pipeline.AsyncOpenAI") as client_factory:
@@ -958,6 +1049,50 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                     "gemini": source_and_knowledge,
                 },
             ),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+        ):
+            validate_provider_configuration()
+
+    @patch.dict(
+        os.environ,
+        {
+            FALLBACK_ENV: "pool:backup",
+            "GEMINI_API_KEY": "synthetic-key",
+        },
+        clear=True,
+    )
+    def test_pool_fallback_preflight_does_not_require_gemini_translation_scope(self):
+        all_categories = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        source_and_knowledge = frozenset({"source_text", "book_knowledge"})
+
+        def route_for(model_name):
+            slot = model_name.split(":", 1)[1]
+            return SimpleNamespace(
+                provider_id=slot,
+                base_url=f"https://{slot}.example/v1",
+                api_key_env=f"{slot.upper()}_API_KEY",
+            )
+
+        with (
+            patch.object(Config, "INITIAL_MODEL", "pool:primary"),
+            patch.object(Config, "PROOFREAD_MODEL", "pool:primary"),
+            patch.object(Config, "STYLE_MODEL", "pool:primary"),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", False),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", True),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {
+                    "primary": all_categories,
+                    "backup": all_categories,
+                    "gemini": source_and_knowledge,
+                },
+            ),
+            patch("pipeline.get_primary_provider_route", side_effect=route_for),
             patch("pipeline.get_base_url", side_effect=lambda url: url),
             patch("pipeline.get_api_key", return_value="synthetic-key"),
         ):
@@ -3694,6 +3829,67 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 list(output_dir.glob(".codex-chapter-transaction-*.json")), []
             )
             pipeline._run_translation_phase.assert_awaited_once()
+
+    async def test_embedding_failure_keeps_chapter_transaction_for_retry(self):
+        from rag_engine import RAGEngine
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "生肉"
+            output_dir = root / "熟肉"
+            raw_dir.mkdir()
+            (raw_dir / "第1話.md").write_text("source paragraph", encoding="utf-8")
+            tm_path = root / "translation_memory.json"
+            rag = RAGEngine(
+                str(tm_path),
+                str(root / "Glossary.json"),
+                str(root / "guidelines.txt"),
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = rag
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with patch(
+                        "rag_engine.RAGEngine._generate_embedding_sync",
+                        side_effect=[
+                            RuntimeError("SYNTHETIC_PRIVATE_ERROR"),
+                            [0.5],
+                        ],
+                    ) as embed:
+                        with self.assertRaisesRegex(RuntimeError, "TM update was aborted") as raised:
+                            await pipeline.run_chapter("第1話.md")
+
+                        self.assertNotIn("SYNTHETIC_PRIVATE_ERROR", str(raised.exception))
+                        output_path = output_dir / "第1話.md"
+                        self.assertEqual(
+                            output_path.read_text(encoding="utf-8"),
+                            "translated paragraph",
+                        )
+                        self.assertEqual(rag.tm_data, {"chapters": {}})
+                        self.assertTrue(
+                            list(output_dir.glob(".codex-chapter-transaction-*.json"))
+                        )
+
+                        await pipeline.run_chapter("第1話.md")
+
+            self.assertEqual(embed.call_count, 2)
+            self.assertEqual(pipeline._run_translation_phase.await_count, 1)
+            self.assertEqual(pipeline._run_refinement_loop.await_count, 1)
+            self.assertIn("第1話.md", rag.tm_data["chapters"])
+            self.assertFalse(
+                list(output_dir.glob(".codex-chapter-transaction-*.json"))
+            )
 
     async def test_pending_chapter_transaction_refuses_changed_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:

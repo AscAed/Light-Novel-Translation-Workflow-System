@@ -5,9 +5,10 @@
 > 项目翻译通过 `scripts/run_kakuyomu_workflow.py` 创建活动 run 并启动流水线；直接运行 `pipeline.py --project` 不属于受支持的项目翻译入口。试点当前尚无与来源匹配的 reviewed 全书概要和术语表，因此受审项目流程会失败关闭。
 
 - 当前架构：Python CLI 通过来源 catalog、版本清单和 AI/人读双版索引追踪书籍输入；默认翻译正文来自项目 `RAWs_AI/`，来源归档保留溯源元数据。Kakuyomu 翻译由编排 CLI 执行，计划、结构化审阅、知识审核、run 草稿和正式发布各有独立门禁。详见[架构与边界](docs/architecture.md)与[翻译流程](docs/translation-workflow.md)。
-- 当前试点：88 话计划已绑定 AI 与人读索引；计划审阅模板中的 264 项决定仍为 pending，尚无匹配审批回执或 reviewed 全书知识。用户抽查了两版的部分单话和合集文件，未见明显问题；该报告不代表全量验收，记录见[开发与验证](docs/development.md#2026-11-19-人类版与-ai-版原文抽样核实)。
-- 当前验证：当前非 E2E 回归 666 项运行、662 项通过、4 项因非提升进程的符号链接权限和 Windows FIFO 能力跳过；提升权限后安全路径模块 11 项运行、10 项通过，3 个符号链接用例均通过，1 项 FIFO 用例跳过；本地 mock E2E 7 项通过（201.455 秒）；试点 HTML 回放 88/88 验证通过。未调用真实 Provider、未验收翻译质量或线上部署。详见[开发与验证](docs/development.md#2026-11-19-审核决定并发与人读版身份绑定修复)。
-- 下一步与限制：真实试点需先完成人工映射/双版本验收、生成审批回执并审核全书知识，再按授权条件开展 Provider 试译。完整路线与验收项见[项目现状](docs/project-status.md)、[路线图](docs/roadmap.md)及[实施目标](docs/end-to-end-workflow-target.md)。
+- 当前试点：2026-11-20 只读复核确认当前计划 `ready_for_review`、88/88 来源有效，按计划绑定的 raw-html catalog 做 plan-only 及双版本一致性验证均通过；但模板 3 类决定各 88 项仍 pending，尚无匹配审批回执或 reviewed 全书概要。用户报告人类版与 AI 版的部分单话和合集抽样未发现明显问题，不代表全量验收；详见[抽样核实记录](docs/development.md#2026-11-20-用户确认的原文抽样核实)。详情见[开发记录](docs/development.md#2026-11-20-k5-试点门禁复核)及[项目现状](docs/project-status.md#2026-11-20-k5-试点门禁复核)。
+- 当前验证：最新完整非 E2E 回归 772 项运行、768 项通过、4 项跳过、0 失败；提权安全路径模块 11 项运行、10 项通过、1 项因 Windows 不支持 FIFO 跳过；`pip check`、`compileall` 和 Markdown 本地链接检查通过。本轮 mock E2E 结果见[开发记录](docs/development.md#2026-11-20-pr-71-审查跟进与完整回归)。未调用真实 Provider、未验收翻译质量或部署。
+- 当前 K4：`scripts/run_ai_translation_workflow.py` 显式运行或续接单话的双次 AI 终审、有限定向返工、复审和通过后发布。同一话目由 run 内异步文件锁串行，重复并发调用复用已落盘评估 sidecar/报告/候选；单次评估完成后原子保存，进程重启只请求缺失评估。终审只在两次评估均通过信/达/雅、八项检查和定性收敛门时发布；返工由 `PROOFREAD_MODEL` 仅修订 findings 指向的段落，并将不可变候选写入 run。默认返工预算 2；耗尽后须由人工增加预算才能继续，或走人工 checklist 放行当前候选。策略、来源、候选、报告和路由摘要互相绑定。该实现只经合成测试，未验证语义正确性或模型独立性；Provider 响应后、评估 sidecar 落盘前仍有重复计费窗口。
+- 下一步与限制：先完成人审模板的映射/双版本决定和计划回执，再审核当前 bundle 绑定的全书知识；之后由凭据所有者核验 Provider 路由、授权和预算，执行获准单话试译与质量验收。定向修订仍依赖 AI findings，无法从结构契约证明它修复了真实问题；“none/low”是定性收敛代理，不是收益计算；策略由操作者提供，不是项目核准 taxonomy。本机 API profile 未读取，TM embedding 候选仍须人工审核后切换。当前交付为 CLI，无部署服务。详见[项目现状](docs/project-status.md)、[路线图](docs/roadmap.md)、[开发记录](docs/development.md)。
 - 决策 D-11 记录逐章恢复事务的保证边界，见[决策记录](docs/decisions/README.md)。来源采集、知识治理和 EPUB/Notion 仍按各自文档跟踪。
 - 当前产品目标为日语轻小说译成中文；多语言、多文本类型属于长期目标，尚非当前实现能力。
 
@@ -31,6 +32,14 @@
 | [本地凭据风险记录](docs/security-notes.md) | 凭据暴露边界与需人工处理事项 |
 
 ## 现有命令
+
+批量配置 OpenAI 兼容 API 并在同一进程运行现有工作流：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\configure_api_pool.py -- <run_kakuyomu_workflow.py 的参数>
+```
+
+向导逐项说明初译、校对/知识抽取和润色职责，可选绑定使用不同端点和模型的终审角色；另支持多个生成 API、逐职责分配及一个临时错误备用 API。embedding 可独立选择 Gemini 或 OpenAI-compatible 接口，并单独确认 `source_text` 授权。API 池 v1 profile 经确认迁移到 v2；保存含终审角色的新配置使用 v3。显式运行终审 CLI 才会发送原文与候选；自动发布仅发生在双评估通过并通过既有发布门禁后。可选择保存到当前 Windows 用户的凭据管理器；不保存时只在当前进程有效。无参数运行可配置和保存，但不执行翻译；现有来源、知识及发布审核门禁仍然有效。详见[模型与 API 配置方案](docs/model-provider-configuration-plan.md)。
 
 ```powershell
 python -m venv .venv

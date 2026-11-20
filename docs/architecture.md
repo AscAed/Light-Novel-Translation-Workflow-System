@@ -10,6 +10,16 @@ CLI
     ├── projects/<project>/{生肉,熟肉,Knowledge}/: 输入、输出、知识数据
     └── providers: Sakura-compatible endpoint / DeepSeek-compatible endpoint / Gemini SDK
 
+scripts/review_translation_candidate.py
+└── ai_translation_review.py -> FINAL_REVIEW_MODEL
+    └── translation_review.py / translation_review_state.py
+        -> hash-bound review decision -> create-only publication gate
+scripts/run_ai_translation_workflow.py
+└── ai_translation_workflow.py
+    └── ai_translation_rework.py -> PROOFREAD_MODEL
+        -> create-only ReviewCandidates/ + content-free AIReworks/
+        -> repeat review until pass or human boundary
+
 scripts/align_chapters.py -> 双语章节 -> 对齐段落 -> Gemini embeddings -> translation_memory.json
 scripts/validate_tm_provenance.py -> translation_memory.json + 生肉/熟肉 -> 只读核验
 scripts/validate_knowledge_provenance.py -> KNOWLEDGE_PROVENANCE_draft.json + manifest/原文 -> 只读核验
@@ -35,6 +45,9 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 | 模块 | 当前责任 | 主要输入/输出 |
 | --- | --- | --- |
 | `pipeline.py` | 配置解析、项目模式 AI 默认选源/版本映射、章节循环、阶段调用、输出保存与正式运行阶段轨迹 | `RAWs_AI` AI 清洗镜像/显式 JSON 来源映射、归档 manifest provenance、项目知识文件、模型响应；正式 run 另写 hash-only `StageReports` |
+| `ai_translation_review.py` / `scripts/review_translation_candidate.py` | 显式执行单轮双次 AI 终审；绑定来源、候选、策略和 reviewer route；逐次持久化通过校验的结构化结果；两次门禁通过后调用现有发布器 | 活动 run、策略 JSON、`FINAL_REVIEW_MODEL` -> 仅含 verdict/登记 code/段落索引/检查的 `AIReviews/` sidecar、报告与 schema v4 决策；单次命令失败时不发布；有限返工由下方工作流 CLI 编排 |
+| `ai_translation_workflow.py` / `ai_translation_rework.py` / `scripts/run_ai_translation_workflow.py` | 显式续接单话的终审、有限定向返工、复审和通过后发布；返工只改 findings 指向的段落 | `PROOFREAD_MODEL`、source/candidate、策略定义与 findings -> create-only `ReviewCandidates/` 和内容无关 `AIReworks/`；结构错误、授权/路由不符、预算耗尽或需人工状态不发布 |
+| `translation_review.py` / `translation_review_state.py` | 记录/核验候选版本决策链、人工仲裁、审核快照并执行 create-only 发布 | run/source/candidate/policy 摘要、阶段 verdict 与检查 -> `ReviewDecisions/`、`ReviewResolutions/`、正式译文/回执 |
 | `rag_engine.py` | TM 相似检索、词条匹配、指导检索、TM 更新 | `Knowledge` 文件；可选审核 TM 快照；写入完整 JSON TM 和可选来源索引 |
 | `scripts/align_chapters.py` | 对已有双语章节做段落对齐、生成嵌入与段落来源映射 | `生肉/`、`熟肉/` -> `translation_memory.json` |
 | `scripts/validate_tm_provenance.py` | 只读核对 TM 来源哈希、段落索引、原译词对及 manifest 当前来源版本 | TM JSON、`生肉/`、`熟肉/`、可选 manifest -> 状态报告 |
@@ -64,6 +77,8 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 默认项目模式还固定使用 `Knowledge/STORY_SUMMARY_reviewed.json` 和 `Knowledge/Glossary_reviewed.json`。概要须覆盖完整 AI 章节映射，术语 bundle 须通过来源版本核验；缺失、旧式或过期的知识输入在创建翻译请求前失败关闭。显式 JSON 配置保留调用者指定旧格式的兼容路径。
 
 `TranslationPipeline` 输出也有显式模式边界：项目/Kakuyomu run 使用内部 `reviewed_run_draft` 并要求活动 run；未审核兼容调用必须设置 `TRANSLATION_OUTPUT_MODE="compatibility_draft"`，测试工作区使用独立 `test_draft`。显式 JSON 配置只接受兼容 draft 标记，缺失或与 reviewed publication 冲突时拒绝创建 pipeline。兼容输出即使位于任意外部目录也不具备正式发布资格；正式译文只能由审核发布器从有效 run 草稿 create-only 创建。直接使用 Python API 的调用方也必须明确指定输出模式。
+
+AI 终审和自动返工都是显式 CLI，不会在 `TranslationPipeline` 初译后自动触发。终审将完整 source/candidate 和策略定义发送给 `FINAL_REVIEW_MODEL`，但不发送 book knowledge；同一候选执行两次结构化评估，每次通过校验后将不含正文/自由文本的规范化结果原子保存至 run 内 `AIReviews/`，恢复时按来源、候选、策略、路由和序号身份复用已完成评估，仅请求缺失项。两次评估必须同时通过 fidelity/fluency/style、八项发布检查及定性收敛门。若 Provider 已返回而对应 sidecar 尚未落盘时进程中断，该次请求仍可能重复。工作流 CLI 在 `rework` 时将完整 source/candidate（限制合计 64,000 字符）、阻断 findings 和相应策略定义发送给不同的 `PROOFREAD_MODEL`，不发送 book knowledge；严格校验 JSON 后仅替换命中段落，并 create-only 保存候选和内容无关 sidecar，再续审。通过时复用既有审核发布器；冲突、预算耗尽、需要人工或生成契约失败均不发布。结构绑定与合成测试不证明实际修订修复了语义问题，reviewer 身份、语义质量和真实端点仍未验证。
 
 Kakuyomu run 还要求每个待翻译的非空章节拥有来源版本和当前整书 bundle 均匹配的 `ChapterDrafts/.../STORY_SUMMARY_reviewed.json`。启动预检覆盖全部待翻译章节，避免后续章节缺少回执时前面章节已调用模型；每章上下文构建时再次复核。局部 `Glossary_reviewed.json` 可选；与全书批准词条冲突时失败关闭。
 

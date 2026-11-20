@@ -902,6 +902,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             captured_reviewed_tm_roots = []
             captured_run_ids = []
             captured_output_modes = []
+            captured_reviewed_glossary_requirements = []
             run_manifest_builder = None
 
             def make_pipeline(*, reviewed_tm_translation_root=None):
@@ -912,6 +913,9 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 captured_reviewed_tm_roots.append(reviewed_tm_translation_root)
                 captured_run_ids.append(Config.TRANSLATION_RUN_ID)
                 captured_output_modes.append(Config.TRANSLATION_OUTPUT_MODE)
+                captured_reviewed_glossary_requirements.append(
+                    Config.REQUIRE_REVIEWED_GLOSSARY
+                )
                 return pipeline
 
             resumable_plan = {
@@ -956,6 +960,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                     SOURCE_MANIFEST_PATH=None,
                     STORY_SUMMARY_PATH=str(root / "STORY_SUMMARY_reviewed.json"),
                     REQUIRE_REVIEWED_PUBLICATION=False,
+                    REQUIRE_REVIEWED_GLOSSARY=False,
                     TRANSLATION_RUN_ID=None,
                     EXPECTED_BOOK_BUNDLE=None,
                 ),
@@ -1056,6 +1061,7 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         "TRANSLATION_RUN_ID",
                         "EXPECTED_BOOK_BUNDLE",
                         "REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE",
+                        "REQUIRE_REVIEWED_GLOSSARY",
                     )
                 }
                 load_summary.side_effect = ValueError(
@@ -1222,6 +1228,10 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                         "reviewed_run_draft",
                         "reviewed_run_draft",
                     ],
+                )
+                self.assertEqual(
+                    captured_reviewed_glossary_requirements,
+                    [True, True, True],
                 )
                 self.assertTrue((failed_run_path / "run.json").is_file())
                 self.assertEqual(

@@ -11,6 +11,10 @@ import re
 import math
 from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from embedding_provider import (
+    embedding_identity_for_vector,
+    generate_embeddings,
+)
 from source_manifest import (
     load_manifest,
     verify_current_normalized_source,
@@ -19,9 +23,7 @@ from source_manifest import (
 from source_editions import read_verified_ai_edition_bytes
 from utils import (
     open_regular_file,
-    parse_api_timeout,
     read_relative_text,
-    require_provider_data_authorized,
     resolve_relative_path,
     split_paragraphs,
     validate_tm_source_provenance,
@@ -108,62 +110,6 @@ def _verify_bound_sources_current(
                 spec.source_input_file,
                 spec.source_sha256,
             )
-
-
-# If running in a test context, dynamically mock the google-genai library
-# so the script calls the local mock server instead of real API endpoints.
-mock_port = os.environ.get("MOCK_SERVER_PORT")
-if mock_port:
-    import urllib.request
-    
-    class MockEmbedValues:
-        def __init__(self, values):
-            self.values = values
-
-    class MockEmbedResponse:
-        def __init__(self, embeddings):
-            self.embeddings = embeddings
-
-    class MockModels:
-        def embed_content(self, model, contents):
-            url = f"http://127.0.0.1:{mock_port}/gemini/embedContent"
-            payload = {"model": model, "contents": contents}
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            timeout = parse_api_timeout(os.environ.get("API_TIMEOUT", "10.0"))
-            try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    res_data = json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:
-                raise RuntimeError("Mock Gemini embedding request failed.") from exc
-            val = res_data.get("embedding", {}).get("values")
-            if not isinstance(val, list) or not val:
-                raise RuntimeError("Mock embedding response did not contain vector values.")
-            return MockEmbedResponse([MockEmbedValues(val) for _ in contents])
-
-    class MockClient:
-        def __init__(self, api_key=None, http_options=None):
-            self.models = MockModels()
-
-    class MockHttpOptions:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    import types as pytypes
-    google_module = pytypes.ModuleType("google")
-    genai_module = pytypes.ModuleType("google.genai")
-    genai_module.Client = MockClient
-    types_module = pytypes.ModuleType("google.genai.types")
-    types_module.HttpOptions = MockHttpOptions
-    genai_module.types = types_module
-    google_module.genai = genai_module
-    sys.modules["google"] = google_module
-    sys.modules["google.genai"] = genai_module
-    sys.modules["google.genai.types"] = types_module
 
 
 TN_PATTERN = r'^\s*[\(（](?:译|注|T/N|翻译|意为|此处)[:：].*?[\)）]\s*$'
@@ -345,47 +291,15 @@ def _find_ordered_paragraph_indices(
 
 def generate_embeddings_batched(texts: list[str], batch_size: int = 50) -> list[list[float]]:
     """Generate paragraph embeddings in batches to prevent rate limits."""
-    if batch_size <= 0:
-        raise ValueError("batch_size must be greater than zero.")
     from pipeline import Config
 
-    require_provider_data_authorized(
-        "gemini",
-        {"source_text"},
-        Config.PROVIDER_DATA_POLICY,
+    vectors, _ = generate_embeddings(
+        texts,
+        batch_size=batch_size,
+        api_timeout=os.environ.get("API_TIMEOUT", Config.API_TIMEOUT),
+        provider_data_policy=Config.PROVIDER_DATA_POLICY,
     )
-    from google import genai
-    from google.genai import types
-
-    timeout = parse_api_timeout(os.environ.get("API_TIMEOUT", Config.API_TIMEOUT))
-    client = genai.Client(
-        http_options=types.HttpOptions(timeout=int(timeout * 1000))
-    )
-    embeddings = []
-    dimensions = None
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        response = client.models.embed_content(
-            model="gemini-embedding-2",
-            contents=batch
-        )
-        batch_embeddings = getattr(response, "embeddings", None)
-        if not isinstance(batch_embeddings, list) or len(batch_embeddings) != len(batch):
-            raise RuntimeError("Embedding response count did not match the input batch.")
-        for item in batch_embeddings:
-            values = getattr(item, "values", None)
-            if (
-                not isinstance(values, list)
-                or not values
-                or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in values)
-            ):
-                raise RuntimeError("Embedding response contains an invalid vector.")
-            if dimensions is None:
-                dimensions = len(values)
-            elif len(values) != dimensions:
-                raise RuntimeError("Embedding dimensions changed within the response.")
-            embeddings.append(values)
-    return embeddings
+    return vectors
 
 
 def load_existing_tm(tm_path: str) -> dict:
@@ -555,7 +469,8 @@ def main():
             chapter_pairs.append({
                 "raw": r,
                 "translated": t,
-                "embedding": embedding
+                "embedding": embedding,
+                "embedding_identity": embedding_identity_for_vector(embedding),
             })
 
         tm_data["chapters"][spec.tm_key] = chapter_pairs

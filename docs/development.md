@@ -1,5 +1,215 @@
 # 开发与验证
 
+本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
+
+## 2026-11-20 PR #71 审查跟进与完整回归
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、提交 `9374fa79376c13f72f06f1e7764d732012b1436a`；在既有混合工作树上继续处理审查问题。未读取或改动书籍正文、受保护 freshness JSON、本机 API profile 或凭据。
+- `已实现` 修复本轮确认的决策/仲裁链一致性校验、跨进程快照读取竞态、空锁文件初始化、评估路由区分和历史发布的章节级来源身份校验；CLI 人工仲裁要求绑定审核者实际审阅的决定摘要。AI 返工续接持锁期间改用无锁内部快照读取，避免重入同一文件锁。正式 Kakuyomu 运行强制启用 reviewed glossary 门禁；模型预检在配置了 API 池回退时不错误要求永远不可达的 Gemini 路由。
+- `已验证` 定向回归：`tests.test_translation_review_state` 44 项、`tests.test_translation_review` 69 项、`tests.test_pipeline_contracts` 142 项、`tests.test_kakuyomu_workflow` 16 项通过；四组共 271 项。完整非 E2E 动态发现运行 772 项，768 项通过、4 项跳过、0 失败。普通权限路径安全模块为 11 项运行、7 项通过、4 项跳过；获准管理员 PowerShell 重跑后 11 项运行、10 项通过、1 项因 Windows 不支持 FIFO 跳过，三个符号链接用例均实际执行并通过。
+- `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；`compileall` 覆盖 `pipeline.py`、`rag_engine.py`、`utils.py`、来源模块、`scripts/` 和 `tests/`；README、AGENTS.md 与 `docs/` 下 16 份 Markdown 的本地链接目标均存在；`git diff --check` 通过。五项 `requirements.txt` 依赖均有代码或测试调用点；未发现足以支持删除依赖或升级版本的仓库证据。依赖未锁定，未进行在线漏洞公告扫描。
+- `已实现` 完整 mock E2E 首次运行发现既有 Kakuyomu 正式流程 fixture 仍把草稿词表当正式输入，触发新增 reviewed glossary 门禁并失败。保持门禁不变，将该测试改为指向 reviewed 文件，并构造只含合成术语、绑定当前 fixture source identity 的审核 bundle。
+- `已验证` 修正后的端到端单项 `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation` 通过（1 项，6.653 秒）；完整 `.venv\Scripts\python.exe tests\run_tests.py` 通过（7 项，384.596 秒，runner 退出码 0）。runner 输出中的 content-filter 和段落数量错配堆栈来自预期负向 fixture；没有真实 Provider 请求。mock E2E 不代表真实 Provider、模型质量或部署验收。
+- `未验证` 仓库仍没有 CI 工作流、依赖锁文件、容器或部署清单；应用交付形态是本地 CLI。真实 Provider 连通性、API profile/凭据、语义质量、全书 88 话人工映射/双版本审核与正式部署仍未验证。完整测试不会替代 K5 人工审批和凭据所有者的单话试译验收。
+
+## 2026-11-20 K4 AI workflow CLI contract
+
+- `已验证` 新增 `tests/test_ai_translation_workflow_cli.py`，直接覆盖用户入口 `scripts/run_ai_translation_workflow.py::main`：配置加载与两条 Provider 静态预检的顺序、工作流参数转发、成功 JSON 输出；终审或返工路由预检失败时返回非零、不启动工作流，且错误详情不输出到终端。测试使用 mock，不读取凭据、不连接 Provider。
+- `已验证` `tests/test_translation_review.py::TranslationReviewTests::test_workflow_cli_runs_review_rework_and_publication_end_to_end` 从 CLI 入口实际执行活动 run 草稿的双评估失败、findings 段落返工、双评估通过及 create-only 发布；只将模型响应和 Provider 静态预检替换为合成桩。另有 CLI 预检成功/失败单测。
+- `已验证` CLI、该端到端合成用例与 I4 provenance/freshness 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_ai_translation_workflow_cli tests.test_source_pipeline_linkage tests.test_tm_provenance_unit tests.test_downstream_freshness_snapshot tests.test_translation_review.TranslationReviewTests.test_workflow_cli_runs_review_rework_and_publication_end_to_end -q`：40 项通过。CLI 与测试 `py_compile` 通过。
+- `已验证` PowerShell 动态发现并运行全部非 E2E 模块（排除 runner 专用 `test_e2e.py`）：764 项运行、760 项通过、4 项因 Windows symlink/FIFO 能力跳过，0 失败。随后 `.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（212.461 秒，退出码 0）；输出中 content-filter 和段落错配 trace 来自预期负向 fixture。
+- `未验证` 未调用真实 Provider、未对真实译文做质量验收，也没有部署验证。当前 K5 仍需有权限的人完成 88 话映射/双版本审阅和匹配计划回执、审核当前 bundle 绑定的全书知识；之后由凭据所有者核验 Provider 授权、路由和预算并执行获准单话试译。
+
+## 2026-11-20 I4 manifest-bound TM lineage
+
+- `已实现` `scripts/validate_tm_provenance.py::audit_translation_memory` 在配置来源 manifest 时，将缺少 `source_version_id` 的 TM provenance 标为 `unverified`。没有 manifest 的旧式兼容审计仍可按来源/译文字节与段落映射验证；AI edition source map 不匹配仍按原逻辑报告 `mismatch`。
+- `已验证` 新增 direct audit 与 hash-bound freshness snapshot 回归：manifest-bound 旧 TM 不会被报告为 fully verified，快照只记录状态，原 TM 字节保持不变。定向命令 `.venv\Scripts\python.exe -m unittest tests.test_source_pipeline_linkage tests.test_tm_provenance_unit tests.test_downstream_freshness_snapshot -q` 为 36 项通过；编排/采集集成命令 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_workflow tests.test_kakuyomu_page_source tests.test_source_ingestion -q` 为 93 项通过。
+- `已验证` 完整非 E2E 动态发现运行 760 项、756 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 7 项通过（206.248 秒，退出码 0）。mock 的 content-filter 与段落错配日志来自预期负向 fixture；未调用真实 Provider 或试点正文。
+- `部分实现` 本增量不回写 TM/译文，不自动重建派生物；manifest-bound 其他消费者仍由各自现有来源门禁校验。I4 持久消费者状态传播和自动重建未验收。
+
+## 2026-11-20 当前工作树回归复核
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；在既有混合工作树上复核，未改代码、项目数据、来源/译文、API profile、凭据或受保护 freshness JSON。
+- 定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state tests.test_pipeline_contracts tests.test_api_pool -q`：269 项通过。完整非 E2E 动态发现（`tests/test_*.py`，排除 runner 专用 `test_e2e.py`）：758 项运行、754 项通过、4 项因 Windows symlink/FIFO 能力跳过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，208.149 秒，退出码 0。输出中的 content-filter 与段落数量错误来自预期负向 fixture；未调用真实 Provider，也未运行试点正文。`git diff --check` 通过。
+- 阶段状态不变：K4 本地合成实现和回归通过；K5 仍待有权限的人完成 88 话映射/双版本审阅及匹配计划回执、审核当前 bundle 绑定的全书知识，再由凭据所有者核验 Provider 配置/授权/预算并执行受控首话和人工质量验收。应用为 CLI，无部署服务。
+
+## 2026-11-20 K5 试点门禁复核
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；只读验证，没有改动项目数据、来源/译文、API profile、凭据或受保护 freshness JSON。
+- 当前计划 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 仍为 `ready_for_review`，88 话、88 个来源有效、0 issues，摘要 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。按计划自身绑定的 `source_catalog.raw-html-2026-11-17.json`、manifest、AI edition root 和译文根运行 `scripts/run_kakuyomu_workflow.py --plan-only`，返回相同 plan digest、88/88 来源、0 issues/目标冲突、0 网络请求/Provider 调用/文件写入，`source_text_included=false`。误用 `source_catalog.discovered.json` 会得到 `stale_ai_edition_catalog:88`；该 catalog 不同于当前计划和 AI 索引绑定的 catalog，不应替换计划输入。
+- `scripts/validate_source_editions.py` 对同一 catalog、当前 source/edition manifests、AI root 和配置的人读 root 返回 `verified`：88 话；读取源 793,183 bytes，AI 输出 774,253 bytes，人读输出 799,293 bytes。验证器只读并逐话按当前 profile 重算、比对镜像与归档；这证明字节/版本一致性，不证明语义保真或人类阅读体验。
+- 当前人审模板与计划摘要、AI 索引 SHA-256、人读索引 SHA-256 均匹配；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 `pending:88`。`Workflow/Approvals/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。没有产生审批回执、知识产物或译文；未调用真实 Provider。
+- 下一步需要有权限的人审阅既有 88 话模板及双版本，并通过 `scripts/approve_translation_plan.py` 生成匹配回执；之后才可审核/生成当前 bundle 绑定的全书概要与术语。以上门槛完成后，再由凭据所有者核验端点授权/路由/预算，开展获准单话 Provider 试译和人工质量验收。用户已确认作品授权和职责所需数据类别，不应重复列为待确认项。
+
+## 2026-11-20 用户确认的原文抽样核实
+
+- `用户报告` 用户已抽查人类版 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 与 AI 版 `projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件及大合集文件，均未发现明显问题。AI 版大合集对象路径为 `projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。
+- 以上是用户提供的核实结论；本次没有独立读取附件或复查抽样文件。抽样清单、检查标准、全量覆盖、逐段语义保真及阅读器显示仍未验证；该结论不替代 88 话映射与双版本的结构化人工验收。`book-ai.json` 在本记录中仅为核实对象，不是仓库指令或实现证据。
+
+## 2026-11-20 K4 终审逐次评估持久化
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；本轮在既有混合工作区上增量修改，未读取或改动受保护 freshness JSON、小说正文、本机 API profile 或凭据，也未暂存、提交、重置或清理。
+- `已实现` `ai_translation_review.py` 在每次结构化评估通过验证后，将规范化结果以原子 create-only sidecar 写入 run 内 `AIReviews/<episode_id>/`。记录绑定 run/work/episode、source 版本与摘要、candidate 版本/路径/摘要、policy 摘要、reviewer route 摘要及评估序号；仅包含 verdict、登记 issue code、段落索引和检查结果，不保存模型自由文本或章节正文。
+- `已实现` 重试会先校验并复用已落盘的单次评估，再请求尚缺评估；两份评估齐全后仍生成原 schema 报告、决定和发布物，旧报告与决策恢复格式不变。错配、非法或超限 sidecar 会失败关闭；没有数据库迁移。
+- `已验证` 新增经父进程认证的进程终止测试：第一份 sidecar 原子落盘后、第二次评估响应前终止子进程；恢复只调用评估 2，完成发布，第二次重开文件字节稳定。另验证篡改 sidecar 身份会在调用 Provider 前拒绝。两个新增用例及原终审/状态模块共 106 项通过；完整非 E2E 动态发现 758 项运行、754 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 7 项通过（216.520 秒，退出码 0）。均使用合成 assessor，未调用真实 Provider。
+- 恢复剩余窗口：Provider 已返回但对应 sidecar 尚未原子落盘时进程终止，重试仍可能重复该次请求及费用；无 Provider 幂等键时本地无法消除此窗口。该检查点证明指定用户态进程终止恢复，不证明断电或介质持久性。
+- 回滚边界：不迁移数据库、不改写报告/决策/候选/译文/TM；评估 sidecar 是 run 内追加证据，回滚代码时须保留。旧实现可能忽略这些新文件，但不能据此删除它们。
+- `已验证` `.venv\Scripts\python.exe -m py_compile ai_translation_review.py tests\test_translation_review.py`、活动 Markdown 本地目标检查与 `git diff --check` 通过。E2E 中 content filter 与段落错配堆栈来自预期负向 fixture。
+- 下一步：K4 本地合成恢复阶段已验证。整体试点仍须有权限的人类完成 88 话计划/双版本审批和 reviewed 全书知识，再由凭据所有者核验 Provider 授权/预算并执行获准单话试译及人工质量验收。
+
+## 2026-11-20 K4 AI 返工续审工作流
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。在已有混合实现和文档改动上增量工作；受保护 freshness JSON、书籍正文、本机 API profile/凭据均未读取，未暂存、提交、重置或清理。
+- `已实现` 新增 `scripts/run_ai_translation_workflow.py` 与 `ai_translation_workflow.py`，对一话显式执行或从已有决策继续执行终审、有限返工、复审及通过后发布。不会被初译 pipeline 后台触发。若已有 `passed` 决定，重跑走审核器已有恢复路径，不重复调用 reviewer；已生成的下一候选按摘要校验后复用。
+- `已实现` `ai_translation_rework.py` 只接受 AI reviewer schema v4 的 `quality_failure`/`rework`，或 `rework_limit_reached` 且存在匹配的人工 `increase_budget` resolution。策略、来源、当前候选、AI 报告、决策摘要和阻断 findings 均重验；不能从 `approve_current` 人工放行状态启动 AI 返工。
+- `已实现` 修订请求将完整 source/candidate、阻断 findings、对应策略定义和逐段可编辑标记发送给 `PROOFREAD_MODEL`，source 与 candidate 合计最多 64,000 字符。类别仅为 `source_text`、`translation_text`，不发送 `book_knowledge`。解析器拒绝重复 JSON 字段、未知字段、未覆盖/重复/非目标段落、非单段输出和非法字符；仅替换命中段落并保留未命中原字符与分段隔符，再复核候选字节上限及既有译文格式契约。
+- `已实现` 终审与返工路由必须规范化 endpoint/model 身份不同；CLI 请求前校验终审授权、返工角色配置/授权及路由。候选 create-only 保存到 `ReviewCandidates/<episode_id>/revision-NNNN.md`；sidecar `AIReworks/<episode_id>/revision-NNNN.json` 只保存内容/决策/策略/报告/findings/路由摘要和生成来源，不保存小说正文。若候选已存在但 sidecar 缺失，只记录 `reused_existing`，不声称它由 AI 生成。
+- `已实现` 单话终审、返工和完整工作流共享 `AIWorkflowLocks/<sha256(episode_id)>.lock` 异步文件锁；同一事件循环内等待时使用异步轮询，不阻塞持锁任务。锁跨进程有效，避免同一候选的并发调用重复消耗 Provider。锁位于决策目录之外；短时 decision append lock 仍负责序列化 create-only 决定和仲裁回执。
+- 恢复边界：review decision episode lock 覆盖返工上下文读取、Provider await 和候选/sidecar 提交，防止同一话并行推进决策；候选和 sidecar 分别原子 create-only。进程若在 Provider 响应后、候选成功落盘前中断，远端调用可能重复且产生费用；若候选已落盘、sidecar 未落盘，重跑会按现有候选补建 `reused_existing` sidecar。尚无进程硬杀/远端响应丢失故障注入证明。
+- 终审恢复边界：评估锁在进程退出时自动释放，已持久化的单次评估、报告/决定/发布快照按身份或摘要恢复。若 Provider 已返回但对应评估 sidecar 尚未落盘时中断，重试可能重复该次请求并重复计费；该剩余窗口见本文件顶部 `2026-11-20 K4 终审逐次评估持久化`。
+- `已验证` `test_ai_pass_recovers_after_publication_snapshot_write_failure` 在快照写失败后重跑并恢复；另有两个认证检查点进程终止测试：快照写入前，以及发布审核快照/回执已存在但 run 状态仍为 running、尚未 reconciliation 时。父进程先核验检查点、passed 决策、报告/决定摘要、审核记录、译文和已有发布物，再终止子进程；新调用通过真实 episode 文件锁续跑，不重复调用 reviewer、不追加决定、不重写已有发布物，并完成 run 状态。两次重开后的 run/发布文件字节稳定。它们证明指定用户态进程终止窗口，不证明内核崩溃、断电或介质持久性。
+- `已实现` 预算耗尽后的人工 `increase_budget` 回执成功结果现在返回 `new_max_rework_attempts`；新增跨模块恢复用例验证该值与下一版决策预算一致，并验证恢复后的自动复审发布路径。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state tests.test_pipeline_contracts tests.test_api_pool -q`：267 项通过。内含 13 项新增工作流用例（hash-bound rework/review/publish、候选恢复复用、预算扩展不可绕过、人工扩额后续接至发布、非法响应拒绝、严格段落边界、并发终审复用、并发完整工作流、跨进程互斥、进程退出后锁恢复、快照写失败恢复、快照前进程终止恢复及回执落盘后 run 状态更新前进程终止恢复）及向导 reviewer/rework route 分离验证；未调用真实 Provider。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_api_pool -q`：23 项通过；`scripts/run_ai_translation_workflow.py --help` 与本轮相关 Python `py_compile` 均通过。完整非 E2E 动态发现运行 756 项、752 项通过、4 项因普通 Windows symlink/FIFO 能力跳过；未发现失败。`.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 最近一次为 7 项通过，203.287 秒，退出码 0；本轮只改测试和文档，未重跑 runner。content filter/段落错配输出来自预期负向 fixture。10 份相关 Markdown 的 285 个本地链接目标存在，`git diff --check` 通过。
+- 回滚边界：不迁移数据库、不改写草稿/旧候选/决策/译文/TM；新运行时只在活动 run 下 create-only 增加候选及报告，发布仍由旧门禁执行。回滚代码时必须保留 `AIReworks/` 与候选；缺少本代码的旧版本无法解释 sidecar，也可能不能理解当前策略/决策 schema。
+- 下一步：K4 的本地合成回归已完成。若进入真实试点，先由人类完成 88 话映射/双版本与计划审批、reviewed 全书知识审核；再由凭据所有者安全检查 Provider 端点、授权、预算和模型路由，选择获准单话运行 CLI，并对 AI 修订、终审结果和正式产物做人工质量验收。当前没有 Web 服务或部署目标。
+
+## 2026-11-20 K4 AI 终审执行器
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作区已有混合代码/文档修改和未跟踪文件；本轮在其上增量工作，保留受保护 freshness JSON、项目原文、API profile 和凭据。本轮未读取这些数据，未暂存、提交、重置或清理。
+- `已实现` `ai_translation_review.py` 与 `scripts/review_translation_candidate.py` 提供显式单话终审。初审只接受 run 中已核验 `Drafts/`；续审必须使用 run 内版本化 `ReviewCandidates/<episode_id>/`。要求策略 schema v1，绑定 run、话目、source version/hash、候选版本/路径/hash、策略 hash 和 reviewer route hash。
+- `已实现` 每次评审顺序请求两次 `FINAL_REVIEW_MODEL`，同一不可变候选；严格 JSON 解码拒绝重复键、非有限值、额外字段、未登记 code 和越界段落索引。原文与译文逐段数需相同；合并文本上限默认为 64,000 字符，超限时不截断、不发送。模型输出不允许自由文本解释；仅将阶段 verdict、登记 code 和段落索引持久化。
+- `已实现` “信 > 达 > 雅”落实为 fidelity/fluency/style 三阶段均 pass 的必要条件。每次还须将八个既有 publication checks 全部判 pass，且两次 optimization potential 均为 `none` 或 `low`；最终条件以决策 schema v4 的 `final_review_gate` 绑定策略文件。冲突/不确定、收敛 gate 不足或预算耗尽均不发布并转 `needs_human`；明确失败且预算仍有余量返回 `rework`。CLI 结果返回内容无关的 issue code、段落索引及 run-relative 报告路径，供后续查看，不返回正文引文。
+- `已实现` 只有 schema v4 决定状态为 `passed` 才创建候选绑定 AI publication snapshot，并复用 `publish_reviewed_translation` 的现有来源、候选、八项检查、create-only 产物及 run 状态核验。审核报告按候选/策略内容寻址并只增写；既有通过决定可校验报告后幂等恢复发布，避免重复调用模型。若模型评审中途失败，未完成的双评估不会生成决定；之后重试需重新完成两次请求。
+- 返工预算在 AI 终审入口默认 2，可在初审用 `--max-rework-attempts` 覆盖；续审必须与既有链预算一致，预算耗尽后须先走人工 resolution。`rework` 只写审核/决定状态，不生成修订译文；新候选的生成器、使用 findings 的修订 prompt 和调用预算尚未实现。AI 审核及自动发布只会被显式 CLI 调用，不在初译流程中后台自动触发。
+- 风险边界：每个评估请求都会将完整 source 和 candidate 发给配置 reviewer；虽校验要求全部三类授权，当前 prompt 不含 book knowledge。两个评估走相同 route，不能证明统计或语义独立；`none`/`low` 只作为用户收敛方向的定性代理，不计算边际收益，不证明翻译正确。issue code 定义由操作者维护，不是项目核准 taxonomy；reviewer 标识是摘要声明，未认证。
+- `已验证` `.venv\\Scripts\\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state -q`：91 项通过。合成用例覆盖双次通过并发布、既有通过恢复不重调模型、存储报告篡改拒绝、失败原因摘要返回且不发布、评审分歧/收敛不足/零预算转人工、重复 JSON 字段拒绝和审阅期间 run 草稿改变拒绝。测试注入 assessor，不访问真实 Provider；不包含真实质量样本。
+- `已验证` CLI `--help` 可解析项目/run/episode/policy/candidate/字符预算/返工预算参数。PowerShell 动态发现并排除 runner 专用 `test_e2e.py`：740 项运行、736 项通过、4 项因当前 Windows symlink/FIFO 能力跳过；`.venv\\Scripts\\python.exe tests\\run_tests.py`：mock E2E 7 项通过，212.673 秒，退出码 0。E2E 负例中的内容拦截/段落错配日志为预期。`py_compile`、CLI help、10 份相关 Markdown 的 274 个本地链接目标和 `git diff --check` 通过。
+- 回滚边界：不改写候选草稿、原译文、TM 或旧决策；报告、政策副本、schema v4 决定和自动生成 checklist 均是 run 内 create-only 产物。代码回滚时须保留这些文件；旧代码不具备 v4 链消费能力，禁止删除或降级重写审阅数据。无需数据库迁移。没有可部署服务，不执行项目真文 Provider 调用。
+- 下一步：K4 执行器合成验证和当前全量回归已完成。若继续 K4，先定义自动返工候选写入/不可覆盖、修订输入/输出契约、预算/故障恢复与跨话目 taxonomy 范围，再接生成模型。正式试点前必须完成人工 88 话双版本/计划审批、reviewed 全书知识、本机 API profile 与权限检查，以及由操作者显式触发的真实单话 Provider/人工质量验收。
+
+## 2026-11-20 API 池可选终审角色
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。在已有混合工作树上增量修改；保留全部既有更改和未跟踪项，未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据；未暂存、提交、重置或清理。
+- `已实现` `scripts/configure_api_pool.py` 可跳过或配置可选 `FINAL_REVIEW_MODEL`。配置时要求与 `INITIAL_MODEL` 的规范化端点及实际模型 ID 均不同；向导在读取 Key 前告知并确认 reviewer 可能接收 `source_text`、`translation_text`、`book_knowledge`。激活不含 reviewer 的 API 池会清除旧 `FINAL_REVIEW_MODEL`，避免同进程误用残留路由。
+- `已实现` `api_pool_store.py` 写入含 reviewer 绑定的 schema v3；原三角色 profile 继续写 v2。v1/v2 读取与 v1 显式迁移到 v2 保持兼容，v2/v3 embedding 字段均可读取。profile 校验要求终审全类别授权，并拒绝与初译相同的 endpoint/model 身份；凭据仍只保存在 Windows Credential Manager，配置摘要绑定逻辑不变。
+- `已实现` `pipeline.py` 暴露独立 `validate_final_review_provider_configuration()`，校验 reviewer 路由、与初译路由的区分、数据授权、远端 Key 及当前配置的回退授权；普通翻译 preflight 不要求配置终审，也不会因此触发审核。`Config.load_config` 将未配置角色重置为 `None`。不同 endpoint/model 只是路由分离，不证明模型语义独立。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_api_pool -q`：22 项通过。`.venv\Scripts\python.exe -m unittest tests.test_api_pool tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q`：176 项通过。全量非 E2E 动态发现运行 730 项、726 项通过、4 项因 Windows symlink/FIFO 能力跳过、0 失败。`.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，205.929 秒，退出码 0；其中失败日志来自预期负向夹具。相关文件 `py_compile`、9 份 Markdown 相对链接目标与 `git diff --check` 均通过；链接检查不校验锚点。
+- 本阶段不调用 reviewer、不写审核决定、不影响发布门禁，也未连接真实 Provider 或启动服务。未读取真实 profile，未迁移本机配置。旧 profile 不受影响；若未来已保存 v3 profile 后回滚代码，必须保留 v3 读取能力或先显式导出兼容配置，不能直接降级/覆盖 profile。
+- 下一步：当前执行器已连接既有候选版本/决策链与发布门禁。若继续 K4，先明确自动返工候选写入、修订输入/输出、失败恢复和真实 taxonomy 范围，再接生成模型；真实试点还须完成人工前置验收并记录 Provider 执行证据。
+
+## 2026-11-20 K4 策略文件绑定
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。本轮在已有混合工作树上增量修改；未读取书籍正文、本机 API profile、凭据或受保护 freshness JSON；未暂存、提交、重置或清理。
+- `已实现` 决策 CLI 增加可选 `--review-policy-file <JSON>`。schema v1 策略登记表包含 `policy_id`、正整数 `revision` 和 issue entries；每个 entry 提供稳定 code、允许的审核阶段及由策略维护者撰写的定义。拒绝重复 JSON 字段/code、未知字段、无效阶段、非 UTF-8/非有限 JSON 和超 128 KiB 文件。
+- `已实现` CLI 的 `--stage-verdicts` 与 `--stage-issue-codes` 使用严格 JSON 解析；任意对象层级出现重复字段或非有限数值（`NaN`/`Infinity`）均在调用决策写入器前拒绝，避免同名阶段或 issue code 被 JSON 解码器静默覆盖。
+- `已实现` 提供策略文件时，程序以其原始字节计算 SHA-256；可省略 `--policy-sha256`，若同时提供则必须匹配。写入 run 的 `ReviewPolicies/<sha256>.json`，采用排他原子写入且复用时要求字节完全一致。决策改用 schema v3，哈希绑定该相对路径、策略摘要和阶段 issue codes；每次读取决策链、续接和发布前均重新核验策略文件摘要与 code 的阶段归属。v3 链后续每条决定都必须继续提供相同策略文件；v1/v2 数据仍可读取，v1/v2 链可进入 v3，但已存在的 v2 codes 也必须符合被绑定的策略。
+- `已实现` 不提供策略文件时保留 schema v2 与既有不透明 `policy_sha256` 兼容入口。该兼容路径不验证策略内容。策略登记表只定义 issue 标识和适用阶段；不增加 severity、自动处置或跨话目豁免语义。重复 code 仍不会自动放行或跳过人工暂停。
+- CLI 示例：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\record_translation_review_decision.py `
+  --run-directory <run> --episode-id <episode> `
+  --reviewer <reviewer> --reviewed-at-utc <UTC> `
+  --review-policy-file <policy.json> `
+  --reviewed-candidate-sha256 <sha256> `
+  --stage-verdicts <JSON> --stage-issue-codes <JSON>
+```
+
+- 策略文件形状示例（code 含义由操作者撰写，本例不构成项目质量标准）：
+
+```json
+{
+  "schema_version": 1,
+  "policy_id": "operator-review",
+  "revision": 1,
+  "issue_codes": [
+    {
+      "code": "operator_defined_issue",
+      "stages": ["fidelity"],
+      "definition": "Definition supplied by the policy owner."
+    }
+  ]
+}
+```
+
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：81 项通过。覆盖策略文件校验/摘要、原子只增归档、阶段归属、篡改拒绝、v1/v2 兼容与续接、CLI 参数、重复字段/非有限数值拒绝和审核发布集成。
+- `已验证` PowerShell 动态发现 `tests/test_*.py` 并排除 runner 专用 `test_e2e.py`：727 项运行、723 项通过、4 项因 Windows symlink/FIFO 能力跳过，0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，209.005 秒，退出码 0。E2E 输出中的 content filter 与 paragraph mismatch 错误是预期负向夹具；没有真实 Provider 请求。
+- `已验证` 相关 Python 文件 `py_compile`、`record_translation_review_decision.py --help` 的策略参数、6 份修改文档的本地链接目标及 `git diff --check` 均通过。
+- 回滚边界：只在 run 内新增内容寻址策略文件与 schema v3 决定；不改写候选、译文、TM 或旧审核记录。回滚代码会失去 v3 链读取/发布能力，必须保留策略文件和决定数据，不得删除或降级改写。
+- 下一步（该策略绑定阶段交付时）：在明确的审核规则和授权样本基础上定义真实 taxonomy、冲突/不确定处置及跨话目作用范围；当前 reviewer 执行器和自动发布路径见本文件首节。真实语义判定、reviewer 身份及试点质量仍未验证。
+
+## 2026-11-20 K4 结构化 issue code
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。保留工作树中已有的 API/embedding、K4 及受保护未跟踪文件；未读取 freshness JSON、书籍正文、本机 API profile 或凭据；未暂存、提交、重置或清理。
+- `已实现` 新决策记录使用 schema v2，在 `issue_codes_by_stage` 按 fidelity/fluency/style 保存 reviewer 显式提供的内容无关标识；这些字段随决策摘要一起哈希。旧 schema v1 决策仍可独立读取，也可作为现有决策链前缀继续接入 v2 记录。
+- `已实现` 校验只检查三阶段映射完整、标识符合小写 snake_case 格式且不重复；fail verdict 至少要有一个标识，纯 pass 阶段不得带失败标识。标识集合及语义未固化为代码枚举；调用方需在受控策略材料中定义这些 code，并自行保证策略材料与 `policy_sha256` 一致。记录只哈希保存该摘要和 code 值，本程序不读取/验证策略材料，也不推断 issue code。
+- `已实现` `scripts/record_translation_review_decision.py` 新增可选 `--stage-issue-codes <JSON>`。记录 fail 时必须提供失败阶段的 code；全通过记录可省略该参数。该入口保持 Provider-independent，不读取或请求 API 池。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：72 项通过。覆盖缺失/无效/重复代码拒绝、哈希绑定、v1 读取和 v1→v2 决策链续接、CLI 参数解析及现有仲裁/发布集成。
+- `已验证` PowerShell 动态发现 `tests/test_*.py` 并排除 runner 专用 `test_e2e.py`：718 项运行，714 项通过、4 项因 Windows symlink/FIFO 能力跳过，0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：mock E2E 7 项通过，227.490 秒，退出码 0。E2E 的内容过滤和段落不匹配堆栈来自预期负向 fixture，没有真实 Provider 请求。
+- `已验证` 相关模块 `py_compile`、`scripts/record_translation_review_decision.py --help` 的 `--stage-issue-codes` 显示、`scripts/resolve_translation_review.py --help`、`git diff --check` 均通过。
+- 回滚边界：新记录只追加到既有 `ReviewDecisions/<episode_id>/`，不改写旧记录、候选、译文或 TM。回滚代码会失去 v2 记录读取能力；不得删除既有决策数据。完整非 E2E 与 mock E2E 回归已通过，详见本节验证记录。
+- 限制与下一步：issue code 目前是受格式约束的策略标签，不是已核准的共享 taxonomy；没有 code registry、语义审计或跨话目豁免策略，重复 code 不会自动放行或跳过人工暂停。后续仍需定义 taxonomy 版本、词汇来源、跨话目适用范围与撤回规则；当前 AI reviewer 执行器已实现，语义质量未验证。
+
+## 2026-11-20 K4 人工仲裁与返工预算
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。继续保留已有未提交/未跟踪修改；未读取受保护 freshness JSON、试点正文、本机 API 池或凭据；未暂存、提交、重置或清理。
+- `已实现` 新决策链初始最大返工次数默认 2，可由 `--max-rework-attempts` 配置。预算耗尽后，新增 `scripts/resolve_translation_review.py`：`approve_current` 写入独立、create-only、哈希绑定当前 run/话目/来源/候选/失败阶段/决策摘要及理由的人工仲裁回执；它不改写原有失败 verdict。匹配回执只解锁绑定该候选的 schema v3 人工 checklist，发布仍需独立 checklist 全部通过。
+- `已实现` 仲裁动作 `increase_budget` 只可在 `rework_limit_reached` 后严格增加预算；后续决定必须从已绑定候选创建新修订、沿用同一策略摘要并使用新预算。扩预算和人工放行均保留旧记录；决策与仲裁追加共享话目锁并采用原子 create-only 写入。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：64 项通过，包含默认两次、保留失败 verdict 的人工放行、schema v3 发布/回执绑定、耗尽后扩预算续接及严格增量校验。
+- `已验证` PowerShell 动态发现 `tests/test_*.py` 并排除 `test_e2e.py`：710 项运行、706 项通过、4 项因普通 Windows symlink/FIFO 能力跳过，0 失败。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，244.256 秒，退出码 0。打印的失败堆栈对应测试中的内容过滤/格式负例；无真实 Provider 请求。
+- `已验证` `py_compile` 覆盖 `translation_review_state.py`、`translation_review.py` 及两个相关 CLI 和测试文件；两个 CLI `--help` 均正常；`git diff --check` 通过。以上为本地合成验证，不调用 Provider 或读取项目正文。
+- 边界：仲裁记录的 reviewer 是本地声明，不认证账户或身份；schema v3 checklist 仍需人工完成。现有阶段 verdict 只有 fidelity/fluency/style 三类，缺少可安全复用的细粒度 issue taxonomy，因此“同类失败在后续其他话目自动免暂停”尚未接入；不能将一次人工放行静默扩展为宽泛的信/达/雅豁免。AI reviewer 执行器现有合成验证，终审阈值/自适应收益计算、真实 Provider 质量和试点验收仍未验证。
+- 回滚：只新增 `ReviewResolutions/<episode_id>/` 回执；保留原决策链及候选，不改译文、TM 或既有审核产物。回滚代码会移除对仲裁/schema v3 的消费能力，但既有 schema v1/v2 行为保持；不得删除运行中生成的回执或候选。
+- 下一步：为细粒度同类 issue 定义可审计分类及其作用范围，并设计自动返工候选契约；之后在获准配置、88 话映射/双版本验收和 reviewed 知识就绪后，开展受控 Provider 试点。
+
+## 2026-11-20 API 池 v2 与可配置 embedding
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树原有未提交/未跟踪内容继续保留；未读取受保护的 freshness JSON、试点正文、本机 API 池文件或任何凭据值；未暂存、提交、重置或清理。
+- `已实现` `api_pool_store.py` 新保存 schema v2：保留生成池与职责绑定，增加可选独立 embedding Provider；Google GenAI 配置固定 Provider `gemini`，或配置经现有 URL 校验器检查的 OpenAI-compatible endpoint/model。Key 仅写入 Windows Credential Manager，profile 存引用和授权类别，凭据绑定完整 profile 摘要。
+- `已实现` v1 profile 仍可只读加载。向导检测到 v1 后须明确确认才升级；迁移先验证旧配置和 Credential Manager 绑定，创建内容不含 Key 的 v1 备份，再以新凭据引用和新摘要原子替换。旧凭据引用不自动删除；写入或替换失败会清理本次新凭据，旧 profile 保持不变。迁移失败后的 v1 备份保留。迁移成功后的自动反向恢复 CLI 尚未提供，可由操作者将备份恢复到 profile 路径后继续用旧版代码。
+- `已实现` `scripts/configure_api_pool.py` 可在生成配置之外选择是否单独配置 Gemini 或 OpenAI-compatible embedding，并先确认该 Provider 对 `source_text` 的授权再索取 Key。激活时清除陈旧 embedding 环境变量，并将 embedding 授权与生成池授权合并；未配置时不授权远端 embedding，按现有拒绝策略关闭该请求。
+- `已实现` `embedding_provider.py` 为 RAG、TM 写入和章节对齐共享适配器；OpenAI-compatible 响应按 `index` 重排并校验数量、索引、有限向量和维度。Gemini 默认向量身份保持 schema 1；OpenAI-compatible schema 2 另含 endpoint SHA-256，防止相同维度但不同模型、Provider 或端点的向量混用。身份不匹配的旧向量仍保留，不自动重建。
+- `已实现` `scripts/rebuild_tm_embeddings.py` 可按所有 TM 章节或重复 `--chapter` 选择生成新候选，不改写源 TM 或已审核快照。生成前后都核验所选 pair 的来源/译文 provenance、来源 manifest 和源 TM 摘要；Provider 失败、输入变化或输出文件冲突时不发布候选。`configure_api_pool.py --rebuild-tm-embeddings` 复用同一 profile、Key 与 `source_text` 授权入口。候选仍须由 `scripts/apply_tm_review.py` 生成人工回执并发布 reviewed snapshot；操作者随后显式设置 `TM_REVIEWED_PATH`，切换和回退不覆盖既有 TM/快照。
+- `已验证` 定向 `.venv\Scripts\python.exe -m unittest tests.test_api_pool tests.test_embedding_provider_unit tests.test_rag_engine_unit tests.test_align_chapters_unit tests.test_tm_review tests.test_pipeline_contracts -q`：235 项通过。
+- `已验证` 完整非 E2E 测试动态发现（`tests/test_*.py`，排除 runner 专用 `test_e2e.py`）：704 项运行、700 项通过、4 项因普通 Windows 权限不支持创建 symlink/FIFO 跳过。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，239.655 秒，runner 退出码 0。内容拦截与段落不匹配堆栈来自预期负向 fixture；没有真实外网或 Provider 请求。
+- `已验证` 修改 Python 文件 `py_compile` 和 `git diff --check` 通过。迁移使用临时 profile 与合成凭据存储；OpenAI SDK 另对本机 loopback HTTP fixture 请求 `/v1/embeddings`，验证 Bearer Key、模型/输入、`encoding_format=float` 和响应解析。该 fixture 不是对任何真实 Provider 的兼容性证明。
+- `未验证` 当前用户本机 v1 profile 是否存在或已迁移；本轮未读取它。Gemini/OpenAI-compatible 真实 API、渠道模型能力、费用、时延和语义质量未验证；候选重建只使用合成 TM 测试，本机试点 TM 未重嵌入或切换。当前项目仍为 CLI，没有 Web 服务或部署目标。
+- 回滚：迁移在替换前失败时旧 profile 和旧 Credential Manager refs 保持有效；成功后 v1 备份与旧 refs 保留。若需用旧程序回退，先保留 v2 profile，再将备份恢复到原 profile 路径；禁止删除旧凭据或 TM。代码回退会失去 v2 加载和新的 endpoint 身份隔离行为。
+- 下一步：由操作者运行 `.\.venv\Scripts\python.exe scripts\configure_api_pool.py --rebuild-tm-embeddings -- --project <项目> [--chapter <TM键>]`，确认是否加载/迁移实际 profile 并授权 embedding 接收 `source_text`；候选写入现有 TM 同目录但使用独立文件名。用 `scripts/apply_tm_review.py` 为候选创建并完成逐对人工回执，再发布 reviewed snapshot；核对后才显式将 `TM_REVIEWED_PATH` 指向新快照，保留旧值以便回退。真实端点验收、试点 88 话人工映射/双版本审批、reviewed 全书知识和 K4 AI 终审策略/自动 reviewer 仍未完成。
+
+## 2026-11-20 Gemini embedding 与 TM 向量身份
+
+> 阶段快照：本节记录 API 池 embedding 配置接入前的基础适配器状态；当前配置/迁移状态见本页上方“API 池 v2 与可配置 embedding”。
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树含此前及本轮未提交修改，均予以保留；受保护的未跟踪 freshness JSON 未读取或修改，没有暂存、提交、重置或清理。
+- `已实现` 新增 `embedding_provider.py`，统一 RAG 与章节对齐调用 Gemini Embedding 2 的批处理、授权预检、超时、响应数量/数值/维度校验及身份描述。TM 向量记录新增 `embedding_identity`，包含 schema、Provider、协议、模型、task type 和维度；RAG 新写入及 `scripts/align_chapters.py` 写入使用同一身份格式。
+- `已实现` TM 检索及章节语义回退只使用身份字段完整且与当前 Gemini Provider/模型/维度完全匹配的向量。缺身份或身份不匹配的旧向量仍保留在 TM 和审核快照中，但不混入向量计算；它们需经显式对齐/重建后才能重新参与检索。没有自动重嵌入或修改项目 TM 数据。
+- `已实现` 前一增量的 RAG 失败关闭保持有效：有兼容候选但查询 embedding 失败时抛出不含原始异常正文的错误；TM 更新任一 embedding 失败会整体中止，不写部分 TM。章节事务日志保留待提交状态，合成恢复测试确认重试仅恢复 TM 提交、不重复翻译。无兼容候选时返回空检索是旧向量隔离的预期状态，不等同于一次成功语义命中。
+- `部分实现` TM 查询和更新的 embedding 错误按上述规则停止/保留事务；指南的语义回退仍沿用既有策略，在 embedding 失败或没有兼容章节向量时选择距离最近章节的指导。该结果是位置回退，不是语义匹配；尚未把它改成停止翻译或给调用方提供显式降级状态。
+- `已验证` 定向 `.venv\Scripts\python.exe -m unittest tests.test_rag_engine_unit tests.test_align_chapters_unit tests.test_tm_review -q`：64 项通过，覆盖旧向量隔离、模型/维度身份差异、TM 新身份写入、Gemini 请求超时/批次响应、审核快照查询和对齐器身份写入。
+- `已验证` 全量非 E2E 动态发现并排除 runner 专用 `test_e2e.py`：682 项运行，678 项通过、4 项跳过、0 项失败。3 项符号链接用例因普通 Windows 进程缺少 `WinError 1314` 能力跳过；1 项 FIFO 用例因 Windows 不支持 `os.mkfifo` 跳过。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，235.372 秒，runner 退出码 0。测试日志中的内容拦截和段落数不匹配轨迹来自预期负向 fixture。
+- `.venv\Scripts\python.exe -m py_compile embedding_provider.py rag_engine.py scripts\align_chapters.py tests\test_rag_engine_unit.py tests\test_align_chapters_unit.py tests\test_tm_review.py` 与 `git diff --check`：通过。未调用外网、真实 Provider 或部署服务；未读取项目原文。
+- `未完成` API 池尚未配置 embedding Provider，当前共享适配器仍固定 Gemini；版本化 API 池配置迁移、Provider/端点/model revision 的未来身份扩展、已存 TM 向量重建和真实渠道兼容性仍待实现/验证。旧向量隔离会使依赖它们的 reviewed TM 暂时没有向量命中；这是有意的安全降级，不代表 TM 已重建完成。
+- 回滚边界：新增 TM 字段是附加字段，旧读取代码可忽略；代码回滚不需数据格式迁移，但回滚后会丢失旧向量隔离及请求/身份统一行为。不要为回滚删除或覆盖现有 TM；继续使用时可通过现有 `scripts/align_chapters.py` 显式重建相应映射。
+- 下一步：先设计并验证 API 池 v1 到新版本的原子迁移/凭据回滚契约，再把独立 embedding Provider 配置接入共享适配器；制定旧 TM 显式重建、核验和切换流程。所有合成服务通过后才考虑操作者明确触发的获准端点诊断。试点计划/知识审批、独立终审策略和真实 Provider 试译仍是独立前置条件。
+
+## 2026-11-20 API 池配置阶段验证（R4 前快照）
+
+- 当前验证基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；实现仍是未提交工作树。工作树包含既有来源未归属的修改和未跟踪文件，全部保留；受保护的本地 freshness JSON 未读取或修改，未暂存、提交、重置或清理。
+- `部分实现` API 池向导现按当前调用映射显示三个生成职责：初译用 `INITIAL_MODEL`；上下文标注、校对和知识抽取用 `PROOFREAD_MODEL`；润色用 `STYLE_MODEL`。只为实际分配的主/备用端点索取 Key；激活时清除陈旧池 Key 环境变量。未分配的端点不会保存 Key。知识抽取继续只使用主校对模型。
+- `已实现` 持久化现在先写入随机引用凭据，再原子替换配置文件；凭据写入或配置替换失败时，只删除本次已成功写入的新引用，并尽力删除临时文件。若回收失败，会报错提示检查凭据管理器；旧配置和旧凭据不作为回滚目标。
+- `已验证` `tests.test_api_pool`：11 项通过，新增覆盖凭据写入中断时回收先前新写引用、配置替换失败时保留旧文件/回收新引用/移除暂存文件，以及清理失败时给出人工检查提示；`.venv\Scripts\python.exe -m unittest tests.test_api_pool tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q`：164 项通过。集成还覆盖职责 alias 经 `Config.load_config` 进入流水线校验、未使用端点排除、活动端点 Key、陈旧环境变量清理及授权预检。
+- `已验证` 当前工作树全部非 E2E 测试（动态发现 `tests/test_*.py` 并排除 runner 专用 `test_e2e.py`）：677 项运行，673 项通过、4 项跳过、0 项失败。3 项符号链接测试因普通进程的 Windows `WinError 1314` 能力限制跳过，1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。此计数对应上述未提交工作树，不替代提升权限验证。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，238.966 秒，退出码 0。runner 输出的 `PIPELINE RUN FAILED` 来自预期内容拦截和段落数不匹配负向夹具。没有访问外网、真实 Provider 或项目原文。
+- 修改文件的 `py_compile` 与 `git diff --check` 通过。未启动服务；当前交付仍是 CLI 入口，不存在可供访问的 Web 服务。
+- `未验证` 端点和模型 ID 兼容性、真实计费/延迟/质量、密钥库跨账户迁移、清理本身失败时的孤儿凭据恢复、API 池 embedding 配置、旧向量重建，以及真实试点译文和部署。此段记录的是 R4 实施前快照；RAG/对齐共享适配器及身份隔离的最新状态见[Gemini embedding 与 TM 向量身份](#2026-11-20-gemini-embedding-与-tm-向量身份)。
+- 后续仍需确定版本化配置迁移与凭据回滚契约、embedding Provider 配置、向量身份扩展和旧 TM 显式重建/核验。不可据此绕过仍未完成的计划、知识与发布门禁。
+
 ## 2026-11-19 审核决定并发与人读版身份绑定修复
 
 - `已实现` 审核决定按话目使用跨进程 append lock；链读取、连续修订/父摘要校验和 create-only JSON 发布在锁内完成。决定 JSON 先完整写入临时文件并 fsync，再通过硬链接原子创建；`.append.lock` 不计入链记录。

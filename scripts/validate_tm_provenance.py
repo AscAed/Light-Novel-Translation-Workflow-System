@@ -219,6 +219,14 @@ def _audit_chapter(
                                         "A newer normalized source version exists than the one recorded.",
                                     )
                                 )
+    elif source_manifest is not None:
+        findings.append(
+            _finding(
+                "unverified",
+                chapter,
+                "No source_version_id is recorded for manifest-bound TM provenance.",
+            )
+        )
 
     source_paragraphs = {
         "raw": split_paragraphs(raw_text),

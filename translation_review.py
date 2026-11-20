@@ -14,8 +14,13 @@ from source_editions import read_verified_ai_edition_bytes, verify_ai_edition_in
 from source_manifest import verify_current_normalized_source_metadata
 from translation_review_state import (
     create_review_decision_record,
+    create_review_resolution_record,
     load_review_decision_chain,
+    load_review_resolution_chain,
+    read_review_policy_file,
+    store_review_policy_artifact,
     write_review_decision,
+    write_review_resolution,
 )
 from utils import (
     open_regular_file,
@@ -110,6 +115,9 @@ _REVIEW_CHAIN_FIELDS = frozenset(
         "candidate_sha256",
         "decision_sha256",
     }
+)
+_REVIEW_OVERRIDE_FIELDS = frozenset(
+    {*_REVIEW_CHAIN_FIELDS, "resolution_sha256"}
 )
 
 
@@ -290,7 +298,7 @@ def _run_episode(run: dict, episode_id: str) -> dict:
     return matches[0]
 
 
-def _verify_current_inputs(run: dict, episode: dict) -> bytes:
+def _load_current_ai_index(run: dict):
     source_root = Path(run["source_root"]).resolve(strict=True)
     ai_root = Path(run["ai_root"]).resolve(strict=True)
     index_result = verify_ai_edition_index(
@@ -300,18 +308,26 @@ def _verify_current_inputs(run: dict, episode: dict) -> bytes:
         edition_manifest_relative_path=run["edition_manifest"],
         index_relative_path=run["ai_index"],
     )
-    if index_result["index_sha256"] != run["ai_index_sha256"]:
-        raise ValueError("AI edition index changed after translation.")
     if (
         index_result["index"].get("catalog", {}).get("relative_path")
         != run["catalog"]
     ):
         raise ValueError("Translation run catalog differs from the AI edition.")
+    return source_root, ai_root, index_result
+
+
+def _verify_index_bound_inputs(
+    run: dict,
+    episode: dict,
+    *,
+    source_root: Path,
+    ai_root: Path,
+    index_result: dict,
+) -> bytes:
     book_bundle = run["book_bundle"]
     if book_bundle is not None:
-        source_root_path = Path(run["source_root"]).resolve(strict=True)
         set_path = resolve_relative_path(
-            str(source_root_path),
+            str(source_root),
             book_bundle["bundle_set_relative_path"],
         )
         with open_regular_file(set_path, binary=True) as stream:
@@ -377,12 +393,36 @@ def _verify_current_inputs(run: dict, episode: dict) -> bytes:
         or indexed.get("position") != episode["position"]
     ):
         raise ValueError("Translation run source no longer matches the AI edition.")
-    source_bytes = read_verified_ai_edition_bytes(
+    return read_verified_ai_edition_bytes(
         str(ai_root),
         episode["source_input_file"],
         episode["source_sha256"],
     )
-    return source_bytes
+
+
+def _verify_current_inputs(run: dict, episode: dict) -> bytes:
+    source_root, ai_root, index_result = _load_current_ai_index(run)
+    if index_result["index_sha256"] != run["ai_index_sha256"]:
+        raise ValueError("AI edition index changed after translation.")
+    return _verify_index_bound_inputs(
+        run,
+        episode,
+        source_root=source_root,
+        ai_root=ai_root,
+        index_result=index_result,
+    )
+
+
+def _verify_historical_publication_inputs(run: dict, episode: dict) -> bytes:
+    """Verify an old publication against the current index without requiring it to be frozen."""
+    source_root, ai_root, index_result = _load_current_ai_index(run)
+    return _verify_index_bound_inputs(
+        run,
+        episode,
+        source_root=source_root,
+        ai_root=ai_root,
+        index_result=index_result,
+    )
 
 
 def _load_draft(
@@ -634,9 +674,34 @@ def prepare_translation_review(
     )
     if chain:
         final_decision = chain[-1]
-        if final_decision["transition"]["status"] != "passed":
+        decision_status = final_decision["transition"]["status"]
+        resolution_sha256 = None
+        if decision_status == "needs_human":
+            resolutions = load_review_resolution_chain(
+                run_root,
+                episode_id=episode_id,
+            )
+            human_resolution = next(
+                (
+                    item
+                    for item in reversed(resolutions)
+                    if item["decision_sha256"]
+                    == final_decision["decision_sha256"]
+                ),
+                None,
+            )
+            if human_resolution is None or human_resolution["action"] != "approve_current":
+                raise ValueError(
+                    "A human approval resolution is required for this candidate."
+                )
+            schema_version = 3
+            resolution_sha256 = human_resolution["resolution_sha256"]
+        elif decision_status == "passed":
+            schema_version = 2
+        else:
             raise ValueError(
-                "A review checklist requires a final passed decision candidate."
+                "A review checklist requires a passed decision or explicit "
+                "human approval."
             )
         candidate_bytes = _load_review_candidate(
             run_root,
@@ -646,7 +711,7 @@ def prepare_translation_review(
             final_decision,
         )
         review = {
-            "schema_version": 2,
+            "schema_version": schema_version,
             "run_id": run["run_id"],
             "run_manifest_sha256": _sha256_bytes(run_bytes),
             "plan_sha256": run["plan_sha256"],
@@ -663,6 +728,8 @@ def prepare_translation_review(
             "candidate_sha256": final_decision["candidate_sha256"],
             "decision_sha256": final_decision["decision_sha256"],
         }
+        if schema_version == 3:
+            review["resolution_sha256"] = resolution_sha256
         review_digest = final_decision["candidate_sha256"]
     else:
         candidate_bytes = _load_draft(run_root, run, episode, source_bytes)
@@ -729,6 +796,14 @@ def prepare_translation_review(
                 "candidate_sha256": review_digest,
             }
         )
+    elif review["schema_version"] == 3:
+        report.update(
+            {
+                "candidate_revision": review["candidate_revision"],
+                "candidate_sha256": review_digest,
+                "resolution_sha256": review["resolution_sha256"],
+            }
+        )
     else:
         report["draft_sha256"] = review_digest
     return report
@@ -772,6 +847,7 @@ def _validate_approved_review(
     run: dict,
     run_bytes: bytes,
     episode: dict,
+    input_verifier=_verify_current_inputs,
 ) -> tuple[dict, bytes, bytes]:
     review, review_bytes = _read_json(
         review_path,
@@ -779,6 +855,8 @@ def _validate_approved_review(
         "Translation review",
     )
     schema_version = review.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise ValueError("Translation review schema version is unsupported.")
     if schema_version == 1 and set(review) == _REVIEW_FIELDS:
         chain = load_review_decision_chain(
             run_root,
@@ -805,9 +883,11 @@ def _validate_approved_review(
             "draft_file": f"{run['draft_root']}/{episode['translation_file']}",
             "draft_sha256": episode["draft_sha256"],
         }
-        source_bytes = _verify_current_inputs(run, episode)
+        source_bytes = input_verifier(run, episode)
         candidate_bytes = _load_draft(run_root, run, episode, source_bytes)
-    elif schema_version == 2 and set(review) == _REVIEW_CHAIN_FIELDS:
+    elif schema_version in {2, 3} and set(review) == (
+        _REVIEW_CHAIN_FIELDS if schema_version == 2 else _REVIEW_OVERRIDE_FIELDS
+    ):
         chain = load_review_decision_chain(
             run_root,
             episode_id=episode["episode_id"],
@@ -816,9 +896,37 @@ def _validate_approved_review(
             expected_source_version_id=episode["source_version_id"],
             expected_source_sha256=episode["source_sha256"],
         )
-        if not chain or chain[-1]["transition"]["status"] != "passed":
-            raise ValueError("Translation review has no final passed decision.")
+        if not chain:
+            raise ValueError("Translation review has no decision chain.")
         final_decision = chain[-1]
+        if schema_version == 2:
+            if final_decision["transition"]["status"] != "passed":
+                raise ValueError("Translation review has no final passed decision.")
+        else:
+            if final_decision["transition"]["status"] != "needs_human":
+                raise ValueError(
+                    "Human override review requires a needs_human decision."
+                )
+            resolutions = load_review_resolution_chain(
+                run_root,
+                episode_id=episode["episode_id"],
+            )
+            human_resolution = next(
+                (
+                    item
+                    for item in reversed(resolutions)
+                    if item["decision_sha256"]
+                    == final_decision["decision_sha256"]
+                ),
+                None,
+            )
+            if (
+                human_resolution is None
+                or human_resolution["action"] != "approve_current"
+            ):
+                raise ValueError(
+                    "Human override review has no matching approval resolution."
+                )
         expected = {
             "run_id": run["run_id"],
             "run_manifest_sha256": _sha256_bytes(run_bytes),
@@ -836,7 +944,11 @@ def _validate_approved_review(
             "candidate_sha256": final_decision["candidate_sha256"],
             "decision_sha256": final_decision["decision_sha256"],
         }
-        source_bytes = _verify_current_inputs(run, episode)
+        if schema_version == 3:
+            expected["resolution_sha256"] = human_resolution[
+                "resolution_sha256"
+            ]
+        source_bytes = input_verifier(run, episode)
         candidate_bytes = _load_review_candidate(
             run_root,
             run,
@@ -846,7 +958,7 @@ def _validate_approved_review(
         )
     else:
         raise ValueError("Translation review fields do not match its schema.")
-    if isinstance(schema_version, bool) or schema_version not in {1, 2}:
+    if isinstance(schema_version, bool) or schema_version not in {1, 2, 3}:
         raise ValueError("Translation review schema version is unsupported.")
     if any(review.get(key) != value for key, value in expected.items()):
         raise ValueError("Translation review does not match the current run.")
@@ -879,10 +991,13 @@ def record_translation_review_decision(
     episode_id: str,
     *,
     stage_verdicts,
+    issue_codes_by_stage=None,
+    final_review_gate=None,
     reviewer_id: str,
     reviewed_at_utc: str,
-    policy_sha256: str,
-    max_rework_attempts: int,
+    policy_sha256: str | None = None,
+    review_policy_file: str | Path | None = None,
+    max_rework_attempts: int | None = None,
     candidate_file: str | Path | None = None,
     reviewed_candidate_sha256: str | None = None,
 ) -> dict:
@@ -893,6 +1008,31 @@ def record_translation_review_decision(
     ):
         raise ValueError(
             "A valid reviewed candidate SHA-256 is required to record a decision."
+        )
+    policy_bytes = None
+    if review_policy_file is not None:
+        policy_bytes, file_policy_sha256, _ = read_review_policy_file(
+            review_policy_file
+        )
+        if policy_sha256 is not None:
+            if (
+                not isinstance(policy_sha256, str)
+                or not _SHA256_PATTERN.fullmatch(policy_sha256)
+            ):
+                raise ValueError("A valid policy SHA-256 or review policy file is required.")
+            if not hmac.compare_digest(policy_sha256, file_policy_sha256):
+                raise ValueError("Review policy file does not match policy_sha256.")
+        policy_sha256 = file_policy_sha256
+    if (
+        not isinstance(policy_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(policy_sha256)
+    ):
+        raise ValueError(
+            "A valid policy SHA-256 or review policy file is required."
+        )
+    if final_review_gate is not None and policy_bytes is None:
+        raise ValueError(
+            "AI final-review decisions require the immutable review policy file."
         )
     run_root, run, _ = _load_run(run_directory)
     episode = _run_episode(run, episode_id)
@@ -941,13 +1081,48 @@ def record_translation_review_decision(
     )
     if chain:
         previous = chain[-1]
-        if previous["transition"]["status"] != "rework":
+        previous_status = previous["transition"]["status"]
+        if previous_status == "rework":
+            expected_budget = previous["max_rework_attempts"]
+        elif previous_status == "needs_human":
+            resolutions = load_review_resolution_chain(
+                run_root,
+                episode_id=episode_id,
+            )
+            resolution = next(
+                (
+                    item
+                    for item in reversed(resolutions)
+                    if item["decision_sha256"]
+                    == previous["decision_sha256"]
+                ),
+                None,
+            )
+            if resolution is None or resolution["action"] != "increase_budget":
+                raise ValueError(
+                    "A new review decision requires an explicit budget extension."
+                )
+            expected_budget = resolution["new_max_rework_attempts"]
+        else:
             raise ValueError(
                 "A review decision can continue only after a rework transition."
             )
         if previous["policy_sha256"] != policy_sha256:
             raise ValueError("Review decision policy changed within one chain.")
-        if previous["max_rework_attempts"] != max_rework_attempts:
+        if (
+            any(item["schema_version"] in {3, 4} for item in chain)
+            and policy_bytes is None
+        ):
+            raise ValueError(
+                "A policy-bound decision chain requires its policy file "
+                "for every later decision."
+            )
+        effective_budget = (
+            expected_budget
+            if max_rework_attempts is None
+            else max_rework_attempts
+        )
+        if expected_budget != effective_budget:
             raise ValueError("Review decision retry budget changed within one chain.")
         _load_review_candidate(
             run_root,
@@ -964,6 +1139,7 @@ def record_translation_review_decision(
                 "ReviewCandidates/<episode_id>/."
             )
     else:
+        effective_budget = 2 if max_rework_attempts is None else max_rework_attempts
         candidate_revision = 0
         parent_candidate_sha256 = None
         if candidate_relative_path != (
@@ -997,14 +1173,105 @@ def record_translation_review_decision(
         reviewer_id=reviewer_id,
         reviewed_at_utc=reviewed_at_utc,
         stage_verdicts=stage_verdicts,
-        max_rework_attempts=max_rework_attempts,
+        issue_codes_by_stage=issue_codes_by_stage,
+        final_review_gate=final_review_gate,
+        policy_relative_path=(
+            f"ReviewPolicies/{policy_sha256}.json"
+            if policy_bytes is not None
+            else None
+        ),
+        max_rework_attempts=effective_budget,
     )
+    if policy_bytes is not None:
+        relative_path, stored_policy_sha256, _ = store_review_policy_artifact(
+            run_root,
+            policy_bytes,
+            issue_codes_by_stage=issue_codes_by_stage,
+        )
+        if (
+            stored_policy_sha256 != policy_sha256
+            or relative_path != record["policy_relative_path"]
+        ):
+            raise ValueError("Stored review policy identity changed.")
     report = write_review_decision(run_root, record)
     report.update(
         {
             "episode_id": episode["episode_id"],
             "transition": record["transition"],
             "candidate_sha256": record["candidate_sha256"],
+        }
+    )
+    return report
+
+
+def resolve_translation_review(
+    run_directory: str | Path,
+    episode_id: str,
+    *,
+    action: str,
+    reviewer_id: str,
+    reviewed_at_utc: str,
+    rationale: str,
+    reviewed_decision_sha256: str,
+    new_max_rework_attempts: int | None = None,
+) -> dict:
+    """Record a human resolution for the latest exhausted review candidate."""
+    run_root, run, _ = _load_run(run_directory)
+    episode = _run_episode(run, episode_id)
+    source_bytes = _verify_current_inputs(run, episode)
+    decisions = load_review_decision_chain(
+        run_root,
+        episode_id=episode_id,
+        expected_run_id=run["run_id"],
+        expected_work_id=run["work_id"],
+        expected_source_version_id=episode["source_version_id"],
+        expected_source_sha256=episode["source_sha256"],
+    )
+    if not decisions or decisions[-1]["transition"]["status"] != "needs_human":
+        raise ValueError("Only the latest needs_human decision can be resolved.")
+    final_decision = decisions[-1]
+    if (
+        not isinstance(reviewed_decision_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(reviewed_decision_sha256)
+    ):
+        raise ValueError("A valid reviewed decision SHA-256 is required.")
+    if not hmac.compare_digest(
+        final_decision["decision_sha256"],
+        reviewed_decision_sha256,
+    ):
+        raise ValueError("Latest review decision changed; review it before resolving.")
+    _load_review_candidate(
+        run_root,
+        run,
+        episode,
+        source_bytes,
+        final_decision,
+    )
+    resolutions = load_review_resolution_chain(
+        run_root,
+        episode_id=episode_id,
+    )
+    record = create_review_resolution_record(
+        final_decision,
+        resolution_revision=len(resolutions),
+        action=action,
+        reviewer_id=reviewer_id,
+        reviewed_at_utc=reviewed_at_utc,
+        rationale=rationale,
+        parent_resolution_sha256=(
+            None
+            if not resolutions
+            else resolutions[-1]["resolution_sha256"]
+        ),
+        new_max_rework_attempts=new_max_rework_attempts,
+    )
+    report = write_review_resolution(run_root, record)
+    report.update(
+        {
+            "episode_id": episode["episode_id"],
+            "candidate_sha256": final_decision["candidate_sha256"],
+            "decision_sha256": final_decision["decision_sha256"],
+            "blocking_stages": record["blocking_stages"],
         }
     )
     return report
@@ -1097,6 +1364,8 @@ def _load_verified_publication_candidate(
     run: dict,
     run_bytes: bytes,
     episode: dict,
+    *,
+    input_verifier=_verify_current_inputs,
 ) -> bytes | None:
     published_root = run_root / "Published"
     if not published_root.is_dir() or published_root.is_symlink():
@@ -1138,6 +1407,7 @@ def _load_verified_publication_candidate(
         run=run,
         run_bytes=run_bytes,
         episode=episode,
+        input_verifier=input_verifier,
     )
     expected_receipt = {
         "schema_version": review["schema_version"],
@@ -1151,7 +1421,7 @@ def _load_verified_publication_candidate(
         "source_sha256": episode["source_sha256"],
         "draft_sha256": episode["draft_sha256"],
     }
-    if review["schema_version"] == 2:
+    if review["schema_version"] in {2, 3}:
         expected_receipt.update(
             {
                 "candidate_revision": review["candidate_revision"],
@@ -1160,6 +1430,10 @@ def _load_verified_publication_candidate(
                 "decision_sha256": review["decision_sha256"],
             }
         )
+        if review["schema_version"] == 3:
+            expected_receipt["resolution_sha256"] = review[
+                "resolution_sha256"
+            ]
     if (
         set(receipt)
         != set(expected_receipt) | {"review_sha256", "published_at_utc"}
@@ -1197,12 +1471,15 @@ def _episode_has_valid_publication(
     run: dict,
     run_bytes: bytes,
     episode: dict,
+    *,
+    input_verifier=_verify_current_inputs,
 ) -> bool:
     candidate_bytes = _load_verified_publication_candidate(
         run_root,
         run,
         run_bytes,
         episode,
+        input_verifier=input_verifier,
     )
     if candidate_bytes is None:
         return False
@@ -1278,6 +1555,7 @@ def has_verified_translation_publication(
                 run,
                 run_bytes,
                 episode,
+                input_verifier=_verify_historical_publication_inputs,
             ):
                 return True
         except (OSError, UnicodeError, ValueError, TypeError, KeyError):
@@ -1386,7 +1664,7 @@ def publish_reviewed_translation(
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
-    if review["schema_version"] == 2:
+    if review["schema_version"] in {2, 3}:
         receipt.update(
             {
                 "candidate_revision": review["candidate_revision"],
@@ -1395,6 +1673,8 @@ def publish_reviewed_translation(
                 "decision_sha256": review["decision_sha256"],
             }
         )
+        if review["schema_version"] == 3:
+            receipt["resolution_sha256"] = review["resolution_sha256"]
     receipt_name = f"{episode['episode_id']}.json"
     serialized_receipt = _canonical_json(receipt)
     stable_receipt_fields = {

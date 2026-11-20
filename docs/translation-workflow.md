@@ -1,6 +1,6 @@
 # 翻译流程与 Agent 职责
 
-> 2026-11-18 用户目标：翻译前必须通读 AI 大合集并建立经审核的全书与局部知识；每话最终译文必须通过独立终审及有限返工后才发布。当前流程尚不具备完整门禁；正式项目路径已有严重/无效阶段结果失败关闭和不含正文的阶段哈希轨迹，但独立终审、三阶段独立报告、语义评分和返工版本链仍未实现。目标契约见[全书到单话翻译目标方案](end-to-end-workflow-target.md)。
+> 目标仍是翻译前核对 AI 大合集并建立经审核的全书与局部知识，逐话独立终审后才发布。2026-11-20 起提供显式单话 AI 工作流 CLI：绑定策略/候选摘要，执行双次终审、有限定向返工、复审和通过后发布；失败及人工暂停均不发布。该闭环只经合成验证，语义质量/客观收益阈值、真实 Provider 与试点验收仍未完成。目标契约见[全书到单话翻译目标方案](end-to-end-workflow-target.md)。
 
 > `计划` “信、达、雅”各自的翻译和审核职责、逐级通过、返工及正式发布的依赖和验收见[知识库与翻译闭环实施计划](end-to-end-workflow-target.md#知识库与翻译闭环实施计划)。当前初译、校对和润色的顺序不等于上述逐级语义门禁已实现。
 
@@ -26,6 +26,42 @@
 `STRICT_REFLECTION_MODE` 默认关闭；启用时，反思重译还会接收 `translation_text`，其类别为三类全集，正式项目路径在现有反思预算耗尽后仍报告 `severe` 时阻断。代码中的当前两次重试上限是既有实现细节，不是已确认的终审返工策略。正式项目门禁不自动打开反思重译，避免未显式配置时增加模型请求和外发数据类别。为同一 Provider 复用多个阶段时，预检要求该 Provider 覆盖它实际负责阶段的类别并集；启用 Gemini 回退时，对 Gemini 按相同阶段类别预检。`PROVIDER_DATA_POLICY` 仍默认拒绝未获准的远端数据。
 
 当前流程不是多 Agent 服务集群；各阶段在同一 Python 进程中顺序调用模型接口。
+
+## AI 终审与发布
+
+`scripts/review_translation_candidate.py` 对显式指定 run/话目/策略文件执行一次终审。初审绑定已验证 `Drafts/` 草稿；续审必须使用 run 内 `ReviewCandidates/<episode_id>/` 候选。终审器把完整原文、候选和策略 code 定义发送给 `FINAL_REVIEW_MODEL`，每个请求最多 64,000 合并字符且拒绝截断；不发送 book knowledge。模型输出仅接受严格 JSON，finding 只保留策略 code 与原文/译文段落索引。
+
+通过需要两次评估对 fidelity、fluency、style 全部判 pass，优化潜力均为 `none` 或 `low`，且现有八项发布检查在两次评估中全部为 pass。每次结构化评估通过校验后会以原子 create-only sidecar 保存到 `AIReviews/<episode_id>/`；sidecar 绑定 run/source/candidate/policy/reviewer route 和评估序号，仅保存规范化 verdict、登记 code、段落索引和检查项，不包含原文、译文或模型自由文本。重试先校验并复用已有 sidecar，只请求尚缺的评估。此处“none/low”只是用户收敛方向的定性代理，评估结果不证明译文正确或 reviewer 语义独立。通过时程序生成绑定决策、候选路径/哈希和 run 的审核快照，再调用现有 create-only 发布器；该发布器继续复核来源、候选和检查回执。`rework`、`needs_human` 均不会发布。
+
+单次 `scripts/review_translation_candidate.py` 只执行一轮双次评估；闭环入口 `scripts/run_ai_translation_workflow.py` 会在 `rework` 时调用 `PROOFREAD_MODEL` 生成下一候选，再用同策略复审，直到通过或转人工。返工输入是完整 source/candidate 中不超过 64,000 个合并字符，以及阻断 findings、对应策略定义和段落索引；不发送 book knowledge。生成模型仅可返回严格 JSON 中列明的目标段落译文，程序只替换这些段落，保留其余文字和段落分隔，并复核 UTF-8 字节上限、段落对齐和日文引号契约。数据类别为 `source_text`、`translation_text`。终审路由与 `PROOFREAD_MODEL` 必须使用不同的规范化端点和模型身份。
+
+每个返工版本写入 `ReviewCandidates/<episode_id>/revision-NNNN.md`，配套 `AIReworks/<episode_id>/revision-NNNN.json` 只存候选、父决定、审核报告、策略、findings 和路由的摘要/身份，不存正文或模型自由文本。两者均 create-only；重跑可校验并复用已存在候选，不能将没有生成记录的候选伪装成 AI 生成。Provider 返回后、候选落盘前发生进程中断时，重试可能再次调用并计费；响应过长、schema 错误或目标段落不完整则失败关闭，不写候选。
+
+返工预算默认两次，可在初审 CLI 用 `--max-rework-attempts` 设置；续跑读取决策链预算，明确传入的值不匹配时拒绝。预算耗尽后，先用 `scripts/resolve_translation_review.py --action increase_budget --reviewed-decision-sha256 <当前审阅的 decision_sha256>` 追加人工预算回执，再续接工作流。人工回执命令必须绑定操作者实际审阅的最新决定摘要；若决定已变化，需重新审阅后再提交。成功回执 JSON 的 `new_max_rework_attempts` 是获准的新预算。增加预算后续跑时省略 `--max-rework-attempts` 以采用链上预算，或传入该回执中的新值；不能沿用旧值。`approve_current` 同样要求当前审阅的 `decision_sha256`，且不触发 AI 发布；它只允许创建绑定当前候选的人工 checklist，仍需八项检查全部通过后由既有发布器写入。两次终审评估使用相同 reviewer route，不等同于身份认证或独立性证明。
+
+同一话目的终审、返工和完整工作流通过 run 内 `AIWorkflowLocks/<sha256(episode_id)>.lock` 异步文件锁串行化；并发重复调用会在锁内重新读取决策链并恢复已存评估/报告/候选，避免同时发起相同模型工作。进程退出会释放系统锁；Provider 已返回但对应评估 sidecar 尚未原子落盘时中断，重试仍可能重复该次调用并计费。该锁不代替 decision append lock 或人工审批。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\review_translation_candidate.py `
+  --project <项目目录名> `
+  --run-directory <Workflow\Runs\run_id> `
+  --episode-id <话目ID> `
+  --review-policy-file <review-policy.json> `
+  --max-rework-attempts 2
+```
+
+显式启动或续接自动返工循环（重跑同一命令会从 run 内决策和候选恢复）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_ai_translation_workflow.py `
+  --project <项目目录名> `
+  --run-directory <Workflow\Runs\run_id> `
+  --episode-id <话目ID> `
+  --review-policy-file <review-policy.json> `
+  --max-rework-attempts 2
+```
+
+CLI 在任何模型请求前静态校验 `FINAL_REVIEW_MODEL` 和返工 Provider 配置、角色路由区分及本次所需授权；该检查不连接服务。显式运行前仍需核对凭据、接收方数据政策和输入可外发。本阶段验证使用注入的合成生成器/assessor，未调用真实 Provider，也未对试点数据或译文做人工质量验收。
 
 未提供显式 `CHAPTER_MAP` 时，普通目录扫描与 `scripts/align_chapters.py` 只枚举配置目录第一层 Markdown，不递归扫描；项目名翻译模式必须有 `SourceArchive/`、`RAWs_AI/` 并通过 AI 清洗索引核验，再生成版本绑定映射，不扫描人读版目录。缺少 AI 版时明确失败；如确需旧目录，必须通过显式 `--config` 指定。项目名模式还要求 `Knowledge/STORY_SUMMARY_reviewed.json` 通过审核、覆盖完整 AI 章节映射并匹配所有文件/来源版本；缺少或过期时在读取其他知识前失败。旧 Markdown 概要兼容仅适用于显式 JSON 配置。`workflow_paths.json` 可分别设置已存在的译文 `output_dir` 和可选人读版 `human_edition_root`，两者不得重叠原文根；未设置人读根时默认为项目 `生肉/`。空章节扫描会明确失败；对齐器在全部译文缺失时也会非零退出且不保存 TM。本书采集版本归档在 `projects/祝福のネトラレラ/SourceArchive/`，翻译输入 AI 版在 `projects/祝福のネトラレラ/RAWs_AI/`，人读版在 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉`，译文根在同书外部目录 `...\熟肉`。人读版按 `<章节名>/<话名.md>` 组织；仓库通用默认 `projects/祝福のネトラレラ/生肉`、`熟肉` 不是本书实际位置。路径证据见[项目现状](project-status.md#未知与待验证)及[开发与验证](development.md#2026-11-17-raws-ai-作为默认翻译输入)。`projects/祝福のネトラレラ/EPUB/` 中的文件库存不代表章节映射或正文格式已验收。普通 Kakuyomu 项目仍需人工审阅章节名称/位置、来源版本、输出路径和 TM 键后再创建审批回执并真实调用。
 
@@ -118,7 +154,7 @@ python scripts/approve_translation_plan.py `
 - Kakuyomu 正式编排先导出并复核完整 raw/AI/human book bundle。full-book 知识 CLI 在 `--full-book` 模式要求当前 catalog、checkpoint、bundle-set、匹配 AI bundle、human root、tokenizer 和预算参数；授权预检通过后才读取 bundle 正文。`KNOWLEDGE_PROVENANCE_draft.json` 保存来源章节及 bundle-set/AI bundle 身份。该能力有合成数据验证，本轮没有对真实书籍调用 Provider。
 - 单话抽取使用同一 catalog/checkpoint/bundle-set/AI bundle/human root 与 tokenizer 预算参数，将 `--full-book` 换成互斥的 `--chapter-position <N>`。在输出的 `ChapterDrafts` 子目录分别创建概要/术语待审回执；补全人工决定后，使用 `scripts/apply_story_summary_review.py --knowledge-root <单话目录> --source-root <SourceArchive> --manifest source_editions_manifest.json --review <概要回执> --output STORY_SUMMARY_reviewed.json` 发布概要。若审核了术语，同样用 `scripts/apply_knowledge_review.py` 发布 `Glossary_reviewed.json`。两个发布器均拒绝覆盖；单话概要是正式 Kakuyomu 翻译的必需项，局部术语表为可选项。
 - 摘要审核必须声明 full-book coverage，并绑定与本次 workflow 相同的 bundle-set 与 AI bundle 哈希。`TranslationPipeline` 项目模式核对 `Config.EXPECTED_BOOK_BUNDLE`，同时要求完整版本映射；直接运行 `pipeline.py --project` 没有活动 run 状态时会被拒绝。
-- 完成翻译后，章节草稿、`run.json`、`StageReports/` 和状态为 `review_pending` 的 `run_state.json` 位于 `Workflow/Runs/<run_id>/`；清单绑定计划、AI index、book bundle、每话来源及草稿 SHA-256。可用 `scripts/record_translation_review_decision.py` 为每话追加内容无关的三阶段决定：初版绑定 `Drafts/<translation_file>`；返工版本须保存到 `ReviewCandidates/<episode_id>/`，并通过 `--candidate-file` 指定。调用方还必须传入审阅时记录的 `--reviewed-candidate-sha256 <sha256>`，程序会在写入决定前重新读取候选并拒绝摘要不一致的内容。策略摘要和最大返工次数须明确提供，没有默认值；同一话目的决定链在跨进程锁内加载、校验并以完整 JSON 原子创建，避免并发追加形成分叉或暴露半写文件。决策链链尾通过后，`scripts/prepare_translation_review.py --run-directory <run-dir>` 创建绑定最终候选版本、路径和哈希的 schema v2 checklist；链尾未通过不能生成可发布 checklist，也不能绕过决策链改走旧 checklist。无决策链的旧 run 仍使用 schema v1 checklist。审核者填写 reviewer 声明、UTC 时间、独立性声明、八项检查、issues 和结论；`scripts/publish_reviewed_translation.py --run-directory <run-dir> --episode-id <episode-id> --review <review.json>` 仅接受全部检查通过、没有 issues 且输入哈希仍有效的结果，并通过 create-or-compare 原子写入发布译文，允许相同字节的并发重试但拒绝不同字节。发布回执和快照绑定审核及候选摘要；run 状态核验也会复查实际译文字节。
+- 完成翻译后，章节草稿、`run.json`、`StageReports/` 和状态为 `review_pending` 的 `run_state.json` 位于 `Workflow/Runs/<run_id>/`；清单绑定计划、AI index、book bundle、每话来源及草稿 SHA-256。可用 `scripts/record_translation_review_decision.py` 为每话追加内容无关的三阶段决定：初版绑定 `Drafts/<translation_file>`；返工版本须保存到 `ReviewCandidates/<episode_id>/`，并通过 `--candidate-file` 指定。调用方还必须传入审阅时记录的 `--reviewed-candidate-sha256 <sha256>`，程序会在写入决定前重新读取候选并拒绝摘要不一致的内容。策略摘要须明确提供；新决策链最大返工次数默认为 2，可通过 `--max-rework-attempts` 配置。决策链在话目锁内加载、校验并以完整 JSON 原子创建。通过后，`scripts/prepare_translation_review.py --run-directory <run-dir>` 创建绑定最终候选版本、路径和哈希的 schema v2 checklist；链尾未通过不能生成普通可发布 checklist，也不能绕过决策链改走旧 checklist。若链尾因耗尽等原因进入 `needs_human`，操作者应先审阅最新决定，再使用 `scripts/resolve_translation_review.py --run-directory <run-dir> --episode-id <episode-id> --action approve_current --reviewed-decision-sha256 <当前审阅的 decision_sha256> --reviewer <标签> --reviewed-at-utc <UTC时间> --rationale <理由>` 明确接受当前候选；该 create-only 人工回执单独绑定失败决定、候选和失败阶段，不改写原 verdict。若决定摘要已变化，命令拒绝仲裁，必须先重新审阅最新候选。随后只解锁绑定此回执的 schema v3 checklist。人工 checklist 仍须独立性声明、八项检查全部通过且无 issues；最终由 `scripts/publish_reviewed_translation.py --run-directory <run-dir> --episode-id <episode-id> --review <review.json>` 校验输入并 create-only 发布。若选择继续返工，使用 `--action increase_budget --new-max-rework-attempts <更大次数>` 并提供当前审阅的 `--reviewed-decision-sha256` 扩展预算，再将下一版放入 `ReviewCandidates/<episode_id>/` 并重新记录审核；预算只能增加，旧候选/决定均保留。无决策链的旧 run 仍使用 schema v1 checklist。发布回执和快照绑定审核及候选摘要；run 状态核验也会复查实际译文字节。仲裁 reviewer 身份未认证；当前三类 verdict 过粗，不会将一次放行扩散为其他话目的同类失败豁免。
 - 若需要按整次 run 处理已完成的审核，可使用 `.venv\Scripts\python.exe scripts\publish_reviewed_run.py --run-directory <run-dir>`。该入口按话目顺序逐项调用同一发布门禁，缺少审核文件或单话失败时保留已完成成果并返回可安全重试的摘要；不会把部分发布报告成整次 run 完成。
 - checklist 与决定记录中的 reviewer 身份未签名认证；本地哈希只能绑定数据，不能证明审核者身份、审核质量或策略真实执行。发现不匹配的既有审核快照/回执、候选变动或无效 run 状态时，发布器会停止并保留现场。决策链使用调用方显式提供的阶段判定，不自带语义阈值；生产 Provider/model、返工上限和冲突/耗尽后的人工责任仍待确认。正式门禁为`部分实现`。成功发布按单话进行，不提供整卷多文件事务。
 - 未启用正式审核的兼容 pipeline 会拒绝写入项目默认 `熟肉/` 与 `workflow_paths.json` 指定的正式输出根；其他显式 JSON 输出路径无法自动判定用途，仍属于未经审核的兼容输出，不能作为正式发布。显式 `--source-edition normalized_source` 仍可用于计划预览；正式执行会返回 `reviewed_publication_requires_ai_edition`，不调用翻译模型。当前没有部署清单或 Web 应用，本实现是本地 CLI 工作流。

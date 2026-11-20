@@ -394,6 +394,12 @@ catalog 快照比较可本地执行，无站点请求：
 - 文件缺失、旧式格式、损坏或来源过期时，在 RAG 初始化/翻译请求前失败关闭；不会自动退回 `Glossary.json`。显式 JSON 配置由调用者负责，兼容路径未改变。
 - 定向合成回归 194 项通过；当前试点没有 `Glossary_reviewed.json`，默认项目翻译会保持阻断，直到从当前来源候选完成人工审核并发布新 bundle。该门禁不验证审核者身份或术语语义。
 
+### I4 manifest-bound TM lineage 2026-11-20
+
+- `scripts/validate_tm_provenance.py` 在配置来源 manifest 时，不再把缺少 `source_version_id` 的 TM provenance 仅凭匹配字节报告为 `verified`，而是标为 `unverified`；未配置 manifest 的旧式 hash-only 兼容审计不变。AI edition map 不匹配仍由既有映射校验报告。
+- `scripts/snapshot_downstream_freshness.py` 将该状态写入新的 manifest/input-bound append-only snapshot；TM 与译文不变。新增 direct audit 和 snapshot 测试，相关模块 36 项、Kakuyomu workflow/page ingestion/source ingestion 集成 93 项、完整非 E2E 760 项及本地 mock E2E 7 项均通过；命令见[开发与验证](development.md#2026-11-20-i4-manifest-bound-tm-lineage)。
+- 仍未实现消费者文件 stale 标记回写或下游自动重建；其他运行时入口依赖各自动态来源校验。该增量不等于 I4 整体完成，也不改变人工批准/真实 Provider 前置条件。
+
 ## 维护规则
 
 - 逐平台、逐目的保留官方资料来源、访问日期、结论、许可边界和复核人；规则变化时重新审查。
