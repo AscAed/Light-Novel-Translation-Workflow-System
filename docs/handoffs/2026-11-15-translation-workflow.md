@@ -715,3 +715,10 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 验证：新增两项定向用例 2/2 通过（2.926 秒）；`.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state -q`：106 项通过（33.855 秒）；动态发现全部非 E2E：758 项运行、754 项通过、4 项因 Windows symlink/FIFO 能力跳过（82.547 秒）；`.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过（216.520 秒，退出码 0）；`.venv\Scripts\python.exe -m py_compile ai_translation_review.py tests\test_translation_review.py` 及 `git diff --check` 通过。活动 Markdown 本地目标复核在本记录追加后执行。合成测试未调用真实 Provider；E2E 负向 fixture 的 content filter 和段落错配日志为预期结果。
 - 剩余风险：Provider 已返回、对应 sidecar 尚未原子落盘时仍可能重复该次调用并计费；本地代码无法代替 Provider 幂等键消除该窗口。测试覆盖指定用户态进程终止点，不证明内核崩溃或断电持久性。
 - 回滚与续接：不迁移数据库，不改候选、报告、决定、译文或 TM；若回滚代码，保留新建的 `AIReviews/<episode_id>/assessment-*.json` 证据。K4 本地合成恢复路径已通过；整体工作流仍停在 K5 人工前置：有权限的人审 88 话映射和双版本并创建计划回执，审核 reviewed 全书知识；随后由凭据所有者核验 Provider 授权/路由/预算并执行获准的一话试译及人工质量验收。项目是本地 CLI，无 Web 服务部署步骤。
+
+## 2026-11-21 K5、CI 与 PR 检查点
+
+- 提交本记录前核验的 PR 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `227cc4658f9067d41d35c1b5ffc3bd5ea5bea79a`。PR #71 当时为 `OPEN`；Ubuntu 与 Windows Python 3.14 检查均通过。GitHub `reviewDecision` 为空，自动审查评论不构成正式审批，因此未合并。
+- 用户报告的人类版与 AI 版部分单话及大合集抽样结果已记入[开发记录](../development.md#2026-11-21-用户报告的原文抽样核实)和[项目现状](../project-status.md)。这是局部抽样报告；实际检查日期、样本清单和标准未知，Codex 未独立读取书籍正文，不提升为 88 话验收。
+- K5 仍待有权限的人类完成 88 话映射、AI 版/人读版审核和匹配计划审批，审核当前 bundle 绑定的全书知识；其后由凭据所有者核验 Provider endpoint/model/tokenizer/预算，并按授权执行单话试译及质量验收。没有真实 Provider 或部署验收证据。
+- 工作区检查仅见受保护的未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未读取、暂存或修改。后续变更须继续避免纳入该文件，并以当前 checkout 重新验证，不沿用本交接中的旧测试计数。
