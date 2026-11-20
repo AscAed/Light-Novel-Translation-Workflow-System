@@ -8,7 +8,13 @@
 - `scripts/run_unit_tests.py` 按文件名稳定排序并运行 `tests/test_*.py` 中除 runner 专用 `test_e2e.py` 外的模块。`tests/run_tests.py` 单独启动 loopback mock server 并运行 E2E，不连接真实 Provider。
 - CI 安装未锁版本的 `requirements.txt`，所以它检查当前可解析依赖集合，不保证历史环境可复现。CI 通过也不证明真实 API、翻译语义质量、试点人审或部署验收。
 - 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言；run `44811940468`（head `99c3f8b`）Ubuntu job 通过，Windows 定位到临时路径包含断言；run `44812666313`（head `aa0dadb`）Ubuntu job 通过，Windows 单测中的 `test_workflow_retry_allows_verified_completed_episode` 仍因 `RAWs_AI` 短/长路径别名断言失败。run `44813333408`（head `e77d0b2`）Ubuntu job 与 Windows 单测通过，Windows E2E 随后因 `config_file` 的 `runneradmin`/`RUNNER~1` 等价路径直接字符串比较而失败。提交 `36881d8` 将该断言改为比较 `Path.resolve()` 后的路径；run `44815736864` 对 Ubuntu/Windows Python 3.14 均通过依赖检查、非 E2E 单测和 loopback mock E2E，矩阵全绿。
-- `已验证` 当前本地 Windows/Python 3.14.7 工作树非 E2E 785 项运行、780 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过（210.027 秒，退出码 0）。最新两个修正路径模块 161 项通过，最后调整的单项 workflow 回归通过。`.venv\Scripts\python.exe -m pip check`、相关 `py_compile`、workflow YAML 解析和 `git diff --check` 通过。提交 `36881d8` 的 hosted run `44815736864` 在 Ubuntu/Windows Python 3.14 均通过依赖检查、非 E2E 单测和 loopback mock E2E；这不验证其他 Python/OS、真实 Provider、试点质量或部署。
+- `已验证` 代码回归最新完整本地 Windows/Python 3.14.7 非 E2E runner 为 786 项运行、781 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过。提交 `878adb2` 的 hosted run `44823305483` 与文档提交 `f8ac161` 的 run `44824283137` 均在 Ubuntu/Windows Python 3.14 通过依赖检查、非 E2E 单测和 loopback mock E2E；后者 CodeRabbit 为 `SKIPPED`，不计作通过。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
+
+## 2026-11-21 当前工作树安全路径复核
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，代码提交 `f8ac16163ac4260f16db668f6660b273f1d564d0`；本次文档变更不影响测试代码。工作区仍保留未跟踪的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未读取、暂存或修改。
+- `已验证` 普通权限运行 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过、0 失败。3 项符号链接测试因 Windows `WinError 1314` 无创建权限跳过；1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。此前管理员 PowerShell 对同一代码用例的复跑结果见下方依赖复验记录，3 项符号链接用例均已实际执行并通过。
+- `用户报告` 用户提供的 `-q` 输出为 9 项运行、3 项跳过且无失败；该输出未包含 SHA 或逐项跳过原因，因此独立保留，不与当前 checkout 的 11 项结果合并。
 
 ## 2026-11-21 依赖与漏洞公告复查
 
@@ -38,7 +44,7 @@
 - `已验证` 定向命令 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_translation_plan_approval -q`：181 项通过；新增覆盖映射发布目标拦截、sibling draft 放行、孤立 TM 可续跑、知识预检不信任孤立 TM、失败后恢复报告幂等及 JSON create-only 写入中断。
 - `已验证` 全部非 E2E 测试 776 项运行、772 项通过、4 项 Windows 能力跳过、0 失败（158.895 秒）；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（402.149 秒，runner 退出码 0）；`py_compile` 与 `git diff --check` 通过。E2E 输出中的 content-filter 与段落对齐异常来自预期负向 fixture。mock 未连接真实 Provider。
 - `部分实现` 新 run 重译时，如果共享 TM 键存在而本 run 没有对应输出，成功事务会替换该键；没有版本化 TM 历史/多写入者协调。工作区中已有上一 run Drafts 的不变文件不受影响；孤立旧 TM 词对若无其他副本可能被新候选覆盖，正式发布仍以审核 TM 快照为检索来源。
-- `未验证` 真实 Provider/API profile、语义质量、K5 88 话映射及双版本人工审批、reviewed 全书知识、真实试译和部署仍未完成；本地 CLI 仓库仍无 CI、锁文件或部署清单。当前没有由本地测试证明的已知失败，但以上人工、外部服务和部署门禁不因此关闭。
+- `未验证` 真实 Provider/API profile、语义质量、K5 88 话映射及双版本人工审批、reviewed 全书知识、真实试译和部署仍未完成；依赖仍未锁定，也没有 UI、容器或云部署清单。当前 hosted CI 状态见本文首节。本轮没有由本地测试证明的已知失败，但以上人工、外部服务和部署门禁不因此关闭。
 
 ## 2026-11-21 PR #71 AI bundle 话目覆盖回归
 
@@ -57,7 +63,7 @@
 - `已验证` 在现有 16 MiB 以上 bundle 测试中增加批次调用次数断言：两次 episode 输入只进行一次整书校验；批尾变更 bundle 后，第二次完整校验拒绝该快照。原单项测试通过；`tests.test_translation_review`、`tests.test_translation_review_state`、`tests.test_kakuyomu_workflow`、`tests.test_pipeline_contracts` 共 271 项通过；完整非 E2E 动态回归 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 7 项通过（367.555 秒，runner 退出码 0）。`py_compile` 和 `git diff --check` 通过。mock/合成测试未连接真实 Provider。
 - `已复核` 当前代码已使用 bundle 聚合大小上限，而非 16 MiB run manifest 上限；对应 `test_review_input_accepts_bundle_larger_than_run_manifest_limit` 覆盖超限场景。当前 Kakuyomu 与通用项目映射使用相同 `source-edition:` TM key；tokenizer loader 调用 `no_truncation()`；正式 Kakuyomu run 强制启用 reviewed glossary；已发布章节会从待执行章节映射中排除。以上为当前代码路径复核，不是本轮各自的独立新修复。
 - `部分实现` 尚无真实 88 话 bundle 批量发布的耗时/IO 基准。批次级复用只覆盖 bundle-set 与整书 AI bundle 内容哈希，不减少逐话来源核验，也不提供目录句柄级并发替换保护；单话操作仍会按原路径重复校验。
-- `未验证` 真实 Provider、试点译文质量、K5 88 话映射/双版本审阅及计划回执、reviewed 全书知识、实际部署仍未完成；本仓库仍是本地 CLI，无 CI/依赖锁/部署清单。此增量不关闭这些门禁。
+- `未验证` 真实 Provider、试点译文质量、K5 88 话映射/双版本审阅及计划回执、reviewed 全书知识、实际部署仍未完成；本仓库仍是本地 CLI，依赖未锁定且没有部署清单。当前 CI 状态见本文首节。此增量不关闭这些门禁。
 
 ## 2026-11-20 依赖更新后复验
 
@@ -77,7 +83,7 @@
 - `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；`compileall` 覆盖 `pipeline.py`、`rag_engine.py`、`utils.py`、来源模块、`scripts/` 和 `tests/`；README、AGENTS.md 与 `docs/` 下 16 份 Markdown 的本地链接目标均存在；`git diff --check` 通过。该次检查确认五项 `requirements.txt` 依赖均有代码或测试调用点，且当时未发现足以支持删除依赖的证据；依赖未锁定，也未做在线漏洞公告扫描。依赖版本后续状态见本文顶部“依赖更新后复验”。
 - `已实现` 完整 mock E2E 首次运行发现既有 Kakuyomu 正式流程 fixture 仍把草稿词表当正式输入，触发新增 reviewed glossary 门禁并失败。保持门禁不变，将该测试改为指向 reviewed 文件，并构造只含合成术语、绑定当前 fixture source identity 的审核 bundle。
 - `已验证` 修正后的端到端单项 `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation` 通过（1 项，6.653 秒）；完整 `.venv\Scripts\python.exe tests\run_tests.py` 通过（7 项，384.596 秒，runner 退出码 0）。runner 输出中的 content-filter 和段落数量错配堆栈来自预期负向 fixture；没有真实 Provider 请求。mock E2E 不代表真实 Provider、模型质量或部署验收。
-- `未验证` 仓库仍没有 CI 工作流、依赖锁文件、容器或部署清单；应用交付形态是本地 CLI。真实 Provider 连通性、API profile/凭据、语义质量、全书 88 话人工映射/双版本审核与正式部署仍未验证。完整测试不会替代 K5 人工审批和凭据所有者的单话试译验收。
+- `未验证` 截至本次 2026-11-20 验证快照，仓库尚无 CI 工作流、依赖锁文件、容器或部署清单；应用交付形态是本地 CLI。CI 后续状态见本文首节。真实 Provider 连通性、API profile/凭据、语义质量、全书 88 话人工映射/双版本审核与正式部署仍未验证。完整测试不会替代 K5 人工审批和凭据所有者的单话试译验收。
 
 ## 2026-11-20 K4 AI workflow CLI contract
 

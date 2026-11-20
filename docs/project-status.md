@@ -4,8 +4,8 @@
 
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
-- `已验证` 本地 Windows/Python 3.14.7 最新工作树非 E2E 785 项运行、780 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过，`pip check`、YAML 语法和相关模块编译通过。
-- `已验证` hosted run `44815736864`（commit `36881d8`）的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E。之前的 Windows 短/长临时路径断言失败已在该提交修复并由矩阵验证。
+- `已验证` 最新完整本地非 E2E 回归 786 项运行、781 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过。安全路径模块的普通权限复跑细节见[开发与验证](development.md#2026-11-21-当前工作树安全路径复核)。
+- `已验证` hosted run `44824283137` 对提交 `f8ac16163ac4260f16db668f6660b273f1d564d0` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。此前的 Windows 短/长临时路径断言修复由早期矩阵验证，历史过程见[开发与验证](development.md#持续集成)。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
 
@@ -23,7 +23,7 @@
 - `已实现` 非正式 pipeline 校验章节映射目标，阻止绕过审核写入正式发布目录；正式 Kakuyomu 新 run 忽略没有本次 Drafts 输出对应的孤立 TM 键，让新逐章事务提交译文及候选记忆；失败后恢复会把 `recovered` 结果补入阶段报告；create-only JSON 写入先完整落盘再原子发布。
 - `已验证` 新增及扩展六项回归覆盖目标路径、孤立 TM、知识预检、阶段恢复记录幂等和原子 JSON 写入。定向 181 项通过；全量非 E2E 776 项运行、772 项通过、4 项 Windows 能力跳过；loopback mock E2E 7 项通过、402.149 秒、退出码 0。没有连接真实 Provider。
 - `部分实现` `Knowledge/translation_memory.json` 仍是共享可写候选存储。新事务成功时可能替换没有当前 Drafts 输出对应的旧词对；TM 无版本历史且未实现多写入者协调。已审核快照仍是正式默认检索来源。
-- `未验证` 试点 88 话映射/双版本验收、匹配计划回执、reviewed 全书知识、真实 Provider/译文质量和部署仍未完成；本地 CLI 无 CI、锁文件或部署清单。实施和审查项归类见[开发与验证](development.md#2026-11-21-pr-71-安全与恢复缺陷修复)。
+- `未验证` 试点 88 话映射/双版本验收、匹配计划回执、reviewed 全书知识、真实 Provider/译文质量和部署仍未完成；依赖仍未锁定，也没有 UI、容器或云部署清单。当前 hosted CI 基线见本页首节。实施和审查项归类见[开发与验证](development.md#2026-11-21-pr-71-安全与恢复缺陷修复)。
 
 ## 2026-11-21 PR #71 批量发布 bundle 校验优化
 
@@ -35,7 +35,7 @@
 
 - `已实现` 对终审决定链与人工仲裁增加摘要绑定、追加前链校验和并发快照一致性保护；对 AI 返工在锁内读取改用内部无锁 helper，避免文件锁重入。历史发布复用按话目来源身份校验，不要求旧发布绑定当前整本索引摘要。正式 Kakuyomu run 强制要求 reviewed glossary；配置了 API 池回退时预检不要求不可达的 Gemini 路由。
 - `已验证` 依赖更新后完整非 E2E 回归 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败；普通权限安全路径模块 11 项运行、7 项通过、4 项跳过（3 项符号链接缺少权限、1 项 FIFO 不受 Windows 支持），管理员权限重跑 11 项运行、10 项通过、仅 FIFO 跳过且 3 项符号链接均通过；完整本机 mock E2E 7 项通过（368.550 秒，退出码 0）。`.venv` 的 `pip check` 无冲突，`pip-audit` 未报告已知漏洞；`compileall`、Markdown 本地链接目标及 `git diff --check` 通过。初次 E2E 暴露 reviewed glossary fixture 缺失，补齐合成审核 bundle 后复跑通过。详细环境差异见[开发与验证](development.md)。
-- `未验证` 真实 Provider、译文语义质量、K5 全书人工映射/双版本审核和部署；当前是本地 CLI，没有 CI、依赖锁或部署清单。完整边界及测试命令见[开发与验证](development.md#2026-11-20-pr-71-审查跟进与完整回归)。
+- `未验证` 真实 Provider、译文语义质量、K5 全书人工映射/双版本审核和部署；截至本记录日期（2026-11-20），仓库尚无 CI。2026-11-21 已增加并验证 Ubuntu/Windows Python 3.14 hosted CI；依赖仍未锁定，也没有 UI、容器或云部署清单。完整边界及测试命令见[开发与验证](development.md#2026-11-20-pr-71-审查跟进与完整回归)。
 
 ## 2026-11-20 K4 AI 工作流 CLI 验证
 

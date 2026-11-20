@@ -2,7 +2,7 @@
 
 2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射校验历史来源、审核快照/回执与译文字节；AI edition index 不可信时将下游译文状态传播为 `stale`/`unverified`，并由最终状态重算 consumer 摘要。项目采集在无当前映射但检测到已有 run/译文时写聚合 `current_mapping_unavailable` finding；空输出根不生成噪声状态。完整非 E2E 784 项（780 通过、4 项 Windows 能力跳过）；loopback mock E2E 7 项通过（229.117 秒）。该能力不回写译文/TM/知识、不自动重译。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
 
-2026-11-21 CI 基线增量：新增 GitHub Actions workflow，在 Ubuntu/Windows Python 3.14 上安装当前 requirements、执行依赖一致性检查、完整非 E2E 单测及 loopback mock E2E。GitHub 首次运行尚待确认；这只补自动回归与双平台兼容性信号，不等于依赖锁定、真实 Provider 质量或部署验收。实现见[开发与验证](development.md#持续集成)，阶段 5 的用户交互/部署决策仍独立。
+2026-11-21 CI 基线增量：新增 GitHub Actions workflow，在 Ubuntu/Windows Python 3.14 上安装当前 requirements、执行依赖一致性检查、完整非 E2E 单测及 loopback mock E2E。已验证 hosted run `44824283137` 对提交 `f8ac16163ac4260f16db668f6660b273f1d564d0` 的两个平台 job 均通过；该结果不等于依赖锁定、真实 Provider 质量或部署验收。实现见[开发与验证](development.md#持续集成)，阶段 5 的用户交互/部署决策仍独立。
 
 2026-11-21 批量审核/发布校验优化：完整 AI book bundle 改为批次入口验证并在 run 状态协调前复核，保留单话发布的完整校验和逐话来源验证；16 MiB 以上合成 bundle 回归覆盖复核次数及批内改写拒绝。历史非 E2E 772 项（768 通过、4 项 Windows 能力跳过）、loopback mock E2E 7 项通过。未做真实 88 话性能基准；不改变翻译阶段或 K5 人工验收状态。详情见[开发记录](development.md#2026-11-21-pr-71-批量发布-bundle-校验优化)。
 
@@ -191,7 +191,7 @@
 - 交付物：经人类决策批准的产品/部署方案和运行手册。
 - 验证命令：当前仓库没有部署/启动命令；选定平台后将其实际健康检查和启动命令写入运行手册，并运行 `python tests/run_tests.py` 做本地回归。
 - 验收：在明确环境完成备份、恢复、权限、日志脱敏和端到端用户验收。
-- 当前状态：仓库未提供 UI、容器或云部署清单；CI 已有 Ubuntu/Windows Python 3.14 测试矩阵，但当前修正版本的 hosted 结果待验证。不预选应用框架或部署服务，不把该阶段描述为当前可直接实施。
+- 当前状态：仓库未提供 UI、容器或云部署清单；hosted CI 已验证 Ubuntu/Windows Python 3.14 测试矩阵。不预选应用框架或部署服务，不把该阶段描述为当前可直接实施。
 
 ## 状态记录格式
 
