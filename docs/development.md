@@ -42,12 +42,13 @@
 
 ## 2026-11-21 PR #71 AI bundle 话目覆盖回归
 
-- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `1d7ad9dfbae740fb8fa79b05c4e52d32432c0f92`。保留既有测试工作区改动；未读取、暂存或修改受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，也未读取书籍正文、API profile 或凭据。
+- 基线：分支 `codex/translation-workflow-audit-20261117`、起始 HEAD `1d7ad9dfbae740fb8fa79b05c4e52d32432c0f92`；本次提交 `878adb20fa68cdadc162b3a497f2760f2722eb06`。保留既有工作区文件；未读取、暂存或修改受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，也未读取书籍正文、API profile 或凭据。
 - `已验证` 新增 `tests.test_book_bundles.BookBundleTests.test_ai_bundle_loader_rejects_duplicate_or_missing_catalog_episodes`：分别构造缺失话目和重复话目场景，并同步更新 bundle-set 内 AI bundle 摘要，确保 loader 因话目集合不匹配而拒绝，而不是仅因外层摘要失配失败。
 - `已验证` `.venv\Scripts\python.exe -m unittest tests.test_book_bundles -q`：13 项通过；来源 edition、知识 provenance、知识抽取及概要审查模块合计 101 项通过；翻译审核状态、发布及 Kakuyomu 工作流模块合计 133 项运行、132 项通过、1 项因普通 Windows 会话无法创建符号链接而跳过。按用户授权提权单独复跑该用例，1 项通过。
-- `已验证` 当前完整非 E2E runner 共 786 项运行、781 项通过、5 项跳过、0 失败；其中 4 项符号链接用例在普通权限下不可创建，1 项 FIFO 用例不受 Windows 支持。将 4 项符号链接用例分别置于管理员会话复跑后均通过，故权限相关覆盖已验证，FIFO 是唯一平台跳过。基线 HEAD `1d7ad9d` 的 Ubuntu/Windows Python 3.14 hosted CI 已通过，但尚不包含本次新测试。
-- `部分实现` PR #71 当前活动 review findings 已在代码/既有测试中复核；本次直接补齐 bundle episode 集合语义的回归断言。新增测试经推送并由新 head CI 通过后，才可将相应远端 review thread 标记为 resolved。
-- `未验证` 本次回归使用合成 fixture，不连接真实 Provider、不运行试点正文，也不验证语义翻译质量或部署。新提交的 hosted CI 尚待完成。
+- `已验证` 当前完整非 E2E runner 共 786 项运行、781 项通过、5 项跳过、0 失败；其中 4 项符号链接用例在普通权限下不可创建，1 项 FIFO 用例不受 Windows 支持。将 4 项符号链接用例分别置于管理员会话复跑后均通过，故权限相关覆盖已验证，FIFO 是唯一平台跳过。
+- `已验证` hosted run `44823305483` 对提交 `878adb2` 的 Ubuntu/Windows Python 3.14 依赖检查、非 E2E 测试和 loopback mock E2E 均通过。CodeRabbit 检查为 `SKIPPED`，不计作通过。
+- `已验证` PR #71 的 11 条活动 review thread 已在当前实现和回归覆盖复核后全部标记 resolved；PR 仍为 `OPEN`、`mergeable`，`reviewDecision` 为空，没有提交正式 `APPROVED` review，也未合并。
+- `未验证` 本次回归使用合成 fixture，不连接真实 Provider、不运行试点正文，也不验证语义翻译质量或部署。K5 人工映射/双版本验收、知识审核、凭据所有者授权下的真实单话试译与质量验收仍未完成。
 
 ## 2026-11-21 PR #71 批量发布 bundle 校验优化
 
