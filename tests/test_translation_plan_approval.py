@@ -62,6 +62,20 @@ class TranslationPlanApprovalTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_new_json_write_failure_does_not_publish_partial_target(self):
+        with patch(
+            "utils.os.link",
+            side_effect=OSError("synthetic publication failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "publication failure"):
+                write_new_json(self.plan_path, self.plan)
+
+        self.assertFalse(self.plan_path.exists())
+        self.assertEqual(
+            list(self.root.glob(".translation-plan.json.*.tmp")),
+            [],
+        )
+
     def test_cli_requires_exact_digest_and_creates_new_receipt(self):
         write_new_json(self.plan_path, self.plan)
         output = io.StringIO()

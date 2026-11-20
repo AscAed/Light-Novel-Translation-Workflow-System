@@ -299,13 +299,26 @@ def _resolve_project_output_override(workspace_dir: str) -> Optional[str]:
 
 
 def _reject_unreviewed_project_publication(
-    workspace_dir: str, output_dir: str
+    workspace_dir: str,
+    output_dir: str,
+    chapter_map: Optional[list] = None,
 ) -> None:
-    """Keep compatibility runs away from a project's formal output root."""
+    """Keep compatibility runs away from project publication targets."""
     if not isinstance(output_dir, str) or not output_dir:
         return
 
     output_path = Path(output_dir).resolve(strict=False)
+    target_paths = [output_path]
+    if isinstance(chapter_map, list):
+        for item in chapter_map:
+            if isinstance(item, dict) and isinstance(
+                item.get("translation_file"), str
+            ):
+                target_paths.append(
+                    (Path(output_dir) / item["translation_file"]).resolve(
+                        strict=False
+                    )
+                )
     publication_roots = []
     if workspace_dir and Path(workspace_dir).is_dir():
         workspace_path = Path(workspace_dir).resolve(strict=True)
@@ -321,21 +334,21 @@ def _reject_unreviewed_project_publication(
         if part == "熟肉":
             publication_roots.append(Path(*output_parts[: index + 1]))
 
-    output_key = os.path.normcase(str(output_path))
+    target_keys = [os.path.normcase(str(path)) for path in target_paths]
     for root in publication_roots:
         root_path = root.resolve(strict=False)
-        try:
-            common = os.path.commonpath(
-                (output_key, os.path.normcase(str(root_path)))
-            )
-        except ValueError:
-            continue
-        if common == os.path.normcase(str(root_path)):
-            raise ValueError(
-                "Unreviewed translation cannot write to a project publication "
-                "directory; use scripts/run_kakuyomu_workflow.py to create "
-                "reviewable drafts."
-            )
+        root_key = os.path.normcase(str(root_path))
+        for target_key in target_keys:
+            try:
+                common = os.path.commonpath((target_key, root_key))
+            except ValueError:
+                continue
+            if common == root_key:
+                raise ValueError(
+                    "Unreviewed translation cannot write to a project publication "
+                    "directory; use scripts/run_kakuyomu_workflow.py to create "
+                    "reviewable drafts."
+                )
 
 
 def _reject_duplicate_json_fields(pairs):
@@ -1738,6 +1751,7 @@ class TranslationPipeline:
             _reject_unreviewed_project_publication(
                 Config.WORKSPACE_DIR,
                 Config.OUTPUT_DIR,
+                Config.CHAPTER_MAP,
             )
         reject_knowledge_draft_path(Config.GLOSSARY_PATH, "glossary input")
         reject_knowledge_draft_path(
@@ -1936,38 +1950,10 @@ class TranslationPipeline:
         report_path = self._stage_report_path(spec)
         if report_path is None:
             return
-        existing_attempts = []
-        if report_path.exists():
-            if report_path.is_symlink():
-                raise ValueError("Stage report cannot be a symbolic link.")
-            if report_path.stat().st_size > 4 * 1024 * 1024:
-                raise ValueError("Stage report exceeds the supported size limit.")
-            with open_regular_file(report_path) as stream:
-                previous = json.load(stream)
-            expected_episode = {
-                "raw_file": spec.raw_file,
-                "translation_file": spec.translation_file,
-                "tm_key": spec.tm_key,
-                "position": spec.chapter_position,
-                "source_version_id": spec.source_version_id,
-                "source_input_file": spec.source_input_file,
-                "source_sha256": spec.source_sha256,
-            }
-            if (
-                not isinstance(previous, dict)
-                or previous.get("schema_version") != 1
-                or previous.get("run_id") != Config.TRANSLATION_RUN_ID
-                or previous.get("episode") != expected_episode
-                or not isinstance(previous.get("attempts"), list)
-                or any(
-                    not isinstance(item, dict)
-                    for item in previous["attempts"]
-                )
-            ):
-                raise ValueError(
-                    "Existing stage report does not match this run and episode."
-                )
-            existing_attempts = previous["attempts"]
+        existing_attempts = self._load_stage_report_attempts(
+            spec,
+            report_path,
+        )
         attempt = {
             "attempt": len(existing_attempts) + 1,
             "status": status,
@@ -2001,13 +1987,57 @@ class TranslationPipeline:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         )
 
+    def _load_stage_report_attempts(
+        self,
+        spec: ChapterSpec,
+        report_path: Path,
+    ) -> list[dict]:
+        if not report_path.exists():
+            return []
+        if report_path.is_symlink():
+            raise ValueError("Stage report cannot be a symbolic link.")
+        if report_path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("Stage report exceeds the supported size limit.")
+        with open_regular_file(report_path) as stream:
+            previous = json.load(stream)
+        expected_episode = {
+            "raw_file": spec.raw_file,
+            "translation_file": spec.translation_file,
+            "tm_key": spec.tm_key,
+            "position": spec.chapter_position,
+            "source_version_id": spec.source_version_id,
+            "source_input_file": spec.source_input_file,
+            "source_sha256": spec.source_sha256,
+        }
+        if (
+            not isinstance(previous, dict)
+            or previous.get("schema_version") != 1
+            or previous.get("run_id") != Config.TRANSLATION_RUN_ID
+            or previous.get("episode") != expected_episode
+            or not isinstance(previous.get("attempts"), list)
+            or any(
+                not isinstance(item, dict)
+                for item in previous["attempts"]
+            )
+        ):
+            raise ValueError(
+                "Existing stage report does not match this run and episode."
+            )
+        return previous["attempts"]
+
     def _ensure_recovered_stage_report(
         self, spec: ChapterSpec, *, reason: str
     ) -> None:
         if not Config.REQUIRE_REVIEWED_PUBLICATION:
             return
         report_path = self._stage_report_path(spec)
-        if report_path is None or report_path.exists():
+        if report_path is None:
+            return
+        attempts = self._load_stage_report_attempts(spec, report_path)
+        if any(
+            item.get("status") in {"completed", "recovered"}
+            for item in attempts
+        ):
             return
         self._stage_trace = {}
         self._write_stage_report(
@@ -2794,11 +2824,7 @@ class TranslationPipeline:
                 return
 
         if spec.source_version_id is not None:
-            tm_chapters = self.rag.tm_data.get("chapters", {})
-            has_tm_entry = (
-                isinstance(tm_chapters, dict) and spec.tm_key in tm_chapters
-            )
-            if output_path.exists() or has_tm_entry:
+            if output_path.exists():
                 if is_chapter_translation_committed(
                     Config.OUTPUT_DIR,
                     raw_text,
@@ -2821,8 +2847,8 @@ class TranslationPipeline:
                     print(f">>> Skipping verified {spec.translation_file}")
                     return
                 raise FileExistsError(
-                    "Existing translation output or memory does not match "
-                    "the current source version; preserving it for review."
+                    "Existing translation output does not match the current "
+                    "source version; preserving it for review."
                 )
 
         if output_path.exists():
@@ -3142,10 +3168,6 @@ class TranslationPipeline:
         print("\nPipeline complete!")
 
     def _preflight_reviewed_chapter_knowledge(self, chapters) -> None:
-        tm_chapters = self.rag.tm_data.get("chapters", {})
-        if not isinstance(tm_chapters, dict):
-            tm_chapters = {}
-
         for chapter in chapters:
             if not isinstance(chapter, ChapterSpec):
                 raise ValueError(
@@ -3170,7 +3192,7 @@ class TranslationPipeline:
                     allow_missing=True,
                 )
 
-            if output_path.exists() or chapter.tm_key in tm_chapters:
+            if output_path.exists():
                 continue
 
             raw_text = _read_chapter_source_text(chapter, mapped_paths)

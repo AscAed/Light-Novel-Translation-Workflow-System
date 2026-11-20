@@ -1237,7 +1237,6 @@ def run_workflow(
             reviewed_tm_translation_root=str(translation_path)
         )
         tm_data = pipeline.rag.tm_data
-        tm_chapters = tm_data.get("chapters", {})
         completed_publication_ids = set()
         for target, chapter in zip(targets, chapter_map):
             publication_path = resolve_relative_path(
@@ -1293,7 +1292,7 @@ def run_workflow(
                 ai_edition_root=selected_ai_edition_root,
             )
             if (
-                (output_path.exists() or target["tm_key"] in tm_chapters)
+                output_path.exists()
                 and not pending
                 and not committed
             ):

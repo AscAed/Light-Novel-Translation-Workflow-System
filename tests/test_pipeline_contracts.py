@@ -32,6 +32,7 @@ from pipeline import (
     validate_translation_rework_provider_configuration,
     validate_provider_base_url,
     _read_chapter_source_text,
+    _reject_unreviewed_project_publication,
     _resolve_project_content_dir,
     _resolve_project_human_edition_root,
 )
@@ -1743,6 +1744,39 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             ):
                 TranslationPipeline()
 
+    def test_unreviewed_pipeline_checks_mapped_publication_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            chapter_map = [
+                {
+                    "raw_file": "raw/episode.md",
+                    "translation_file": "熟肉/episode.md",
+                    "tm_key": "episode-1",
+                }
+            ]
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "cannot write to a project publication directory",
+            ):
+                _reject_unreviewed_project_publication(
+                    str(workspace),
+                    str(workspace),
+                    chapter_map,
+                )
+
+            _reject_unreviewed_project_publication(
+                str(workspace),
+                str(workspace),
+                [
+                    {
+                        "raw_file": "raw/episode.md",
+                        "translation_file": "Workflow/Drafts/episode.md",
+                        "tm_key": "episode-1",
+                    }
+                ],
+            )
+
     def test_explicit_json_pipeline_requires_compatibility_draft_mode(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "project"
@@ -2762,6 +2796,54 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
 
             pipeline._load_reviewed_chapter_knowledge.assert_not_called()
 
+    def test_chapter_knowledge_preflight_does_not_trust_orphaned_tm_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            output_root = root / "Drafts"
+            (ai_root / "episodes").mkdir(parents=True)
+            output_root.mkdir()
+            source_text = "synthetic AI source"
+            (ai_root / "episodes" / "episode.md").write_text(
+                source_text,
+                encoding="utf-8",
+            )
+            source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            chapter = ChapterSpec(
+                raw_file="normalized/episode.md",
+                translation_file="episode.md",
+                tm_key="source-edition:synthetic-work:episode-1",
+                source_version_id="source-version-1",
+                chapter_position=1,
+                source_input_file="episodes/episode.md",
+                source_sha256=source_hash,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={
+                    "chapters": {
+                        chapter.tm_key: [
+                            {
+                                "raw": "previous source",
+                                "translated": "previous draft",
+                            }
+                        ]
+                    }
+                }
+            )
+            pipeline._load_reviewed_chapter_knowledge = Mock()
+
+            with (
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(output_root)),
+            ):
+                pipeline._preflight_reviewed_chapter_knowledge([chapter])
+
+            pipeline._load_reviewed_chapter_knowledge.assert_called_once_with(
+                chapter.raw_file,
+                1,
+            )
+
     def test_chapter_knowledge_loader_binds_current_map_and_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2896,7 +2978,16 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             )
             pipeline = TranslationPipeline.__new__(TranslationPipeline)
             pipeline.rag = SimpleNamespace(
-                tm_data={"chapters": {}},
+                tm_data={
+                    "chapters": {
+                        "Volume2/chapter10.md": [
+                            {
+                                "raw": "previous source",
+                                "translated": "previous draft",
+                            }
+                        ]
+                    }
+                },
                 update_translation_memory=Mock(),
             )
             pipeline._build_run_context = AsyncMock(
@@ -3073,6 +3164,70 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 "verified_output_missing_stage_report",
             )
             self.assertEqual(report["attempts"][0]["stages"], {})
+
+    def test_formal_stage_report_appends_recovery_after_failed_commit_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Workflow" / "Runs" / ("a" * 32) / "Drafts"
+            output_dir.mkdir(parents=True)
+            spec = ChapterSpec(
+                "episode.md",
+                "episode.md",
+                "source-edition:synthetic:episode-1",
+                "source-v1",
+                1,
+                "episode.md",
+                "b" * 64,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline._stage_trace = {}
+
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "TRANSLATION_RUN_ID", "a" * 32),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                pipeline._write_stage_report(
+                    spec,
+                    status="failed",
+                    failure_stage="commit",
+                    error_type="OSError",
+                )
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="committed_output_recovered",
+                )
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="should_not_duplicate",
+                )
+
+            report_path = (
+                root
+                / "Workflow"
+                / "Runs"
+                / ("a" * 32)
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["status"] for item in report["attempts"]],
+                ["failed", "recovered"],
+            )
+            self.assertEqual(
+                report["attempts"][-1]["recovery_reason"],
+                "committed_output_recovered",
+            )
 
     def test_formal_stage_report_preserves_malformed_existing_report(self):
         with tempfile.TemporaryDirectory() as temp_dir:

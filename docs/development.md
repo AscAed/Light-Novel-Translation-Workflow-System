@@ -2,6 +2,18 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-21 PR #71 安全与恢复缺陷修复
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，起始 HEAD `80eb1be033cc2dbed81975c48f5a5c03832df401`。保留既有未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未读取或改动试点原文、译文、bundle、API profile、凭据或 freshness 快照。
+- `已实现` `pipeline.py` 的非正式兼容模式现在同时检查 `OUTPUT_DIR` 和 `CHAPTER_MAP` 中每个映射译文目标，拒绝将文件写进项目 `熟肉/` 或显式配置的正式发布目录；工作区根下的 sibling drafts 仍允许。路径按现有映射处理时的实际解析位置比较。
+- `已实现` 正式 run 不再把共享 TM 中的孤立 `tm_key` 视为当前 run 已有译文。仅当本 run 的 Drafts 目标文件存在但其来源/TM 不匹配时继续 fail-closed；只有 TM 旧键且当前输出缺失时允许重新翻译，由既有逐章事务在成功提交时替换该键。章节知识预检也不会因孤立 TM 项而跳过 reviewed chapter knowledge。该行为保留其他 run 目录中的草稿，但未独立归档没有对应输出文件的旧 TM 词对。
+- `已实现` `pipeline.py` 在事务恢复后遇到既有失败阶段报告时，验证 run/episode 身份并追加一次 `recovered` 尝试；既有成功或恢复记录不重复追加，失败尝试保留。`translation_plan_approval.py::write_new_json` 改用同目录临时文件完整写入、flush/fsync 后 create-only 链接发布，写入异常不暴露半截目标文件。
+- `已复核` PR #71 其余活动线程所指代码当前已有相应保护：规范化来源过期异常被单独归为 `stale`；source/edition manifest 相同路径在导出前拒绝；续跑时已核验发布章节从执行 map 排除；checkpoint 路径与摘要参与 bundle snapshot 身份；loader 要求 bundle episode 集合与当前已验证索引一致；显式 schema-v3 catalog 的 work metadata 会传入归档。上述为本地实现复核，不是本轮新增修复。
+- `已验证` 定向命令 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_translation_plan_approval -q`：181 项通过；新增覆盖映射发布目标拦截、sibling draft 放行、孤立 TM 可续跑、知识预检不信任孤立 TM、失败后恢复报告幂等及 JSON create-only 写入中断。
+- `已验证` 全部非 E2E 测试 776 项运行、772 项通过、4 项 Windows 能力跳过、0 失败（158.895 秒）；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（402.149 秒，runner 退出码 0）；`py_compile` 与 `git diff --check` 通过。E2E 输出中的 content-filter 与段落对齐异常来自预期负向 fixture。mock 未连接真实 Provider。
+- `部分实现` 新 run 重译时，如果共享 TM 键存在而本 run 没有对应输出，成功事务会替换该键；没有版本化 TM 历史/多写入者协调。工作区中已有上一 run Drafts 的不变文件不受影响；孤立旧 TM 词对若无其他副本可能被新候选覆盖，正式发布仍以审核 TM 快照为检索来源。
+- `未验证` 真实 Provider/API profile、语义质量、K5 88 话映射及双版本人工审批、reviewed 全书知识、真实试译和部署仍未完成；本地 CLI 仓库仍无 CI、锁文件或部署清单。当前没有由本地测试证明的已知失败，但以上人工、外部服务和部署门禁不因此关闭。
+
 ## 2026-11-21 PR #71 批量发布 bundle 校验优化
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`，起始提交 `86ea78a5d5888e04ef470187cb15d0f38ee951cd`。保留既有未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未读取/改写试点小说正文、人读/AI合集、API profile、凭据或 freshness 快照。

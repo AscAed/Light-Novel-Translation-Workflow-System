@@ -853,7 +853,16 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             }
             plan["plan_sha256"] = translation_plan_sha256(plan)
             pipeline = Mock()
-            pipeline.rag.tm_data = {}
+            pipeline.rag.tm_data = {
+                "chapters": {
+                    "source-edition:987654321:123456790": [
+                        {
+                            "raw": "previous source",
+                            "translated": "previous draft",
+                        }
+                    ]
+                }
+            }
             scheduled_chapter_maps = []
 
             async def capture_scheduled_chapters():

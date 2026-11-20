@@ -10,7 +10,7 @@ from pathlib import Path
 from utils import (
     open_regular_file,
     resolve_relative_path,
-    write_new_child_text,
+    write_new_child_bytes_atomically,
 )
 from source_ingestion import source_artifact_id
 from source_editions import verify_ai_edition_index
@@ -743,5 +743,7 @@ def verify_approval_receipt(path: str | Path, plan: dict) -> dict:
 
 def write_new_json(path: str | Path, value: dict) -> None:
     target = Path(path)
-    content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-    write_new_child_text(str(target.parent), target.name, content)
+    content = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    write_new_child_bytes_atomically(str(target.parent), target.name, content)
