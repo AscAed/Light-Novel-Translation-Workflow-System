@@ -16,6 +16,13 @@
 - `已验证` 普通权限运行 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过、0 失败。3 项符号链接测试因 Windows `WinError 1314` 无创建权限跳过；1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。此前管理员 PowerShell 对同一代码用例的复跑结果见下方依赖复验记录，3 项符号链接用例均已实际执行并通过。
 - `用户报告` 用户提供的 `-q` 输出为 9 项运行、3 项跳过且无失败；该输出未包含 SHA 或逐项跳过原因，因此独立保留，不与当前 checkout 的 11 项结果合并。
 
+## 2026-11-21 K4 发布回执进程中断恢复
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，生产代码基线 `efa352ea5eaa2381de76500afec50f181dfdd02f`；新增内容仅为合成恢复测试，没有修改发布器实现。
+- `已验证` 新增 `TranslationReviewTests.test_publish_recovers_after_process_termination_before_receipt`：子进程完成正式译文与审核快照写入后、创建回执前停在认证检查点；父进程核验检查点、译文/快照字节及回执缺失后终止子进程。重试创建缺失回执并更新 run 状态；第二次重开不重写已有对象且所有持久字节稳定。
+- `已验证` 新测试单项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py` 完整非 E2E 回归 787 项运行、782 项通过、5 项 Windows 能力跳过、0 失败。跳过为 4 项符号链接创建限制及 1 项 Windows FIFO 不支持。
+- `未验证` 此合成测试验证指定用户态进程终止窗口，不证明内核崩溃、断电、文件系统或介质持久性；未调用真实 Provider，未运行真实作品试点。
+
 ## 2026-11-21 依赖与漏洞公告复查
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `bf4bbb6a65497387d5f63394ecf499244e0276ed`；Python 3.14.7，忽略的 `.venv`。未改动依赖清单或环境。

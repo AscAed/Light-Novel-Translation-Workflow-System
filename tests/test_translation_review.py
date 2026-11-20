@@ -211,6 +211,46 @@ def _review_until_run_state_checkpoint(
         )
 
 
+def _publish_until_receipt_checkpoint(
+    run_root,
+    episode_id,
+    review_path,
+    marker_path,
+    ready,
+):
+    published_root = Path(run_root) / "Published"
+    original_create = translation_review._create_new_bytes_atomically
+
+    def checkpoint_before_receipt(root, relative_path, content):
+        if (
+            Path(root).resolve() == published_root.resolve()
+            and relative_path == f"{episode_id}.json"
+        ):
+            _write_durable_checkpoint_marker(
+                Path(marker_path),
+                {
+                    "checkpoint": "before_publication_receipt",
+                    "episode_id": episode_id,
+                    "pid": os.getpid(),
+                },
+            )
+            ready.set()
+            threading.Event().wait(timeout=30)
+            os._exit(_CHECKPOINT_TIMEOUT_EXIT_CODE)
+        return original_create(root, relative_path, content)
+
+    with patch.object(
+        translation_review,
+        "_create_new_bytes_atomically",
+        side_effect=checkpoint_before_receipt,
+    ):
+        translation_review.publish_reviewed_translation(
+            run_root,
+            episode_id,
+            review_path,
+        )
+
+
 def _review_until_second_assessment_checkpoint(
     run_root,
     episode_id,
@@ -3525,6 +3565,111 @@ class TranslationReviewTests(unittest.TestCase):
                 / f"{self.episode_id}.json"
             ).read_bytes(),
             review_path.read_bytes(),
+        )
+
+    def test_publish_recovers_after_process_termination_before_receipt(self):
+        review_path = self._approved_review()
+        marker_path = self.root / "receipt-crash-checkpoint.json"
+        context = multiprocessing.get_context("spawn")
+        ready = context.Event()
+        process = context.Process(
+            target=_publish_until_receipt_checkpoint,
+            args=(
+                str(self.run_root),
+                self.episode_id,
+                str(review_path),
+                str(marker_path),
+                ready,
+            ),
+        )
+        process.start()
+
+        published_path = self.translation_root / "episode-0001.md"
+        published_root = self.run_root / "Published"
+        snapshot_path = (
+            published_root
+            / "ReviewSnapshots"
+            / f"{self.episode_id}.json"
+        )
+        receipt_path = published_root / f"{self.episode_id}.json"
+        state_path = self.run_root / "run_state.json"
+
+        try:
+            self.assertTrue(ready.wait(timeout=30))
+            self.assertEqual(
+                json.loads(marker_path.read_text(encoding="utf-8")),
+                {
+                    "checkpoint": "before_publication_receipt",
+                    "episode_id": self.episode_id,
+                    "pid": process.pid,
+                },
+            )
+            self.assertTrue(process.is_alive())
+            self.assertEqual(published_path.read_bytes(), self.draft_bytes)
+            self.assertEqual(snapshot_path.read_bytes(), review_path.read_bytes())
+            self.assertFalse(receipt_path.exists())
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8"))["status"],
+                "running",
+            )
+            durable_bytes = {
+                path: path.read_bytes()
+                for path in (published_path, snapshot_path, state_path)
+            }
+
+            process.terminate()
+            process.join(timeout=10)
+            self.assertFalse(process.is_alive())
+            _assert_checkpoint_worker_was_terminated(self, process)
+            for path, expected_bytes in durable_bytes.items():
+                self.assertEqual(path.read_bytes(), expected_bytes)
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=10)
+
+        recovered = publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+
+        self.assertEqual(recovered["status"], "published")
+        self.assertFalse(recovered["created"])
+        self.assertFalse(recovered["review_snapshot_created"])
+        self.assertTrue(recovered["receipt_created"])
+        self.assertEqual(recovered["run_status"], "published")
+        self.assertEqual(published_path.read_bytes(), self.draft_bytes)
+        self.assertEqual(snapshot_path.read_bytes(), review_path.read_bytes())
+        self.assertEqual(
+            json.loads(state_path.read_text(encoding="utf-8"))["status"],
+            "published",
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "published")
+        self.assertEqual(
+            receipt["draft_sha256"],
+            hashlib.sha256(self.draft_bytes).hexdigest(),
+        )
+
+        recovered_bytes = {
+            path: path.read_bytes()
+            for path in (published_path, snapshot_path, receipt_path, state_path)
+        }
+        reopened = publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+        self.assertFalse(reopened["created"])
+        self.assertFalse(reopened["review_snapshot_created"])
+        self.assertFalse(reopened["receipt_created"])
+        self.assertEqual(
+            {
+                path: path.read_bytes()
+                for path in (published_path, snapshot_path, receipt_path, state_path)
+            },
+            recovered_bytes,
         )
 
     def test_tampered_review_snapshot_blocks_republication(self):
