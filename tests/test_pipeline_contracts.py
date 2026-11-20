@@ -3847,6 +3847,83 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 report["attempts"][0]["failure_stage"], "proofreading"
             )
 
+    async def test_formal_project_polisher_gate_does_not_commit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            run_id = "d" * 32
+            output_dir = root / "Workflow" / "Runs" / run_id / "Drafts"
+            raw_dir.mkdir()
+            (raw_dir / "chapter.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["initial translation"]
+            )
+            pipeline._get_agent_instruction = Mock(return_value="")
+            proofreader = Mock()
+            proofreader.call = AsyncMock(
+                return_value={
+                    "severity": "minor",
+                    "critique": "",
+                    "corrected_text": ["proofread translation"],
+                }
+            )
+            polisher = Mock()
+            polisher.call = AsyncMock(
+                side_effect=ResponseContractError("synthetic malformed response")
+            )
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "STRICT_REFLECTION_MODE", False),
+                patch.object(Config, "TRANSLATION_RUN_ID", run_id),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+                patch("pipeline.UnifiedAgent", side_effect=[proofreader, polisher]),
+            ):
+                with self.assertRaisesRegex(
+                    TranslationQualityGateError, "polisher response"
+                ) as raised:
+                    await pipeline.run_chapter(
+                        ChapterSpec(
+                            "chapter.md",
+                            "chapter.md",
+                            "chapter.md",
+                            chapter_position=7,
+                        )
+                    )
+
+            self.assertEqual(raised.exception.chapter_position, 7)
+            self.assertFalse((output_dir / "chapter.md").exists())
+            pipeline.rag.update_translation_memory.assert_not_called()
+            report_path = (
+                output_dir.parent
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(b"chapter.md").hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["attempts"][0]["status"], "failed")
+            self.assertEqual(
+                report["attempts"][0]["failure_stage"], "polishing"
+            )
+
     async def test_run_chapter_refuses_source_changed_during_processing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             raw_dir = Path(temp_dir) / "raw"

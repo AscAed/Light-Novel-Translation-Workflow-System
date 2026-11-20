@@ -8,7 +8,15 @@
 - `scripts/run_unit_tests.py` 按文件名稳定排序并运行 `tests/test_*.py` 中除 runner 专用 `test_e2e.py` 外的模块。`tests/run_tests.py` 单独启动 loopback mock server 并运行 E2E，不连接真实 Provider。
 - CI 安装未锁版本的 `requirements.txt`，所以它检查当前可解析依赖集合，不保证历史环境可复现。CI 通过也不证明真实 API、翻译语义质量、试点人审或部署验收。
 - 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言；run `44811940468`（head `99c3f8b`）Ubuntu job 通过，Windows 定位到临时路径包含断言；run `44812666313`（head `aa0dadb`）Ubuntu job 通过，Windows 单测中的 `test_workflow_retry_allows_verified_completed_episode` 仍因 `RAWs_AI` 短/长路径别名断言失败。run `44813333408`（head `e77d0b2`）Ubuntu job 与 Windows 单测通过，Windows E2E 随后因 `config_file` 的 `runneradmin`/`RUNNER~1` 等价路径直接字符串比较而失败。提交 `36881d8` 将该断言改为比较 `Path.resolve()` 后的路径；run `44815736864` 对 Ubuntu/Windows Python 3.14 均通过依赖检查、非 E2E 单测和 loopback mock E2E，矩阵全绿。
-- `已验证` 代码回归最新完整本地 Windows/Python 3.14.7 非 E2E runner 为 786 项运行、781 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过。提交 `878adb2` 的 hosted run `44823305483` 与文档提交 `f8ac161` 的 run `44824283137` 均在 Ubuntu/Windows Python 3.14 通过依赖检查、非 E2E 单测和 loopback mock E2E；后者 CodeRabbit 为 `SKIPPED`，不计作通过。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
+- `已验证` 最近一次提交级 hosted run `44829982702` 验证当时 HEAD `fbade24`：Ubuntu/Windows Python 3.14 的依赖检查、非 E2E 单测和 loopback mock E2E 均通过；CodeRabbit 为 `SKIPPED`，不计作通过。本地最新 Windows/Python 3.14.7 回归及本次新增 K3 门禁用例见下方记录。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
+
+## 2026-11-21 K3 正式润色失败事务门禁
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，起始 HEAD `fbade24ec4627a1ac63411c0bcd6dfe160d35c26`。仅新增测试和更新文档，没有修改生产代码；保留未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未读取、暂存或修改。
+- `已验证` 新增 `TestParagraphContracts.test_formal_project_polisher_gate_does_not_commit`：正式发布门禁开启、校对正常、润色返回 `ResponseContractError` 时，`run_chapter` 抛出质量门禁异常，章节位置为 7，不创建译文、不更新 TM，并将 StageReport 记为 `failed`/`polishing`。
+- `已验证` 定向 `tests.test_pipeline_contracts`：146 项通过。完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py`：788 项运行、783 项通过、5 项因当前 Windows symlink/FIFO 能力跳过、0 失败；安全路径模块单独运行 11 项、7 项通过、4 项因 3 项 symlink 缺少 `WinError 1314` 权限及 Windows 不支持 FIFO 而跳过。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（209.754 秒，退出码 0）；其中输出的 content-filter 与段落错配堆栈来自负向 fixture。新增测试 `py_compile` 与 `git diff --check` 通过。上述测试未调用真实 Provider。
+- `未验证` 本回归只锁定格式/阶段失败时不提交正式输出的事务边界，不提供“信、达、雅”语义质量判定；试点全书人工验收、真实 Provider 试译和部署验证仍未完成。
 
 ## 2026-11-21 当前工作树安全路径复核
 

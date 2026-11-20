@@ -4,10 +4,16 @@
 
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
-- `已验证` 最新完整本地非 E2E 回归 787 项运行、782 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 最近一次 7 项通过，完整 CI 状态见本页下方记录。安全路径与 K4 新增恢复验证见[开发与验证](development.md#2026-11-21-k4-发布回执进程中断恢复)。
-- `已验证` hosted run `44828989181` 对提交 `dd188e34e111dea05011470ae266454db45d2a28` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。此前的 Windows 短/长临时路径断言修复由早期矩阵验证，历史过程见[开发与验证](development.md#持续集成)。
+- `已验证` 最新完整本地 Windows/Python 3.14.7 非 E2E 回归 788 项运行、783 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 最近一次 7 项通过（209.754 秒）。K3 新增正式润色失败事务门禁回归见[开发与验证](development.md#2026-11-21-k3-正式润色失败事务门禁)。
+- `已验证` 最近一次已完成 hosted run `44829982702` 对当时 HEAD `fbade24ec4627a1ac63411c0bcd6dfe160d35c26` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。该 run 尚未覆盖本次新增回归提交。此前的 Windows 短/长临时路径断言修复由早期矩阵验证，历史过程见[开发与验证](development.md#持续集成)。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
+
+## 2026-11-21 K3 正式润色失败门禁
+
+- `已验证` 正式项目的润色阶段返回不可读响应时会阻断章节事务：不写出译文、不更新 TM，且 StageReport 将失败归属到 `polishing`。此行为有新增 `run_chapter` 集成回归覆盖。
+- `部分实现` 该门禁只验证结构化响应和阶段/事务状态，不判断译文是否达到语义上的“信、达、雅”；独立语义质量阈值仍需经人工定义和验收。
+- 详细测试命令、计数与边界见[开发与验证](development.md#2026-11-21-k3-正式润色失败事务门禁)。
 
 ## 2026-11-21 I4 已发布译文新鲜度审计
 
