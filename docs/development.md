@@ -7,8 +7,8 @@
 - `.github/workflows/tests.yml` 在 push、pull request 和手动触发时运行 Python 3.14 的 Ubuntu/Windows 矩阵；workflow 只授予 `contents: read`，不读取项目数据、不配置 Provider 凭据。
 - `scripts/run_unit_tests.py` 按文件名稳定排序并运行 `tests/test_*.py` 中除 runner 专用 `test_e2e.py` 外的模块。`tests/run_tests.py` 单独启动 loopback mock server 并运行 E2E，不连接真实 Provider。
 - CI 安装未锁版本的 `requirements.txt`，所以它检查当前可解析依赖集合，不保证历史环境可复现。CI 通过也不证明真实 API、翻译语义质量、试点人审或部署验收。
-- 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言。当前已统一改为规范化路径比较。
-- `已验证` 当前本地 Windows/Python 3.14.7 工作树非 E2E 785 项运行、780 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过（212.233 秒，退出码 0）。最新两个修正路径模块 161 项通过。`.venv\Scripts\python.exe -m pip check`、相关 `py_compile`、workflow YAML 解析和 `git diff --check` 通过。当前修正提交的 hosted 矩阵仍待最终复跑，不能将之前 Ubuntu 通过或本地通过表述为当前 head CI 全绿。
+- 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言；run `44811940468`（head `99c3f8b`）Ubuntu job 通过，Windows 仅剩 1 个短路径字符串包含断言。已改为比较解析后的路径父子关系。
+- `已验证` 当前本地 Windows/Python 3.14.7 工作树非 E2E 785 项运行、780 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过（212.233 秒，退出码 0）。最新两个修正路径模块 161 项通过，最后调整的单项 workflow 回归通过。`.venv\Scripts\python.exe -m pip check`、相关 `py_compile`、workflow YAML 解析和 `git diff --check` 通过。当前修正提交的 hosted 矩阵仍待最终复跑，不能将之前 Ubuntu 通过或本地通过表述为当前 head CI 全绿。
 
 ## 2026-11-21 依赖与漏洞公告复查
 

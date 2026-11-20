@@ -1354,8 +1354,8 @@ class KakuyomuWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(captured_expected_bundles[0], expected_bundle)
         self.assertIn(
-            str(root / "Workflow" / "Runs"),
-            captured_output_dirs[0],
+            (root / "Workflow" / "Runs").resolve(),
+            Path(captured_output_dirs[0]).resolve().parents,
         )
         self.assertEqual(
             [
