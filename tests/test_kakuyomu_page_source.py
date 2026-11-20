@@ -1243,6 +1243,129 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
         )
         self.assertEqual(kwargs["published_source_status"], "verified")
 
+    def test_project_freshness_reports_publications_without_current_ai_map(self):
+        source_root = self.root / "unmapped-freshness-source"
+        ai_root = self.root / "unmapped-freshness-ai"
+        translation_root = self.root / "unmapped-freshness-translation"
+        runs_root = self.root / "Workflow" / "Runs"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        runs_root.mkdir(parents=True)
+        (translation_root / "previous.md").write_text(
+            "existing output",
+            encoding="utf-8",
+        )
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "runs_root": runs_root,
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": source_root / "STORY_SUMMARY_reviewed.json",
+        }
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "unverified",
+                        "detail": "index unavailable",
+                    },
+                    None,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["translation_runs_root"], str(runs_root))
+        self.assertIsNone(kwargs["expected_translations"])
+        self.assertEqual(kwargs["published_source_status"], "unverified")
+
+    def test_project_freshness_ignores_empty_publication_roots_without_ai_map(self):
+        source_root = self.root / "empty-freshness-source"
+        ai_root = self.root / "empty-freshness-ai"
+        translation_root = self.root / "empty-freshness-translation"
+        runs_root = self.root / "EmptyWorkflow" / "Runs"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        runs_root.mkdir(parents=True)
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "runs_root": runs_root,
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": source_root / "STORY_SUMMARY_reviewed.json",
+        }
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "unverified",
+                        "detail": "index unavailable",
+                    },
+                    None,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertIsNone(kwargs["translation_runs_root"])
+        self.assertIsNone(kwargs["expected_translations"])
+
     def test_project_mode_rejects_roots_outside_project_archive_before_fetch(self):
         projects_root = self.root / "projects"
         source_root = projects_root / "synthetic" / "SourceArchive"

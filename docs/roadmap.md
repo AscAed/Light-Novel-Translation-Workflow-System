@@ -1,6 +1,6 @@
 # 路线图
 
-2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射校验历史来源、审核快照/回执与译文字节；AI edition index 不可信时将下游译文状态传播为 `stale`/`unverified`，并由最终状态重算 consumer 摘要。完整非 E2E 781 项（777 通过、4 项 Windows 能力跳过）及 4 项定向用例通过；loopback mock E2E 7 项通过（465.148 秒）。该能力不回写译文/TM/知识、不自动重译；当前映射不可用时无法逐话审计。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
+2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射校验历史来源、审核快照/回执与译文字节；AI edition index 不可信时将下游译文状态传播为 `stale`/`unverified`，并由最终状态重算 consumer 摘要。项目采集在无当前映射但检测到已有 run/译文时写聚合 `current_mapping_unavailable` finding；空输出根不生成噪声状态。完整非 E2E 784 项（780 通过、4 项 Windows 能力跳过）；loopback mock E2E 7 项通过（229.117 秒）。该能力不回写译文/TM/知识、不自动重译。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
 
 2026-11-21 批量审核/发布校验优化：完整 AI book bundle 改为批次入口验证并在 run 状态协调前复核，保留单话发布的完整校验和逐话来源验证；16 MiB 以上合成 bundle 回归覆盖复核次数及批内改写拒绝。历史非 E2E 772 项（768 通过、4 项 Windows 能力跳过）、loopback mock E2E 7 项通过。未做真实 88 话性能基准；不改变翻译阶段或 K5 人工验收状态。详情见[开发记录](development.md#2026-11-21-pr-71-批量发布-bundle-校验优化)。
 

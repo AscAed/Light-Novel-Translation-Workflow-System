@@ -332,35 +332,55 @@ def build_downstream_freshness_snapshot(
         consumers["reviewed_story_summary"] = summary_consumer
 
     if translation_runs_root is not None:
-        if expected_translations is None:
-            raise ValueError(
-                "Current versioned translation mappings are required to audit "
-                "published translations."
-            )
-        findings = audit_published_translation_freshness(
-            translation_runs_root,
-            translation_root,
-            expected_translations,
-        )
-        if published_source_status not in {None, *FRESHNESS_STATUSES}:
+        if (
+            published_source_status is not None
+            and published_source_status not in FRESHNESS_STATUSES
+        ):
             raise ValueError("Published source freshness status is invalid.")
-        if published_source_status not in {None, "verified"}:
-            propagated_status = (
-                "stale" if published_source_status == "stale" else "unverified"
+        if expected_translations is not None and not isinstance(
+            expected_translations,
+            list,
+        ):
+            raise ValueError("Current versioned translation mappings are invalid.")
+        if expected_translations:
+            findings = audit_published_translation_freshness(
+                translation_runs_root,
+                translation_root,
+                expected_translations,
+            )
+            if published_source_status not in {None, "verified"}:
+                propagated_status = (
+                    "stale" if published_source_status == "stale" else "unverified"
+                )
+                findings = [
+                    {
+                        **finding,
+                        "status": propagated_status,
+                        "detail": (
+                            "AI edition index is not verified against the current "
+                            "source; publication freshness cannot be confirmed."
+                        ),
+                    }
+                    for finding in findings
+                ]
+        else:
+            status = (
+                "stale"
+                if published_source_status == "stale"
+                else "unverified"
             )
             findings = [
                 {
-                    **finding,
-                    "status": propagated_status,
+                    "translation_file": "current_mapping_unavailable",
+                    "status": status,
                     "detail": (
-                        "AI edition index is not verified against the current "
-                        "source; publication freshness cannot be confirmed."
+                        "Current versioned translation mapping is unavailable; "
+                        "published translations cannot be matched to current sources."
                     ),
                 }
-                for finding in findings
             ]
         output_digests = {}
-        for item in expected_translations:
+        for item in expected_translations or []:
             output_path = resolve_relative_path(
                 translation_root,
                 item["translation_file"],
@@ -380,6 +400,7 @@ def build_downstream_freshness_snapshot(
         consumer_input = {
             "runs_root": str(Path(translation_runs_root)),
             "expected": expected_translations,
+            "source_status": published_source_status,
             "output_sha256": output_digests,
             "findings": findings,
         }

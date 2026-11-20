@@ -441,6 +441,37 @@ class DownstreamFreshnessSnapshotTests(unittest.TestCase):
         self.assertEqual(stale_consumer["findings"][0]["status"], "stale")
         self.assertNotEqual(verified_consumer["sha256"], stale_consumer["sha256"])
 
+    def test_missing_translation_mapping_emits_aggregate_unverified_consumer(self):
+        runs_root = self.root / "Workflow" / "Runs"
+        runs_root.mkdir(parents=True)
+
+        snapshot = build_downstream_freshness_snapshot(
+            tm_data=None,
+            source_root=str(self.source_root),
+            translation_root=str(self.translation_root),
+            manifest_relative_path="source_manifest.json",
+            tm_label=None,
+            translation_runs_root=str(runs_root),
+            published_source_status="unverified",
+        )
+
+        consumer = snapshot["consumers"]["published_translations"]
+        self.assertEqual(consumer["summary"]["unverified"], 1)
+        self.assertEqual(
+            consumer["findings"],
+            [
+                {
+                    "identity": "current_mapping_unavailable",
+                    "status": "unverified",
+                    "detail": (
+                        "Current versioned translation mapping is unavailable; "
+                        "published translations cannot be matched to current sources."
+                    ),
+                }
+            ],
+        )
+        self.assertRegex(consumer["sha256"], r"^[0-9a-f]{64}$")
+
     def test_content_addressed_persistence_is_idempotent_and_append_only(self):
         first = {
             "schema_version": 2,

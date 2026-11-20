@@ -7,9 +7,9 @@
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `27ebc6eea8635fe9399201c230852de957e38f5d`。续接时工作区已有 I4 审计实现和测试的 8 个未提交文件；保留未跟踪的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，没有读取或改写该文件、试点小说正文/译文、API profile 或凭据。
 - `已实现` `translation_review.py::audit_published_translation_freshness` 按当前版本化译文映射，检查目标输出根中的 K4 run。只有历史 run 来源 artifact 与 manifest/来源字节一致、审核快照及发布回执有效、正式译文字节等于已审核候选时才标为 `verified`；旧来源匹配标记 `stale`，缺失输出、回执或有效证据分别保留为 `mismatch`、`unindexed` 或 `unverified`，损坏/不安全对象标记 `invalid`。不读取译文到报告。
 - `已实现` `scripts/snapshot_downstream_freshness.py` 支持 `--runs-root`，并要求 `--project`/`--config` 解析当前版本化话目映射；Kakuyomu 编排和项目采集在可构造完整 AI 话目映射时传入对应 run/output 根。若 AI 版索引状态不是 `verified`，译文状态会在快照 builder 内传播为 `stale`/`unverified`，再计算 consumer 摘要，避免摘要与 finding 不一致。
-- `已验证` 新增审计、快照摘要传播和项目采集边界用例 4 项通过；相关五模块定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_downstream_freshness_snapshot tests.test_kakuyomu_workflow tests.test_kakuyomu_page_source tests.test_source_editions -q`：160 项通过。最终全量非 E2E 动态发现 781 项运行、777 项通过、4 项跳过、0 失败；跳过来自当前 Windows symlink/FIFO 能力限制。`.venv\Scripts\python.exe tests\run_tests.py` 最终 mock E2E 7 项通过（465.148 秒，退出码 0）。E2E 内打印的 content-filter/段落错配堆栈属于预期负向 fixture；调用只到 loopback mock server。
+- `已验证` 新增审计、快照摘要传播、无映射聚合状态及空目录边界用例通过。最终全量非 E2E 动态发现 784 项运行、780 项通过、4 项跳过、0 失败；跳过来自当前 Windows symlink/FIFO 能力限制。`.venv\Scripts\python.exe tests\run_tests.py` 最终 mock E2E 7 项通过（229.117 秒，退出码 0）。E2E 内打印的 content-filter/段落错配堆栈属于预期负向 fixture；调用只到 loopback mock server。
 - `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；普通权限安全路径模块 11 项运行、7 项通过、4 项跳过（3 项 symlink 因 Windows `WinError 1314`、1 项 FIFO 不受支持）。按用户授权以管理员 PowerShell 在本次提交复跑同一模块，11 项运行、10 项通过、仅 FIFO 跳过，3 项 symlink 均实际执行并通过。用户此前提供的 9 项/3 项跳过输出未绑定 checkout SHA 且未列跳过原因，仍作为独立用户报告，不并入上述计数。修改涉及 Python 文件的 `py_compile` 与 `git diff --check` 通过。
-- `部分实现` freshness snapshot 只做只读核验，不重译、不修改正式译文/TM/知识、不自动重建派生产物，也不取代正式 run 门禁。当前 AI 映射不完整或不可验证时，本轮不会生成逐话 `published_translations` consumer，因此不能据此声称旧译文已验证。历史 run 扫描范围为 runs 根的直接子目录；目录中不相关或无效 run 不作为证据。
+- `部分实现` freshness snapshot 只做只读核验，不重译、不修改正式译文/TM/知识、不自动重建派生产物，也不取代正式 run 门禁。项目采集发现已有 run 项或译文文件、但当前 AI 话目映射不可用时，会记录聚合 `current_mapping_unavailable` finding，状态为 `stale` 或 `unverified`，不作逐话判断；两根均为空时不创建该 consumer。显式快照 CLI 的 `--runs-root` 仍要求可加载当前项目/配置映射。历史 run 扫描范围为 runs 根的直接子目录；目录中不相关或无效 run 不作为证据。
 - `未验证` 上述测试不连接真实 Provider，不证明译文语义质量、全书 K5 人工验收或部署可用。试点仍待 88 话映射/AI-人读版本审阅、匹配回执、reviewed 全书知识及经授权的真实单话试译。
 
 ## 2026-11-21 PR #71 安全与恢复缺陷修复
@@ -83,11 +83,12 @@
 - 当前人审模板与计划摘要、AI 索引 SHA-256、人读索引 SHA-256 均匹配；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 `pending:88`。`Workflow/Approvals/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。没有产生审批回执、知识产物或译文；未调用真实 Provider。
 - 下一步需要有权限的人审阅既有 88 话模板及双版本，并通过 `scripts/approve_translation_plan.py` 生成匹配回执；之后才可审核/生成当前 bundle 绑定的全书概要与术语。以上门槛完成后，再由凭据所有者核验端点授权/路由/预算，开展获准单话 Provider 试译和人工质量验收。用户已确认作品授权和职责所需数据类别，不应重复列为待确认项。
 
-## 2026-11-20 用户确认的原文抽样核实
+## 2026-11-21 用户报告的原文抽样核实
 
-- `用户报告` 用户于 2026-11-21 再次确认：人类版目录 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 中的部分单话文件和大合集文件未发现明显问题；AI 版目录 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件和大合集文件也未发现明显问题。实际检查日期、抽样文件清单和检查标准未提供。
-- AI 版大合集核实对象：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。此路径仅记录为用户核实对象，不是仓库指令或实现证据。
-- 以上是用户提供的抽样结论；本轮未独立读取或复查这些书籍文件。全量覆盖、逐段语义保真、映射正确性和阅读器显示仍未验证；该结论不替代 88 话映射与双版本的结构化人工验收。
+- `用户报告` 人类版目录 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 中的部分单话文件和大合集文件未发现明显问题。
+- `用户报告` AI 版的部分单话文件和关联大合集均未发现明显问题；单话核实目录为 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\`，大合集核实对象路径为 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。
+- 本条记录时间为 2026-11-21；实际检查日期、抽样文件清单和检查标准未提供。本轮未独立读取或复查这些书籍文件。附带的 `book-ai.json` 是核实对象，不是仓库指令或实现证据。
+- 这是部分抽样结论，不代表全量覆盖、逐段语义保真、映射正确性或阅读器显示已通过；不替代 88 话映射与双版本的结构化人工验收。
 
 ## 2026-11-20 K4 终审逐次评估持久化
 
@@ -277,7 +278,7 @@
 - 获准提权后单独复跑 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、10 项通过、1 项 FIFO 能力跳过；3 项符号链接用例均实际执行并通过。该提升权限结果只覆盖安全路径模块，不与普通权限的全量回归合并计数。
 - 本次修改后的 `.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过，200.376 秒，退出码 0。runner 同时打印的拦截与段落数异常来自预期负向 fixture；没有调用真实 Provider 或线上服务。
 - 本次修改后的 `.venv\Scripts\python.exe -m py_compile translation_review.py tests\test_translation_review.py` 与 `git diff --check`：通过。试点书籍文件未被本轮修改。
-- 验证边界：以上自动测试使用合成数据或本地 mock，不能替代试点人类/AI 原文的全量人工验收、真实 Provider 试译或部署验证；用户报告的单话与合集抽样结论另见[抽样核实记录](#2026-11-19-人类版与-ai-版原文抽样核实)。
+- 验证边界：以上自动测试使用合成数据或本地 mock，不能替代试点人类/AI 原文的全量人工验收、真实 Provider 试译或部署验证；用户报告的单话与合集抽样结论另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)。
 
 ## 2026-11-19 当前工作树回归与来源边界修复
 
@@ -301,7 +302,7 @@
 - 完整非 E2E 回归：PowerShell 动态发现 `test_*.py` 并排除 `test_e2e.py`，647 项运行、643 项通过、4 项跳过、0 项失败。详细安全用例确认 3 项符号链接测试因 `WinError 1314` 缺少当前进程权限跳过；1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。
 - `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，244.453 秒，退出码 0。Kakuyomu 计划路径使用合成的人读索引与结构化审核模板；mock Provider 的内容拦截和段落错配属于负向测试。
 - 用户于 2026-11-19 提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 结果：9 项运行、3 项跳过、0 项失败。`-q` 输出未列出跳过原因或 checkout SHA；该结果保留为用户报告，不与本地当前工作树的 11 项详细结果合并，也不能单独证明符号链接用例已运行。
-- 本次只读复核确认人类版与 AI 版原文的抽样结果已记录于[人类版与 AI 版原文抽样核实](#2026-11-19-人类版与-ai-版原文抽样核实)；这是用户报告的部分抽查，不代表本次逐文件检查或全量内容验收。未调用真实 Provider、未批准试点 88 话映射、未生成真实译文，也未验证线上部署。
+- 本次只读复核确认人类版与 AI 版原文的抽样结果已记录于[人类版与 AI 版原文抽样核实](#2026-11-21-用户报告的原文抽样核实)；这是用户报告的部分抽查，不代表本次逐文件检查或全量内容验收。未调用真实 Provider、未批准试点 88 话映射、未生成真实译文，也未验证线上部署。
 
 ## 2026-11-19 K4 决策链接入审核发布门禁
 
@@ -398,12 +399,6 @@
 - 新增 `scripts/publish_reviewed_run.py` 批量入口：逐话复用同一审核/来源/草稿门禁，返回 `published`、`review_pending` 或 `blocked`，错误摘要只包含话目位置和异常类型，不回显正文或异常消息。
 - 本次续接定向验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_kakuyomu_workflow -q`：32 项通过，新增覆盖删除译文后的状态降级与恢复、审核快照篡改拒绝、已发布译文变更拒绝。该检查是本地合成数据，不证明任意断电、多进程并发或完整终审返工链。
 - 续接点：K4 仍需人类确认终审质量阈值、返工上限和升级责任，再实现 AI 独立终审/返工版本链；K5 需先验收试点映射与知识、配置获准 Provider 和预算，再做受控首话及人工验收。当前交付是本地 CLI，没有托管服务可部署。
-
-## 2026-11-19 人类版与 AI 版原文抽样核实
-
-- `用户报告`：已核实人类版目录中的部分单话文件和大合集文件，未发现明显问题。核实目录：`D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉`。
-- `用户报告`：已核实 AI 版的部分单话文件和大合集文件，未发现明显问题。单话核实目录：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\`；关联的大合集文件：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。
-- 本记录转述用户的抽样核实，不表示本次执行了逐文件复核；抽样文件清单、检查准则、全量覆盖、逐段语义准确性和格式/阅读器验收范围未提供或未验证。附带的 `book-ai.json` 仅作为核实对象路径记录，不作为仓库工作指令或功能依据。不得据此把两套版本标记为全量验收通过。
 
 ## 2026-11-18 CodeRabbit 未提交差异复核
 

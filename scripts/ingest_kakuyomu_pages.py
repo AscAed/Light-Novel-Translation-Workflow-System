@@ -732,14 +732,25 @@ def _record_project_ingestion_freshness(
     summary_path = context["story_summary_path"]
     runs_root = context.get("runs_root")
     translation_root = Path(context["translation_root"])
-    has_run_history = (
-        isinstance(runs_root, Path)
-        and (runs_root.exists() or runs_root.is_symlink())
-    )
-    has_published_outputs = translation_root.exists() and any(
-        not item.is_symlink() and item.is_file()
-        for item in translation_root.iterdir()
-    )
+    has_run_history = False
+    if isinstance(runs_root, Path):
+        if runs_root.is_symlink() or (
+            runs_root.exists() and not runs_root.is_dir()
+        ):
+            has_run_history = True
+        elif runs_root.is_dir():
+            has_run_history = any(runs_root.iterdir())
+    if translation_root.is_symlink() or (
+        translation_root.exists() and not translation_root.is_dir()
+    ):
+        has_published_outputs = True
+    elif translation_root.is_dir():
+        has_published_outputs = any(
+            not item.is_symlink() and item.is_file()
+            for item in translation_root.iterdir()
+        )
+    else:
+        has_published_outputs = False
     tm_data = (
         _load_json_regular(tm_path, "Translation memory")
         if tm_path.exists() or tm_path.is_symlink()
@@ -782,6 +793,11 @@ def _record_project_ingestion_freshness(
     ):
         expected_translations = None
     ai_status = ai_finding["status"]
+    should_audit_publications = (
+        expected_translations is not None
+        or has_run_history
+        or has_published_outputs
+    )
     snapshot = build_downstream_freshness_snapshot(
         tm_data=tm_data,
         source_root=str(context["source_root"]),
@@ -796,15 +812,12 @@ def _record_project_ingestion_freshness(
         expected_sources=expected_sources,
         translation_runs_root=(
             str(runs_root)
-            if (
-                isinstance(runs_root, Path)
-                and expected_translations is not None
-            )
+            if isinstance(runs_root, Path) and should_audit_publications
             else None
         ),
         expected_translations=expected_translations,
         published_source_status=(
-            ai_status if expected_translations is not None else None
+            ai_status if should_audit_publications else None
         ),
         source_input_root=str(context["ai_root"]),
         source_input_map=source_input_map,
