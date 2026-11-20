@@ -474,7 +474,7 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
         )
         self.assertEqual(
             plan["source_edition"]["index_root"],
-            str(self.ai_root),
+            str(self.ai_root.resolve()),
         )
         self.assertEqual(
             episode["source_file"],

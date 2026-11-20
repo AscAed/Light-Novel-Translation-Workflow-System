@@ -1267,9 +1267,21 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 )
                 pipeline_factory.assert_has_calls(
                     [
-                        call(reviewed_tm_translation_root=str(translation_root)),
-                        call(reviewed_tm_translation_root=str(translation_root)),
-                        call(reviewed_tm_translation_root=str(translation_root)),
+                        call(
+                            reviewed_tm_translation_root=str(
+                                translation_root.resolve()
+                            )
+                        ),
+                        call(
+                            reviewed_tm_translation_root=str(
+                                translation_root.resolve()
+                            )
+                        ),
+                        call(
+                            reviewed_tm_translation_root=str(
+                                translation_root.resolve()
+                            )
+                        ),
                     ]
                 )
                 self.assertEqual(

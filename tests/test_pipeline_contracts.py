@@ -1598,11 +1598,20 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                 self.assertTrue(Config.REQUIRE_REVIEWED_PUBLICATION)
                 self.assertEqual(
                     Config.GLOSSARY_PATH,
-                    str(project_dir / "Knowledge" / "Glossary_reviewed.json"),
+                    str(
+                        (project_dir / "Knowledge" / "Glossary_reviewed.json")
+                        .resolve()
+                    ),
                 )
                 self.assertEqual(
                     Config.STORY_SUMMARY_PATH,
-                    str(project_dir / "Knowledge" / "STORY_SUMMARY_reviewed.json"),
+                    str(
+                        (
+                            project_dir
+                            / "Knowledge"
+                            / "STORY_SUMMARY_reviewed.json"
+                        ).resolve()
+                    ),
                 )
                 self.assertEqual(
                     Config.SOURCE_MANIFEST_PATH,

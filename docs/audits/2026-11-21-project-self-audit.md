@@ -22,7 +22,7 @@
 | 测试 | `已验证` | 代码基线 `c1d140d` 的非 E2E 回归为 784 项运行、780 项通过、4 项跳过、0 项失败；loopback mock E2E 7 项通过。普通权限安全路径模块 11 项中 7 项通过、4 项跳过；管理员复跑 11 项中 10 项通过、仅 FIFO 因 Windows 不支持跳过，3 项 symlink 均通过。测试范围、命令和 fixture 限制见[开发与验证](../development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。 |
 | 安全 | `部分实现` | 当前虚拟环境漏洞扫描无已知发现；限定 PR 差异扫描覆盖 9 个文件、无可报告发现；路径越界/符号链接用例有本地和管理员验证。它们不是全仓库渗透测试、真实 Provider 安全评估或部署安全认证。原文和译文未被本次自检读取。 |
 | 兼容性 | `部分实现` | 仅能确认当前 Windows + Python 3.14.7 虚拟环境及其依赖组合通过记录的本地测试。其他 Python 版本、操作系统、API endpoint/model 与外部客户端协议没有矩阵或真实端点验证。 |
-| CI 与部署 | `未验证` | 仓库没有 `.github` CI 工作流、Docker/Compose 文件或部署清单；产品现状是本地 CLI，因此没有可据以核验的线上服务。真实服务部署不属于当前已验证能力。PR #71 为 `OPEN`、`MERGEABLE/CLEAN`，CodeRabbit 检查为 `SKIPPED`，`reviewDecision` 为空；这不是通过 CI 或项目验收。 |
+| CI 与部署 | `部分实现` / `未验证` | 已添加 Ubuntu/Windows Python 3.14 CI，但前两次 hosted run 的 Ubuntu job 通过、Windows 单测暴露编码与路径断言兼容问题；当前修正 head 的 hosted rerun 尚待结果。仓库无 Docker/Compose 或部署清单，产品仍为本地 CLI，没有已验证线上服务。PR #71 的 mergeable 状态不代表 CI 或项目验收。 |
 | 试点数据与人审 | `部分实现` | 当前计划含 88 话；映射、AI 版、人读版决定各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 和 `STORY_SUMMARY_reviewed.json` 均不存在。用户报告部分单话及合集抽样未见明显问题，但样本清单/标准未知，不能替代逐话审阅或全书验收。详见[K5 试点门禁](../project-status.md#2026-11-20-k5-试点门禁复核)。 |
 
 ## 优先问题
@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | AUD-01 | `P0` | 88 话三类审阅仍共 264 项 `pending`，没有与当前计划匹配的批准回执或 reviewed 全书知识。正式试点应按门禁失败关闭，不能生成真实翻译验收结论。 | 需要有权限的人逐话确认映射、AI 清洗版和人读版，生成匹配回执并审核当前 bundle 绑定的全书知识。 |
 | AUD-02 | `P0` | 没有真实 Provider 试译、人工语义质量验收或经验证的成本/延迟数据；endpoint、模型 ID、账号权限和预算状态未知。mock 测试不能证明实际翻译可执行或合格。 | 完成 AUD-01 后，由凭据所有者核验路由、数据授权与预算，再执行获准单话试译和人工验收；不要在文档或提交中记录秘密。 |
-| AUD-03 | `P1` | 没有 CI；PR #71 虽可合并但无成功状态检查且无正式 review approval。合并状态仅代表 GitHub 可合并性，不证明回归已在托管 CI 执行。 | 需要人类决定是否为该 CLI 仓库建立 CI/分支保护；在决策前保留本地测试证据，不把 PR 标为已验收。 |
+| AUD-03 | `P1` | CI 工作流已建立，但首次两次 hosted run 均有 Windows 单测失败；本地已修复并通过，当前修正提交的 hosted matrix 尚未完成。PR #71 无正式 review approval。 | 完成当前 head 的 Ubuntu/Windows hosted rerun，处理任何剩余失败；人类仍需决定是否为该 CLI 建立分支保护，不把 mergeable 状态当作验收。 |
 | AUD-04 | `P2` | 直接依赖未锁版本，传递依赖和安装结果会随时间变化；当前单一 Windows/Python 环境不能代表其他支持平台。 | 需要人类决定支持的 Python/OS 范围和是否采用锁文件；再选择与现有安装方式一致的最小实现并验证干净环境重建。 |
 | AUD-05 | `P2` | 没有可验证的打包或部署目标。若产品继续作为本地 CLI，这不是当前功能缺陷；若要求 Web/服务化交付，则运行方式、数据持久化、凭据管理和运维边界均需先决策。 | 在增加部署工作前，由产品负责人确认交付形态；当前不引入未经选择的容器、云服务或 Agent 平台。 |
 | AUD-06 | `P3` | Windows FIFO 安全用例因平台不支持 `os.mkfifo` 跳过；普通权限下 symlink 用例因 `WinError 1314` 跳过，但授权管理员复跑的三个 symlink 用例均通过。 | 记录为平台能力边界；如需要跨平台 FIFO 等价覆盖，再为目标平台设计独立 fixture。 |
@@ -45,7 +45,7 @@
 
 ## 后续状态更新
 
-- 本报告覆盖其基线 `3c2f6c6`。2026-11-21 随后新增 GitHub Actions Ubuntu/Windows Python 3.14 workflow 与统一非 E2E 单测入口；该项把 AUD-03 的“没有 CI”问题从未实施推进为“已配置、首次托管结果未验证”。当前实现和限制见[持续集成](../development.md#持续集成)。
-- `已验证` 新入口在当前 Windows/Python 3.14 环境运行 784 项测试，780 项通过、4 项跳过、0 失败；同一 checkout 的 loopback mock E2E 7 项通过（216.055 秒）。`pip check`、YAML 语法、runner 编译与 `git diff --check` 通过。此本机结果不验证 Ubuntu 兼容。
-- `未验证` 新增 workflow 的首次 GitHub 托管运行及 PR check 状态；本地通过不关闭 AUD-03 对托管回归的验证门槛。
+- 本报告覆盖其基线 `3c2f6c6`。2026-11-21 随后新增 GitHub Actions Ubuntu/Windows Python 3.14 workflow 与统一非 E2E 单测入口。首次两次 hosted run 的 Ubuntu job 通过，Windows 暴露 Python 默认控制台编码和临时目录短/长路径表示差异；当前工作树已修正这些问题，细节见[持续集成](../development.md#持续集成)。
+- `已验证` 当前 Windows/Python 3.14.7 工作树运行 785 项非 E2E 测试，780 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过。`pip check`、YAML 语法、相关 runner/模块编译与 `git diff --check` 通过。
+- `未验证` 当前修正提交的最终 GitHub Actions matrix 尚待复跑完成；本机及早期 Ubuntu job 结果不能代替当前 head Windows job 通过。
 - 其余人工试点、真实 Provider/质量、依赖锁定以及是否建立分支保护等门槛不因 CI 配置而关闭。
