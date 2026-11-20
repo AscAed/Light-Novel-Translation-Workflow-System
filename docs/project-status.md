@@ -5,7 +5,7 @@
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
 - `已验证` 本地 Windows/Python 3.14.7 最新工作树非 E2E 785 项运行、780 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过，`pip check`、YAML 语法和相关模块编译通过。
-- `部分实现` hosted run `44806459456`（`3bd3638`）、`44809747249`（`594879a`）、`44811100768`（`dce8695`）、`44811940468`（`99c3f8b`）和 `44812666313`（`aa0dadb`）的 Ubuntu job 均通过；Windows job 依次发现 UTF-8 输出及短长路径混用，以及多个未规范化的临时路径断言。已在当前工作树修复并通过本地回归，当前 head 的托管复跑待完成。
+- `部分实现` hosted run `44806459456`（`3bd3638`）、`44809747249`（`594879a`）、`44811100768`（`dce8695`）、`44811940468`（`99c3f8b`）、`44812666313`（`aa0dadb`）和 `44813333408`（`e77d0b2`）的 Ubuntu job 均通过；最新 run 的 Windows 单测通过，但 mock E2E 因 `runneradmin`/`RUNNER~1` 临时目录路径别名比较失败。当前工作树已改为比较规范化路径，使用仓库 mock runner 的受影响 E2E 单项本地通过，本次修改后的 hosted rerun 待完成。
 - `未验证` 当前修正版本的完整 hosted matrix 结果；依赖仍未锁版本。该矩阵不代表其他 Python 版本支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - 实现、CI 失败诊断和复现命令见[开发与验证](development.md#持续集成)；在当前 head 的 Ubuntu/Windows job 都成功前，CI 风险不视作已关闭。
 

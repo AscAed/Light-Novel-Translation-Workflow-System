@@ -320,7 +320,10 @@ class E2ETestSuite(unittest.TestCase):
             return discovered
 
         def load_test_config(*, config_file):
-            self.assertEqual(config_file, config_path)
+            self.assertEqual(
+                Path(config_file).resolve(),
+                Path(config_path).resolve(),
+            )
 
         workflow_output = io.StringIO()
         with (
