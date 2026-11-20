@@ -2,12 +2,22 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-20 依赖更新后复验
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `6b18579f8d3cf03b23095dcea771a589d727de50`。环境调整不改源码、依赖清单或项目数据；仅更新仓库忽略的 `.venv`。
+- `已验证` `requirements.txt` 五项直接依赖都有源码或测试调用点，没有找到可安全删除的直接依赖。`uv pip install --python .venv\Scripts\python.exe --upgrade -r requirements.txt` 更新了已落后版本：`google-genai` 3.3.0 → 3.6.1、`numpy` 2.5.4 → 2.5.5、`openai` 3.50.0 → 3.57.0，以及 `filelock`、`httpcore2`、`httpx2`、`pydantic`、`pydantic-core` 五项传递依赖。升级仅作用于本机 `.venv`，没有新增或删除项目依赖声明。
+- `已验证` 升级后 `.venv\Scripts\python.exe -m pip check` 为 `No broken requirements found`；全部非 E2E 动态发现 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败。依赖漏洞检查通过临时 `uvx --from pip-audit pip-audit --path .venv\Lib\site-packages` 执行，报告 `No known vulnerabilities found`；这仅覆盖本次虚拟环境和可获取的公告数据。
+- `已验证` 当前普通权限下 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v` 运行 11 项、7 项通过、4 项跳过、0 失败。3 项符号链接测试因 `WinError 1314` 无创建权限而跳过，1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 而跳过。用户提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 的结果是 9 项、3 项跳过，但没有关联 SHA 或逐项跳过原因，按独立用户报告保留，不能与本次计数合并。
+- `已验证` 按用户授权使用管理员 PowerShell 在当前 HEAD 重跑同一安全路径模块：11 项运行、10 项通过、1 项因 Windows 不支持 FIFO 跳过；3 项符号链接测试均已执行并通过。
+- `已验证` 依赖更新后 `.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 运行 7 项、368.550 秒、退出码 0。输出中的内容过滤异常堆栈来自预期负向 fixture；没有真实 Provider 请求。
+- `未验证` 更新后 `pip list --outdated` 仅列出安装工具 `pip` 26.2.1→26.3 和 Google SDK 传递依赖 `tenacity` 9.1.4→9.2.1；本轮未为追逐补丁版本继续升级它们。`requirements.txt` 未锁定版本，因此虚拟环境升级不形成可复现锁定；没有发现必须删改依赖声明的证据。真实 Provider、端点/模型兼容性、费用、质量和部署不由本地 mock/单元测试或依赖漏洞扫描证明。
+
 ## 2026-11-20 PR #71 审查跟进与完整回归
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`、提交 `9374fa79376c13f72f06f1e7764d732012b1436a`；在既有混合工作树上继续处理审查问题。未读取或改动书籍正文、受保护 freshness JSON、本机 API profile 或凭据。
 - `已实现` 修复本轮确认的决策/仲裁链一致性校验、跨进程快照读取竞态、空锁文件初始化、评估路由区分和历史发布的章节级来源身份校验；CLI 人工仲裁要求绑定审核者实际审阅的决定摘要。AI 返工续接持锁期间改用无锁内部快照读取，避免重入同一文件锁。正式 Kakuyomu 运行强制启用 reviewed glossary 门禁；模型预检在配置了 API 池回退时不错误要求永远不可达的 Gemini 路由。
 - `已验证` 定向回归：`tests.test_translation_review_state` 44 项、`tests.test_translation_review` 69 项、`tests.test_pipeline_contracts` 142 项、`tests.test_kakuyomu_workflow` 16 项通过；四组共 271 项。完整非 E2E 动态发现运行 772 项，768 项通过、4 项跳过、0 失败。普通权限路径安全模块为 11 项运行、7 项通过、4 项跳过；获准管理员 PowerShell 重跑后 11 项运行、10 项通过、1 项因 Windows 不支持 FIFO 跳过，三个符号链接用例均实际执行并通过。
-- `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；`compileall` 覆盖 `pipeline.py`、`rag_engine.py`、`utils.py`、来源模块、`scripts/` 和 `tests/`；README、AGENTS.md 与 `docs/` 下 16 份 Markdown 的本地链接目标均存在；`git diff --check` 通过。五项 `requirements.txt` 依赖均有代码或测试调用点；未发现足以支持删除依赖或升级版本的仓库证据。依赖未锁定，未进行在线漏洞公告扫描。
+- `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；`compileall` 覆盖 `pipeline.py`、`rag_engine.py`、`utils.py`、来源模块、`scripts/` 和 `tests/`；README、AGENTS.md 与 `docs/` 下 16 份 Markdown 的本地链接目标均存在；`git diff --check` 通过。该次检查确认五项 `requirements.txt` 依赖均有代码或测试调用点，且当时未发现足以支持删除依赖的证据；依赖未锁定，也未做在线漏洞公告扫描。依赖版本后续状态见本文顶部“依赖更新后复验”。
 - `已实现` 完整 mock E2E 首次运行发现既有 Kakuyomu 正式流程 fixture 仍把草稿词表当正式输入，触发新增 reviewed glossary 门禁并失败。保持门禁不变，将该测试改为指向 reviewed 文件，并构造只含合成术语、绑定当前 fixture source identity 的审核 bundle。
 - `已验证` 修正后的端到端单项 `.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation` 通过（1 项，6.653 秒）；完整 `.venv\Scripts\python.exe tests\run_tests.py` 通过（7 项，384.596 秒，runner 退出码 0）。runner 输出中的 content-filter 和段落数量错配堆栈来自预期负向 fixture；没有真实 Provider 请求。mock E2E 不代表真实 Provider、模型质量或部署验收。
 - `未验证` 仓库仍没有 CI 工作流、依赖锁文件、容器或部署清单；应用交付形态是本地 CLI。真实 Provider 连通性、API profile/凭据、语义质量、全书 88 话人工映射/双版本审核与正式部署仍未验证。完整测试不会替代 K5 人工审批和凭据所有者的单话试译验收。

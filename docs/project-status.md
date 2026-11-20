@@ -3,7 +3,7 @@
 ## 2026-11-20 PR #71 审查跟进
 
 - `已实现` 对终审决定链与人工仲裁增加摘要绑定、追加前链校验和并发快照一致性保护；对 AI 返工在锁内读取改用内部无锁 helper，避免文件锁重入。历史发布复用按话目来源身份校验，不要求旧发布绑定当前整本索引摘要。正式 Kakuyomu run 强制要求 reviewed glossary；配置了 API 池回退时预检不要求不可达的 Gemini 路由。
-- `已验证` 完整非 E2E 回归 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败；提权安全路径模块 11 项运行、10 项通过、1 项因 FIFO 平台能力跳过，3 项符号链接用例已执行；完整本机 mock E2E 7 项通过（384.596 秒，退出码 0）。`pip check`、`compileall`、Markdown 本地链接目标及 `git diff --check` 通过。初次 E2E 暴露 reviewed glossary fixture 缺失，补齐合成审核 bundle 后复跑通过。
+- `已验证` 依赖更新后完整非 E2E 回归 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败；普通权限安全路径模块 11 项运行、7 项通过、4 项跳过（3 项符号链接缺少权限、1 项 FIFO 不受 Windows 支持），管理员权限重跑 11 项运行、10 项通过、仅 FIFO 跳过且 3 项符号链接均通过；完整本机 mock E2E 7 项通过（368.550 秒，退出码 0）。`.venv` 的 `pip check` 无冲突，`pip-audit` 未报告已知漏洞；`compileall`、Markdown 本地链接目标及 `git diff --check` 通过。初次 E2E 暴露 reviewed glossary fixture 缺失，补齐合成审核 bundle 后复跑通过。详细环境差异见[开发与验证](development.md)。
 - `未验证` 真实 Provider、译文语义质量、K5 全书人工映射/双版本审核和部署；当前是本地 CLI，没有 CI、依赖锁或部署清单。完整边界及测试命令见[开发与验证](development.md#2026-11-20-pr-71-审查跟进与完整回归)。
 
 ## 2026-11-20 K4 AI 工作流 CLI 验证
