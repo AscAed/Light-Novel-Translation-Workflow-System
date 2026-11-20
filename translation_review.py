@@ -1100,8 +1100,16 @@ def record_translation_review_decision(
         if not candidate_supplied_path.is_absolute():
             candidate_supplied_path = run_root / candidate_supplied_path
         candidate_supplied_path = candidate_supplied_path.absolute()
+        if any(
+            path.is_symlink()
+            for path in (candidate_supplied_path, *candidate_supplied_path.parents)
+        ):
+            raise ValueError(
+                "Review candidate must not use symbolic links."
+            )
+        candidate_resolved_path = candidate_supplied_path.resolve(strict=False)
         try:
-            supplied_relative_path = candidate_supplied_path.relative_to(run_root)
+            supplied_relative_path = candidate_resolved_path.relative_to(run_root)
         except ValueError as exc:
             raise ValueError(
                 "Review candidate must remain inside the translation run."

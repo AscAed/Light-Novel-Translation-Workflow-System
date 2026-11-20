@@ -1587,8 +1587,12 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             ):
                 Config.load_config(project="sample")
 
-                self.assertEqual(Config.RAW_DIR, str(source_root))
-                self.assertEqual(Config.AI_EDITION_ROOT, str(ai_root))
+                self.assertEqual(
+                    Path(Config.RAW_DIR).resolve(), source_root.resolve()
+                )
+                self.assertEqual(
+                    Path(Config.AI_EDITION_ROOT).resolve(), ai_root.resolve()
+                )
                 self.assertTrue(Config.REQUIRE_REVIEWED_STORY_SUMMARY)
                 self.assertTrue(Config.REQUIRE_REVIEWED_GLOSSARY)
                 self.assertTrue(Config.REQUIRE_REVIEWED_PUBLICATION)
@@ -1971,8 +1975,12 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             ):
                 Config.load_config(project="sample")
 
-                self.assertEqual(Config.RAW_DIR, str(source_root))
-                self.assertEqual(Config.AI_EDITION_ROOT, str(ai_root))
+                self.assertEqual(
+                    Path(Config.RAW_DIR).resolve(), source_root.resolve()
+                )
+                self.assertEqual(
+                    Path(Config.AI_EDITION_ROOT).resolve(), ai_root.resolve()
+                )
                 self.assertEqual(
                     Config.TRANSLATION_OUTPUT_MODE,
                     "reviewed_run_draft",

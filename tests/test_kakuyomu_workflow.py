@@ -1234,12 +1234,11 @@ class KakuyomuWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(approval_verifier.call_count, 5)
                 self.assertEqual(
-                    captured_reviewed_tm_roots,
                     [
-                        str(translation_root),
-                        str(translation_root),
-                        str(translation_root),
+                        Path(path).resolve()
+                        for path in captured_reviewed_tm_roots
                     ],
+                    [translation_root.resolve()] * 3,
                 )
                 self.assertEqual(len(captured_run_ids), 3)
                 self.assertEqual(captured_run_ids[0], failed_run_id)

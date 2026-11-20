@@ -113,7 +113,7 @@ def _review_until_publication_snapshot_checkpoint(
 
     def checkpoint_before_snapshot(root, relative_path, content):
         if (
-            Path(root) == snapshot_root
+            Path(root).resolve() == snapshot_root.resolve()
             and relative_path == f"{episode_id}.json"
         ):
             _write_durable_checkpoint_marker(
@@ -762,7 +762,7 @@ class TranslationReviewTests(unittest.TestCase):
             nonlocal failure_seen
             if (
                 not failure_seen
-                and Path(root) == snapshot_root
+                and Path(root).resolve() == snapshot_root.resolve()
                 and relative_path == f"{self.episode_id}.json"
             ):
                 failure_seen = True
@@ -3411,6 +3411,35 @@ class TranslationReviewTests(unittest.TestCase):
                 candidate_file=outside,
             )
 
+    def test_review_decision_candidate_rejects_symbolic_link(self):
+        candidate_root = self.run_root / "ReviewCandidates" / self.episode_id
+        candidate_root.mkdir(parents=True)
+        candidate_link = candidate_root / "linked.md"
+        candidate_target = self.run_root / "Drafts" / "episode-0001.md"
+        try:
+            candidate_link.symlink_to(candidate_target)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"Symlink creation is unavailable: {exc}")
+
+        with self.assertRaisesRegex(ValueError, "symbolic links"):
+            record_translation_review_decision(
+                self.run_root,
+                self.episode_id,
+                stage_verdicts={
+                    "fidelity": ["fail"],
+                    "fluency": ["pass"],
+                    "style": ["pass"],
+                },
+                reviewer_id="synthetic reviewer",
+                reviewed_at_utc="2026-11-19T00:00:00Z",
+                policy_sha256="d" * 64,
+                max_rework_attempts=1,
+                candidate_file=candidate_link,
+                reviewed_candidate_sha256=hashlib.sha256(
+                    self.draft_bytes
+                ).hexdigest(),
+            )
+
     def test_publish_is_idempotent_and_does_not_overwrite_conflicts(self):
         review_path = self._approved_review()
         first = publish_reviewed_translation(
@@ -3450,7 +3479,7 @@ class TranslationReviewTests(unittest.TestCase):
 
         def fail_receipt_once(root, relative_path, content):
             if (
-                Path(root) == published_root
+                Path(root).resolve() == published_root.resolve()
                 and relative_path == f"{self.episode_id}.json"
             ):
                 raise OSError("synthetic receipt write failure")
