@@ -4,7 +4,7 @@
 
 - `已实现` I4 freshness snapshot 新增 `published_translations` consumer：依据当前版本化话目映射，扫描对应输出根下的 K4 runs，校验历史来源 artifact、审核快照、发布回执及可见译文字节；仅当输出与有效发布证据一致时标为 `verified`，来源版本变化标为 `stale`，缺失或无有效回执按具体情况标为 `unindexed`/`unverified`/`invalid`/`mismatch`。
 - `已实现` `scripts/snapshot_downstream_freshness.py --runs-root ... --project ...` 可显式请求该审计；Kakuyomu 编排和项目采集在有完整当前 AI 话目映射时自动纳入 run/output 状态。AI edition index 不是 `verified` 时，译文新鲜度会在快照构建阶段降为 `stale` 或 `unverified`，并与最终 consumer 摘要一起计算摘要。
-- `已验证` 最终完整非 E2E 回归 781 项运行、777 项通过、4 项 Windows 能力跳过、0 项失败；4 项定向审计/采集边界测试通过，相关模块 `py_compile`、`pip check` 和 `git diff --check` 通过。loopback mock E2E 7 项通过（465.148 秒，runner 退出码 0）。
+- `已验证` 最终完整非 E2E 回归 781 项运行、777 项通过、4 项 Windows 能力跳过、0 项失败；loopback mock E2E 7 项通过（465.148 秒，runner 退出码 0）。普通权限安全路径模块为 11 项运行、7 项通过、4 项跳过；管理员复跑为 11 项运行、10 项通过、仅 FIFO 跳过且 3 项 symlink 全部通过。4 项定向审计/采集边界测试、相关模块 `py_compile`、`pip check` 和 `git diff --check` 均通过。
 - `部分实现` 本审计只读且只核验已有 K4 证据和当前可见输出，不修复或重译 stale 译文，不写回 TM/知识库，也不替代正式运行时门禁。若当前 AI 映射不可用，无法建立逐话 expected translation map，因此本轮不会生成 `published_translations` consumer；此时不能将旧译文视为已验证。
 - `未验证` 当前试点无已批准 88 话映射/双版本审阅、无匹配计划回执、无 reviewed 全书知识，也未连接真实 Provider 或运行真实翻译；此功能不构成部署验收。
 - 详情和当前工作树证据见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
