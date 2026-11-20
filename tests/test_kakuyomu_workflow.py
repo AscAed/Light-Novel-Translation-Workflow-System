@@ -1369,8 +1369,10 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             "source_editions_manifest.json",
         )
         self.assertEqual(
-            plan_preview.call_args_list[0].kwargs["ai_edition_root"],
-            str(ai_edition_root),
+            Path(
+                plan_preview.call_args_list[0].kwargs["ai_edition_root"]
+            ).resolve(),
+            ai_edition_root.resolve(),
         )
         self.assertEqual(
             plan_preview.call_args_list[0].kwargs["source_edition"],
