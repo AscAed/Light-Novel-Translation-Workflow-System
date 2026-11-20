@@ -21,6 +21,7 @@
 - 基线：分支 `codex/translation-workflow-audit-20261117`，生产代码基线 `efa352ea5eaa2381de76500afec50f181dfdd02f`；新增内容仅为合成恢复测试，没有修改发布器实现。
 - `已验证` 新增 `TranslationReviewTests.test_publish_recovers_after_process_termination_before_receipt`：子进程完成正式译文与审核快照写入后、创建回执前停在认证检查点；父进程核验检查点、译文/快照字节及回执缺失后终止子进程。重试创建缺失回执并更新 run 状态；第二次重开不重写已有对象且所有持久字节稳定。
 - `已验证` 新测试单项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py` 完整非 E2E 回归 787 项运行、782 项通过、5 项 Windows 能力跳过、0 失败。跳过为 4 项符号链接创建限制及 1 项 Windows FIFO 不支持。
+- `已验证` hosted run `44828989181` 对提交 `dd188e34e111dea05011470ae266454db45d2a28` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、完整非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。
 - `未验证` 此合成测试验证指定用户态进程终止窗口，不证明内核崩溃、断电、文件系统或介质持久性；未调用真实 Provider，未运行真实作品试点。
 
 ## 2026-11-21 依赖与漏洞公告复查
