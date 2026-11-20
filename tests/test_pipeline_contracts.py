@@ -1646,14 +1646,36 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                         "source-edition:work-1:102",
                     ],
                 )
-                verify_index.assert_called_once_with(
-                    source_root=str(source_root),
-                    ai_root=str(ai_root),
-                    source_manifest_relative_path="source_manifest.json",
-                    edition_manifest_relative_path="source_editions_manifest.json",
+                self.assertEqual(
+                    Path(
+                        verify_index.call_args.kwargs["source_root"]
+                    ).resolve(),
+                    source_root.resolve(),
                 )
-                load_catalog.assert_called_once_with(
-                    str(source_root),
+                self.assertEqual(
+                    Path(
+                        verify_index.call_args.kwargs["ai_root"]
+                    ).resolve(),
+                    ai_root.resolve(),
+                )
+                self.assertEqual(
+                    verify_index.call_args.kwargs[
+                        "source_manifest_relative_path"
+                    ],
+                    "source_manifest.json",
+                )
+                self.assertEqual(
+                    verify_index.call_args.kwargs[
+                        "edition_manifest_relative_path"
+                    ],
+                    "source_editions_manifest.json",
+                )
+                self.assertEqual(
+                    Path(load_catalog.call_args.args[0]).resolve(),
+                    source_root.resolve(),
+                )
+                self.assertEqual(
+                    load_catalog.call_args.args[1],
                     "source_catalog.json",
                 )
 

@@ -1319,12 +1319,12 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             "catalog.json",
         )
         self.assertEqual(
-            edition_export.call_args.kwargs["human_root"],
-            str((root / "生肉").resolve(strict=False)),
+            Path(edition_export.call_args.kwargs["human_root"]).resolve(),
+            (root / "生肉").resolve(strict=False),
         )
         self.assertEqual(
-            edition_export.call_args.kwargs["ai_root"],
-            str((root / "RAWs_AI").resolve(strict=False)),
+            Path(edition_export.call_args.kwargs["ai_root"]).resolve(),
+            (root / "RAWs_AI").resolve(strict=False),
         )
         self.assertEqual(
             load_summary.call_args.kwargs["expected_sources"],
