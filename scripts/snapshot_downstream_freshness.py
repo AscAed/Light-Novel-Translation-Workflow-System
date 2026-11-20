@@ -13,6 +13,7 @@ from scripts.validate_knowledge_provenance import audit_knowledge_provenance
 from scripts.validate_tm_provenance import audit_translation_memory
 from source_manifest import load_manifest
 from story_summary_review import load_reviewed_story_summary
+from translation_review import audit_published_translation_freshness
 from utils import open_regular_file, resolve_relative_path, write_new_child_text
 
 
@@ -205,6 +206,47 @@ def _current_expected_sources(
     return expected_sources
 
 
+def _current_expected_translations(
+    *,
+    project: str | None,
+    config_file: str | None,
+    source_root: str,
+    manifest_relative_path: str,
+) -> list[dict]:
+    from pipeline import Config, get_chapter_specs
+
+    Config.load_config(project=project, config_file=config_file)
+    if Path(Config.RAW_DIR).resolve(strict=True) != Path(source_root).resolve(
+        strict=True
+    ):
+        raise ValueError("Configured RAW_DIR does not match --source-root.")
+    if not Config.SOURCE_MANIFEST_PATH:
+        raise ValueError("The current chapter map requires a source manifest.")
+    configured_manifest = resolve_relative_path(
+        Config.RAW_DIR,
+        Config.SOURCE_MANIFEST_PATH,
+    )
+    requested_manifest = resolve_relative_path(source_root, manifest_relative_path)
+    if configured_manifest != requested_manifest:
+        raise ValueError("Configured source manifest does not match --manifest.")
+    chapters = get_chapter_specs(
+        Config.RAW_DIR,
+        Config.OUTPUT_DIR,
+        Config.CHAPTER_MAP,
+        Config.SOURCE_MANIFEST_PATH,
+        source_input_root=Config.AI_EDITION_ROOT,
+    )
+    return [
+        {
+            "translation_file": chapter.translation_file,
+            "tm_key": chapter.tm_key,
+            "source_version_id": chapter.source_version_id,
+            "source_sha256": chapter.source_sha256,
+        }
+        for chapter in chapters
+    ]
+
+
 def build_downstream_freshness_snapshot(
     *,
     tm_data: dict | None,
@@ -216,6 +258,9 @@ def build_downstream_freshness_snapshot(
     knowledge_label: str | None = None,
     story_summary_path: str | None = None,
     expected_sources: list[dict] | None = None,
+    translation_runs_root: str | None = None,
+    expected_translations: list[dict] | None = None,
+    published_source_status: str | None = None,
     source_input_root: str | None = None,
     source_input_map: dict[str, dict] | None = None,
 ) -> dict:
@@ -285,6 +330,64 @@ def build_downstream_freshness_snapshot(
         if summary_digest:
             summary_consumer["sha256"] = summary_digest
         consumers["reviewed_story_summary"] = summary_consumer
+
+    if translation_runs_root is not None:
+        if expected_translations is None:
+            raise ValueError(
+                "Current versioned translation mappings are required to audit "
+                "published translations."
+            )
+        findings = audit_published_translation_freshness(
+            translation_runs_root,
+            translation_root,
+            expected_translations,
+        )
+        if published_source_status not in {None, *FRESHNESS_STATUSES}:
+            raise ValueError("Published source freshness status is invalid.")
+        if published_source_status not in {None, "verified"}:
+            propagated_status = (
+                "stale" if published_source_status == "stale" else "unverified"
+            )
+            findings = [
+                {
+                    **finding,
+                    "status": propagated_status,
+                    "detail": (
+                        "AI edition index is not verified against the current "
+                        "source; publication freshness cannot be confirmed."
+                    ),
+                }
+                for finding in findings
+            ]
+        output_digests = {}
+        for item in expected_translations:
+            output_path = resolve_relative_path(
+                translation_root,
+                item["translation_file"],
+                allow_missing=True,
+            )
+            if output_path.is_symlink():
+                output_digests[item["translation_file"]] = "symlink"
+            elif output_path.exists():
+                try:
+                    output_digests[item["translation_file"]] = (
+                        _sha256_regular_file(output_path)
+                    )
+                except (OSError, ValueError):
+                    output_digests[item["translation_file"]] = "unreadable"
+            else:
+                output_digests[item["translation_file"]] = None
+        consumer_input = {
+            "runs_root": str(Path(translation_runs_root)),
+            "expected": expected_translations,
+            "output_sha256": output_digests,
+            "findings": findings,
+        }
+        consumers["published_translations"] = {
+            "input": str(Path(translation_runs_root)),
+            **_consumer_snapshot(findings, "translation_file"),
+            "sha256": _json_sha256(consumer_input),
+        }
 
     manifest_sha256_after = _sha256_regular_file(manifest_path)
     if manifest_sha256_after != manifest_sha256_before:
@@ -412,6 +515,10 @@ def main(argv: list[str] | None = None) -> int:
         "--story-summary",
         help="Optional approved full-book STORY_SUMMARY JSON bundle.",
     )
+    parser.add_argument(
+        "--runs-root",
+        help="Optional Workflow/Runs root used to audit K4 published translations.",
+    )
     config_group = parser.add_mutually_exclusive_group()
     config_group.add_argument(
         "--project",
@@ -440,11 +547,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.knowledge_provenance
             else None
         )
-        if args.story_summary:
+        if args.story_summary or args.runs_root:
             if not args.project and not args.config:
                 raise ValueError(
-                    "--story-summary requires --project or --config so its "
-                    "source coverage can be checked against the current chapter map."
+                    "--story-summary and --runs-root require --project or --config "
+                    "to load the current versioned chapter map."
                 )
             expected_sources = _current_expected_sources(
                 project=args.project,
@@ -464,12 +571,23 @@ def main(argv: list[str] | None = None) -> int:
                 for item in expected_sources
                 if isinstance(item.get("source_input_file"), str)
             }
+            expected_translations = (
+                _current_expected_translations(
+                    project=args.project,
+                    config_file=args.config,
+                    source_root=args.source_root,
+                    manifest_relative_path=args.manifest,
+                )
+                if args.runs_root
+                else None
+            )
         else:
             if args.project or args.config:
                 raise ValueError(
-                    "--project/--config are only accepted with --story-summary."
+                    "--project/--config require --story-summary or --runs-root."
                 )
             expected_sources = None
+            expected_translations = None
             source_input_root = None
             source_input_map = None
         snapshot = build_downstream_freshness_snapshot(
@@ -486,6 +604,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             story_summary_path=args.story_summary,
             expected_sources=expected_sources,
+            translation_runs_root=args.runs_root,
+            expected_translations=expected_translations,
             source_input_root=source_input_root,
             source_input_map=source_input_map,
         )

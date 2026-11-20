@@ -474,6 +474,7 @@ def _resolve_project_ingestion_context(
         "project_root": project_path,
         "source_root": source_path,
         "translation_root": Path(translation_root),
+        "runs_root": project_path / "Workflow" / "Runs",
         "ai_root": project_path / "RAWs_AI",
         "tm_path": project_path / "Knowledge" / "translation_memory.json",
         "knowledge_path": (
@@ -563,6 +564,11 @@ def _ai_edition_index_freshness(
     for episode in index["episodes"]:
         if (
             not isinstance(episode, dict)
+            or not isinstance(episode.get("episode_id"), str)
+            or not episode.get("episode_id")
+            or isinstance(episode.get("position"), bool)
+            or not isinstance(episode.get("position"), int)
+            or episode["position"] < 1
             or not isinstance(episode.get("ai_archive_relative_path"), str)
             or not isinstance(episode.get("ai_edition_version_id"), str)
             or not isinstance(episode.get("ai_relative_path"), str)
@@ -581,6 +587,14 @@ def _ai_edition_index_freshness(
                 "source_version_id": episode["ai_edition_version_id"],
                 "source_input_file": episode["ai_relative_path"],
                 "source_sha256": episode["output_sha256"],
+                "episode_id": episode["episode_id"],
+                "translation_file": (
+                    f"episode-{episode['position']:04d}-"
+                    f"{episode['episode_id']}.md"
+                ),
+                "tm_key": (
+                    f"source-edition:{index['work_id']}:{episode['episode_id']}"
+                ),
             }
         )
     if not valid_episode_records:
@@ -716,6 +730,16 @@ def _record_project_ingestion_freshness(
     tm_path = context["tm_path"]
     knowledge_path = context["knowledge_path"]
     summary_path = context["story_summary_path"]
+    runs_root = context.get("runs_root")
+    translation_root = Path(context["translation_root"])
+    has_run_history = (
+        isinstance(runs_root, Path)
+        and (runs_root.exists() or runs_root.is_symlink())
+    )
+    has_published_outputs = translation_root.exists() and any(
+        not item.is_symlink() and item.is_file()
+        for item in translation_root.iterdir()
+    )
     tm_data = (
         _load_json_regular(tm_path, "Translation memory")
         if tm_path.exists() or tm_path.is_symlink()
@@ -736,10 +760,32 @@ def _record_project_ingestion_freshness(
         }
         for item in expected_sources or []
     }
+    expected_translations = (
+        [
+            {
+                "translation_file": item["translation_file"],
+                "tm_key": item["tm_key"],
+                "source_version_id": item["source_version_id"],
+                "source_sha256": item["source_sha256"],
+            }
+            for item in expected_sources
+            if isinstance(item.get("translation_file"), str)
+            and isinstance(item.get("tm_key"), str)
+            and isinstance(item.get("source_version_id"), str)
+            and isinstance(item.get("source_sha256"), str)
+        ]
+        if expected_sources
+        else None
+    )
+    if expected_translations is not None and len(expected_translations) != len(
+        expected_sources
+    ):
+        expected_translations = None
+    ai_status = ai_finding["status"]
     snapshot = build_downstream_freshness_snapshot(
         tm_data=tm_data,
         source_root=str(context["source_root"]),
-        translation_root=str(context["translation_root"]),
+        translation_root=str(translation_root),
         manifest_relative_path=edition_manifest_relative_path,
         tm_label=tm_path.name if tm_data is not None else None,
         knowledge_provenance=knowledge,
@@ -747,11 +793,22 @@ def _record_project_ingestion_freshness(
         story_summary_path=(
             str(summary_path) if can_audit_summary else None
         ),
-        expected_sources=expected_sources if can_audit_summary else None,
+        expected_sources=expected_sources,
+        translation_runs_root=(
+            str(runs_root)
+            if (
+                isinstance(runs_root, Path)
+                and expected_translations is not None
+            )
+            else None
+        ),
+        expected_translations=expected_translations,
+        published_source_status=(
+            ai_status if expected_translations is not None else None
+        ),
         source_input_root=str(context["ai_root"]),
         source_input_map=source_input_map,
     )
-    ai_status = ai_finding["status"]
     snapshot["consumers"]["ai_edition_index"] = {
         "input": "RAWs_AI/catalog.json",
         "summary": {
@@ -796,7 +853,6 @@ def _record_project_ingestion_freshness(
                 ),
             }
         ]
-
     persisted = persist_downstream_freshness_snapshot(
         snapshot,
         str(context["source_root"]),

@@ -372,6 +372,21 @@ class KakuyomuWorkflowTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            build_kwargs["expected_translations"],
+            [
+                {
+                    "translation_file": None,
+                    "tm_key": None,
+                    "source_version_id": "ai-edition-v1",
+                    "source_sha256": None,
+                }
+            ],
+        )
+        self.assertEqual(
+            build_kwargs["translation_runs_root"],
+            str(root / "Workflow" / "Runs"),
+        )
+        self.assertEqual(
             build_kwargs["knowledge_label"],
             "KNOWLEDGE_PROVENANCE_draft.json",
         )

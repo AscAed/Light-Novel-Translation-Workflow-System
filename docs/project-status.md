@@ -1,5 +1,14 @@
 # 项目现状
 
+## 2026-11-21 I4 已发布译文新鲜度审计
+
+- `已实现` I4 freshness snapshot 新增 `published_translations` consumer：依据当前版本化话目映射，扫描对应输出根下的 K4 runs，校验历史来源 artifact、审核快照、发布回执及可见译文字节；仅当输出与有效发布证据一致时标为 `verified`，来源版本变化标为 `stale`，缺失或无有效回执按具体情况标为 `unindexed`/`unverified`/`invalid`/`mismatch`。
+- `已实现` `scripts/snapshot_downstream_freshness.py --runs-root ... --project ...` 可显式请求该审计；Kakuyomu 编排和项目采集在有完整当前 AI 话目映射时自动纳入 run/output 状态。AI edition index 不是 `verified` 时，译文新鲜度会在快照构建阶段降为 `stale` 或 `unverified`，并与最终 consumer 摘要一起计算摘要。
+- `已验证` 最终完整非 E2E 回归 781 项运行、777 项通过、4 项 Windows 能力跳过、0 项失败；4 项定向审计/采集边界测试通过，相关模块 `py_compile`、`pip check` 和 `git diff --check` 通过。loopback mock E2E 7 项通过（465.148 秒，runner 退出码 0）。
+- `部分实现` 本审计只读且只核验已有 K4 证据和当前可见输出，不修复或重译 stale 译文，不写回 TM/知识库，也不替代正式运行时门禁。若当前 AI 映射不可用，无法建立逐话 expected translation map，因此本轮不会生成 `published_translations` consumer；此时不能将旧译文视为已验证。
+- `未验证` 当前试点无已批准 88 话映射/双版本审阅、无匹配计划回执、无 reviewed 全书知识，也未连接真实 Provider 或运行真实翻译；此功能不构成部署验收。
+- 详情和当前工作树证据见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+
 ## 2026-11-21 PR #71 自检与恢复修复
 
 - `已实现` 非正式 pipeline 校验章节映射目标，阻止绕过审核写入正式发布目录；正式 Kakuyomu 新 run 忽略没有本次 Drafts 输出对应的孤立 TM 键，让新逐章事务提交译文及候选记忆；失败后恢复会把 `recovered` 结果补入阶段报告；create-only JSON 写入先完整落盘再原子发布。
@@ -38,7 +47,7 @@
 - `已验证` 当前试点计划 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 为 `ready_for_review`，88 话、88 个来源有效、0 个 plan issue；摘要为 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。计划绑定 `source_catalog.raw-html-2026-11-17.json`，不应替换为摘要不同的 `source_catalog.discovered.json`；后者会触发 88 个 `stale_ai_edition_catalog`，属于输入不匹配，不是当前计划失效。
 - `已验证` 使用计划绑定的 catalog、manifest、AI 输入根及译文根执行 `scripts/run_kakuyomu_workflow.py --plan-only`，返回同一计划摘要、88/88 来源有效、0 issue/目标冲突/网络请求/Provider 调用/文件写入，且 `source_text_included=false`。同一来源清单下 `scripts/validate_source_editions.py` 返回 `verified`、88 话；AI/人读版输出分别为 774,253/799,293 bytes。该验证证明版本与文件一致性，不证明语义保真或人工阅读质量。
 - `部分实现` 当前人审模板与计划摘要、AI 索引和人读索引均匹配；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 88 项仍为 `pending`。`Workflow/Approvals/` 和 `Knowledge/STORY_SUMMARY_reviewed.json` 不存在，因此尚无匹配计划审批回执或 reviewed 全书概要；没有产生知识、译文或正式产物。
-- `用户报告` 用户抽查了人类版目录 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 与 AI 版目录 `projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件和大合集文件，未发现明显问题；AI 版大合集对象为 `projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。这是用户报告的抽样结果，本轮未独立读取或复核这些文件；不代表 88 话全量审阅、逐段保真验收或阅读器格式验收。详细记录见[开发与验证](development.md#2026-11-20-用户确认的原文抽样核实)。
+- `用户报告` 用户于 2026-11-21 再次确认：人类版目录 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 与 AI 版目录 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件及大合集文件均未发现明显问题。AI 版大合集对象为 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。这是用户报告；实际检查日期、抽样文件清单和检查标准未提供，本轮未独立读取或复核这些书籍文件，不代表 88 话全量审阅、逐段保真验收或阅读器格式验收。详细记录见[开发与验证](development.md#2026-11-20-用户确认的原文抽样核实)。
 - `未验证` 真实 Provider、模型路由/计费、译文质量和部署仍未验证。下一步先由有权限的人完成模板中的映射及双版本审核并生成匹配回执，再审核当前 bundle 绑定的全书知识；之后由凭据所有者核验端点、授权、模型路由和预算，执行获准单话试译及人工质量验收。用户已确认作品授权和职责所需数据类别，不应重复列为待确认项。
 - 完整命令、摘要、索引绑定和验证边界见[开发与验证](development.md#2026-11-20-k5-试点门禁复核)及[当前交接](handoffs/2026-11-15-translation-workflow.md)。
 

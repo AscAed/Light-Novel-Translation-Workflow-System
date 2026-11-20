@@ -35,6 +35,7 @@ from translation_review import (
     _REVIEW_CHECKS,
     _load_run,
     _mark_run_published_if_complete,
+    audit_published_translation_freshness,
     build_translation_run_manifest,
     has_verified_translation_publication,
     prepare_translation_review,
@@ -480,6 +481,85 @@ class TranslationReviewTests(unittest.TestCase):
             encoding="utf-8",
         )
         return review_path
+
+    def test_publication_freshness_verifies_current_k4_output(self):
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+
+        findings = audit_published_translation_freshness(
+            self.run_root.parent,
+            self.translation_root,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "tm_key": f"source-edition:{self.work_id}:{self.episode_id}",
+                    "source_version_id": self.plan["episodes"][0][
+                        "source_version_id"
+                    ],
+                    "source_sha256": self.plan["episodes"][0]["source_sha256"],
+                }
+            ],
+        )
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "status": "verified",
+                    "detail": (
+                        "Published bytes match a valid K4 receipt for the current source."
+                    ),
+                }
+            ],
+        )
+
+    def test_publication_freshness_marks_verified_old_source_as_stale(self):
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+
+        findings = audit_published_translation_freshness(
+            self.run_root.parent,
+            self.translation_root,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "tm_key": f"source-edition:{self.work_id}:{self.episode_id}",
+                    "source_version_id": "newer-source-version",
+                    "source_sha256": "b" * 64,
+                }
+            ],
+        )
+
+        self.assertEqual(findings[0]["status"], "stale")
+
+    def test_publication_freshness_does_not_trust_unreviewed_output(self):
+        (self.translation_root / "episode-0001.md").write_bytes(b"unreviewed output")
+
+        findings = audit_published_translation_freshness(
+            self.run_root.parent,
+            self.translation_root,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "tm_key": f"source-edition:{self.work_id}:{self.episode_id}",
+                    "source_version_id": self.plan["episodes"][0][
+                        "source_version_id"
+                    ],
+                    "source_sha256": self.plan["episodes"][0]["source_sha256"],
+                }
+            ],
+        )
+
+        self.assertEqual(findings[0]["status"], "unverified")
 
     def _ai_review_policy(self):
         path = self.root / "review-policy.json"

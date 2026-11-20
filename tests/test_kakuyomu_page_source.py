@@ -1160,6 +1160,7 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
             "source_root": source_root,
             "ai_root": ai_root,
             "translation_root": translation_root,
+            "runs_root": source_root.parent / "Workflow" / "Runs",
             "tm_path": source_root / "translation_memory.json",
             "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
             "story_summary_path": summary_path,
@@ -1170,6 +1171,9 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
                 "source_version_id": "ai-version-1",
                 "source_input_file": "chapters/episode.md",
                 "source_sha256": "a" * 64,
+                "episode_id": "episode-1",
+                "translation_file": "episode-0001-episode-1.md",
+                "tm_key": "source-edition:work-1:episode-1",
             }
         ]
         snapshot = {"consumers": {}}
@@ -1222,6 +1226,22 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
             },
         )
         self.assertEqual(kwargs["expected_sources"], expected_sources)
+        self.assertEqual(
+            kwargs["translation_runs_root"],
+            str(context["runs_root"]),
+        )
+        self.assertEqual(
+            kwargs["expected_translations"],
+            [
+                {
+                    "translation_file": "episode-0001-episode-1.md",
+                    "tm_key": "source-edition:work-1:episode-1",
+                    "source_version_id": "ai-version-1",
+                    "source_sha256": "a" * 64,
+                }
+            ],
+        )
+        self.assertEqual(kwargs["published_source_status"], "verified")
 
     def test_project_mode_rejects_roots_outside_project_archive_before_fetch(self):
         projects_root = self.root / "projects"

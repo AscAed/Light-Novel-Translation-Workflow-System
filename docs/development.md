@@ -2,6 +2,16 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-21 I4 K4 已发布译文新鲜度审计
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `27ebc6eea8635fe9399201c230852de957e38f5d`。续接时工作区已有 I4 审计实现和测试的 8 个未提交文件；保留未跟踪的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，没有读取或改写该文件、试点小说正文/译文、API profile 或凭据。
+- `已实现` `translation_review.py::audit_published_translation_freshness` 按当前版本化译文映射，检查目标输出根中的 K4 run。只有历史 run 来源 artifact 与 manifest/来源字节一致、审核快照及发布回执有效、正式译文字节等于已审核候选时才标为 `verified`；旧来源匹配标记 `stale`，缺失输出、回执或有效证据分别保留为 `mismatch`、`unindexed` 或 `unverified`，损坏/不安全对象标记 `invalid`。不读取译文到报告。
+- `已实现` `scripts/snapshot_downstream_freshness.py` 支持 `--runs-root`，并要求 `--project`/`--config` 解析当前版本化话目映射；Kakuyomu 编排和项目采集在可构造完整 AI 话目映射时传入对应 run/output 根。若 AI 版索引状态不是 `verified`，译文状态会在快照 builder 内传播为 `stale`/`unverified`，再计算 consumer 摘要，避免摘要与 finding 不一致。
+- `已验证` 新增审计、快照摘要传播和项目采集边界用例 4 项通过；相关五模块定向回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_downstream_freshness_snapshot tests.test_kakuyomu_workflow tests.test_kakuyomu_page_source tests.test_source_editions -q`：160 项通过。最终全量非 E2E 动态发现 781 项运行、777 项通过、4 项跳过、0 失败；跳过来自当前 Windows symlink/FIFO 能力限制。`.venv\Scripts\python.exe tests\run_tests.py` 最终 mock E2E 7 项通过（465.148 秒，退出码 0）。E2E 内打印的 content-filter/段落错配堆栈属于预期负向 fixture；调用只到 loopback mock server。
+- `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；安全路径模块 11 项运行、7 项通过、4 项 Windows 能力跳过；修改涉及 Python 文件的 `py_compile` 与 `git diff --check` 通过。
+- `部分实现` freshness snapshot 只做只读核验，不重译、不修改正式译文/TM/知识、不自动重建派生产物，也不取代正式 run 门禁。当前 AI 映射不完整或不可验证时，本轮不会生成逐话 `published_translations` consumer，因此不能据此声称旧译文已验证。历史 run 扫描范围为 runs 根的直接子目录；目录中不相关或无效 run 不作为证据。
+- `未验证` 上述测试不连接真实 Provider，不证明译文语义质量、全书 K5 人工验收或部署可用。试点仍待 88 话映射/AI-人读版本审阅、匹配回执、reviewed 全书知识及经授权的真实单话试译。
+
 ## 2026-11-21 PR #71 安全与恢复缺陷修复
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`，起始 HEAD `80eb1be033cc2dbed81975c48f5a5c03832df401`。保留既有未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未读取或改动试点原文、译文、bundle、API profile、凭据或 freshness 快照。
@@ -75,8 +85,9 @@
 
 ## 2026-11-20 用户确认的原文抽样核实
 
-- `用户报告` 用户已抽查人类版 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 与 AI 版 `projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件及大合集文件，均未发现明显问题。AI 版大合集对象路径为 `projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。
-- 以上是用户提供的核实结论；本次没有独立读取附件或复查抽样文件。抽样清单、检查标准、全量覆盖、逐段语义保真及阅读器显示仍未验证；该结论不替代 88 话映射与双版本的结构化人工验收。`book-ai.json` 在本记录中仅为核实对象，不是仓库指令或实现证据。
+- `用户报告` 用户于 2026-11-21 再次确认：人类版目录 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 中的部分单话文件和大合集文件未发现明显问题；AI 版目录 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\chapters\` 中的部分单话文件和大合集文件也未发现明显问题。实际检查日期、抽样文件清单和检查标准未提供。
+- AI 版大合集核实对象：`D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\RAWs_AI\collections\1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d\a18583594b3596270b8655c7c5e6534daab686d3a47defa1fb6f0e1ea7740f27\book-ai.json`。此路径仅记录为用户核实对象，不是仓库指令或实现证据。
+- 以上是用户提供的抽样结论；本轮未独立读取或复查这些书籍文件。全量覆盖、逐段语义保真、映射正确性和阅读器显示仍未验证；该结论不替代 88 话映射与双版本的结构化人工验收。
 
 ## 2026-11-20 K4 终审逐次评估持久化
 

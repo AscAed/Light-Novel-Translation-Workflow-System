@@ -12,6 +12,7 @@ from pathlib import Path
 from book_bundles import DEFAULT_MAX_TOTAL_BUNDLE_BYTES
 from source_editions import read_verified_ai_edition_bytes, verify_ai_edition_index
 from source_manifest import verify_current_normalized_source_metadata
+from source_manifest import load_manifest, verify_manifest_artifact
 from translation_review_state import (
     create_review_decision_record,
     create_review_resolution_record,
@@ -1549,6 +1550,201 @@ def _episode_has_valid_publication(
             "Published translation differs from its reviewed candidate."
         )
     return True
+
+
+def _verify_archived_run_source(run: dict, episode: dict) -> bytes:
+    """Read the immutable normalized source recorded by a historical run."""
+    source_root = Path(run["source_root"]).resolve(strict=True)
+    manifest_path = resolve_relative_path(
+        str(source_root),
+        run["edition_manifest"],
+    )
+    manifest = load_manifest(manifest_path)
+    artifact = verify_manifest_artifact(
+        str(source_root),
+        manifest,
+        episode["source_version_id"],
+    )
+    if (
+        artifact["kind"] != "normalized_source"
+        or artifact["relative_path"] != episode["source_file"]
+        or artifact["content_sha256"] != episode["source_sha256"]
+    ):
+        raise ValueError("Historical run source does not match its edition manifest.")
+    source_path = resolve_relative_path(
+        str(source_root),
+        artifact["relative_path"],
+    )
+    with open_regular_file(source_path, binary=True) as stream:
+        content = stream.read(_MAX_TRANSLATION_BYTES + 1)
+    if (
+        len(content) > _MAX_TRANSLATION_BYTES
+        or not hmac.compare_digest(
+            _sha256_bytes(content),
+            episode["source_sha256"],
+        )
+    ):
+        raise ValueError("Historical run source bytes do not match their manifest.")
+    return content
+
+
+def audit_published_translation_freshness(
+    runs_root: str | Path,
+    translation_root: str | Path,
+    expected_translations: list[dict],
+) -> list[dict[str, str]]:
+    """Audit visible translations against current source identities and K4 receipts."""
+    supplied_runs_root = Path(runs_root)
+    if supplied_runs_root.is_symlink():
+        raise ValueError("Translation runs root cannot be a symbolic link.")
+    output_root = Path(translation_root).resolve(strict=True)
+    if not output_root.is_dir():
+        raise ValueError("Translation root must be a directory.")
+    if not isinstance(expected_translations, list) or not expected_translations:
+        raise ValueError("Current versioned translation mappings are required.")
+
+    expected_by_file = {}
+    for item in expected_translations:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("translation_file"), str)
+            or not isinstance(item.get("tm_key"), str)
+            or not isinstance(item.get("source_version_id"), str)
+            or not isinstance(item.get("source_sha256"), str)
+            or not _SHA256_PATTERN.fullmatch(item["source_sha256"])
+            or item["translation_file"] in expected_by_file
+        ):
+            raise ValueError("Current translation mapping is invalid or duplicated.")
+        expected_by_file[item["translation_file"]] = item
+
+    run_directories = []
+    if supplied_runs_root.exists():
+        if not supplied_runs_root.is_dir():
+            raise ValueError("Translation runs root must be a directory.")
+        run_directories = sorted(
+            supplied_runs_root.iterdir(),
+            key=lambda item: item.name,
+        )
+
+    loaded_runs = []
+    for candidate_root in run_directories:
+        if candidate_root.is_symlink() or not candidate_root.is_dir():
+            continue
+        try:
+            run_root, run, run_bytes = _load_run(candidate_root)
+            run_output_root = Path(run["translation_root"]).resolve(strict=True)
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            continue
+        if run_output_root == output_root:
+            loaded_runs.append((run_root, run, run_bytes))
+
+    findings = []
+    for translation_file, expected in expected_by_file.items():
+        identity = translation_file
+        output_path = resolve_relative_path(
+            str(output_root),
+            translation_file,
+            allow_missing=True,
+        )
+        output_bytes = None
+        output_error = None
+        if output_path.is_symlink():
+            output_error = "Published translation path is a symbolic link."
+        elif output_path.exists():
+            try:
+                with open_regular_file(output_path, binary=True) as stream:
+                    output_bytes = stream.read(_MAX_TRANSLATION_BYTES + 1)
+                if len(output_bytes) > _MAX_TRANSLATION_BYTES:
+                    output_error = "Published translation exceeds the size limit."
+            except (OSError, ValueError):
+                output_error = "Published translation could not be safely read."
+
+        current_match = False
+        stale_match = False
+        invalid_receipt = False
+        missing_published_output = False
+        for run_root, run, run_bytes in loaded_runs:
+            for episode in run["episodes"]:
+                if (
+                    episode["translation_file"] != translation_file
+                    or episode["tm_key"] != expected["tm_key"]
+                ):
+                    continue
+                published_root = run_root / "Published"
+                receipt_path = published_root / f"{episode['episode_id']}.json"
+                if not receipt_path.exists() and not receipt_path.is_symlink():
+                    continue
+                try:
+                    candidate_bytes = _load_verified_publication_candidate(
+                        run_root,
+                        run,
+                        run_bytes,
+                        episode,
+                        input_verifier=_verify_archived_run_source,
+                    )
+                except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+                    invalid_receipt = True
+                    continue
+                if candidate_bytes is None:
+                    invalid_receipt = True
+                    continue
+                if output_bytes is None:
+                    missing_published_output = True
+                    continue
+                if not hmac.compare_digest(
+                    _sha256_bytes(candidate_bytes),
+                    _sha256_bytes(output_bytes),
+                ):
+                    continue
+                if (
+                    episode["source_version_id"]
+                    == expected["source_version_id"]
+                    and episode["source_sha256"] == expected["source_sha256"]
+                ):
+                    current_match = True
+                else:
+                    stale_match = True
+
+        if output_error is not None:
+            status, detail = "invalid", output_error
+        elif current_match:
+            status, detail = (
+                "verified",
+                "Published bytes match a valid K4 receipt for the current source.",
+            )
+        elif stale_match:
+            status, detail = (
+                "stale",
+                "Published bytes are valid but belong to an older source version.",
+            )
+        elif invalid_receipt:
+            status, detail = (
+                "invalid",
+                "A matching publication receipt or review snapshot failed verification.",
+            )
+        elif missing_published_output:
+            status, detail = (
+                "mismatch",
+                "A valid publication receipt exists but its output file is missing.",
+            )
+        elif output_bytes is None:
+            status, detail = (
+                "unindexed",
+                "No published translation exists for the current mapping.",
+            )
+        else:
+            status, detail = (
+                "unverified",
+                "Published output has no matching verified K4 receipt.",
+            )
+        findings.append(
+            {
+                "translation_file": identity,
+                "status": status,
+                "detail": detail,
+            }
+        )
+    return findings
 
 
 def has_verified_translation_publication(

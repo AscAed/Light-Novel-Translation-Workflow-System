@@ -741,13 +741,19 @@ def _refresh_downstream_freshness_snapshot(
         and Path(summary_value).suffix.casefold() == ".json"
         else None
     )
+    runs_root = Path(workspace_dir) / "Workflow" / "Runs"
     configured_paths = (tm_path, knowledge_path, summary_path)
     present_paths = [
         path
         for path in configured_paths
         if path is not None and (path.exists() or path.is_symlink())
     ]
-    if not present_paths:
+    has_run_history = runs_root.exists() or runs_root.is_symlink()
+    has_published_outputs = translation_root.exists() and any(
+        not item.is_symlink() and item.is_file()
+        for item in translation_root.iterdir()
+    )
+    if not present_paths and not has_run_history and not has_published_outputs:
         return {"status": "not_needed"}
 
     try:
@@ -779,6 +785,15 @@ def _refresh_downstream_freshness_snapshot(
             }
             for episode in plan.get("episodes", [])
         ]
+        expected_translations = [
+            {
+                "translation_file": episode.get("translation_file"),
+                "tm_key": episode.get("tm_key"),
+                "source_version_id": episode.get("source_version_id"),
+                "source_sha256": episode.get("source_sha256"),
+            }
+            for episode in plan.get("episodes", [])
+        ]
         source_input_map = {
             item["filename"]: {
                 "source_version_id": item["source_version_id"],
@@ -803,7 +818,9 @@ def _refresh_downstream_freshness_snapshot(
             knowledge_provenance=knowledge,
             knowledge_label=knowledge_path.name if knowledge is not None else None,
             story_summary_path=summary_file,
-            expected_sources=expected_sources if summary_file else None,
+            expected_sources=expected_sources,
+            translation_runs_root=str(runs_root),
+            expected_translations=expected_translations,
             source_input_root=source_input_root,
             source_input_map=source_input_map,
         )

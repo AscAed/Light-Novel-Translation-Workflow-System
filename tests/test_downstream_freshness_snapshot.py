@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from scripts import snapshot_downstream_freshness
 from scripts.snapshot_downstream_freshness import (
+    build_downstream_freshness_snapshot,
     main,
     persist_downstream_freshness_snapshot,
 )
@@ -351,6 +352,94 @@ class DownstreamFreshnessSnapshotTests(unittest.TestCase):
             list(snapshot["consumers"]),
             ["translation_memory"],
         )
+
+    def test_snapshot_audits_published_translations_without_reading_content_into_report(
+        self,
+    ):
+        runs_root = self.root / "Workflow" / "Runs"
+        runs_root.mkdir(parents=True)
+
+        snapshot = build_downstream_freshness_snapshot(
+            tm_data=None,
+            source_root=str(self.source_root),
+            translation_root=str(self.translation_root),
+            manifest_relative_path="source_manifest.json",
+            tm_label=None,
+            expected_translations=[
+                {
+                    "translation_file": "chapter.md",
+                    "tm_key": "episode-1",
+                    "source_version_id": "normalized-v1",
+                    "source_sha256": hashlib.sha256(
+                        self.raw_text.encode("utf-8")
+                    ).hexdigest(),
+                }
+            ],
+            translation_runs_root=str(runs_root),
+        )
+
+        consumer = snapshot["consumers"]["published_translations"]
+        self.assertEqual(
+            consumer["findings"][0]["status"],
+            "unverified",
+        )
+        self.assertRegex(consumer["sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn(self.raw_text, json.dumps(snapshot, ensure_ascii=False))
+        self.assertNotIn(
+            self.translation_text,
+            json.dumps(snapshot, ensure_ascii=False),
+        )
+
+    def test_published_translation_digest_binds_upstream_freshness_status(self):
+        runs_root = self.root / "Workflow" / "Runs"
+        runs_root.mkdir(parents=True)
+        expected = [
+            {
+                "translation_file": "chapter.md",
+                "tm_key": "episode-1",
+                "source_version_id": "normalized-v1",
+                "source_sha256": hashlib.sha256(
+                    self.raw_text.encode("utf-8")
+                ).hexdigest(),
+            }
+        ]
+
+        with patch(
+            "scripts.snapshot_downstream_freshness.audit_published_translation_freshness",
+            return_value=[
+                {
+                    "translation_file": "chapter.md",
+                    "status": "verified",
+                    "detail": "verified fixture",
+                }
+            ],
+        ):
+            verified = build_downstream_freshness_snapshot(
+                tm_data=None,
+                source_root=str(self.source_root),
+                translation_root=str(self.translation_root),
+                manifest_relative_path="source_manifest.json",
+                tm_label=None,
+                expected_translations=expected,
+                translation_runs_root=str(runs_root),
+                published_source_status="verified",
+            )
+            stale = build_downstream_freshness_snapshot(
+                tm_data=None,
+                source_root=str(self.source_root),
+                translation_root=str(self.translation_root),
+                manifest_relative_path="source_manifest.json",
+                tm_label=None,
+                expected_translations=expected,
+                translation_runs_root=str(runs_root),
+                published_source_status="stale",
+            )
+
+        verified_consumer = verified["consumers"]["published_translations"]
+        stale_consumer = stale["consumers"]["published_translations"]
+        self.assertEqual(verified_consumer["findings"][0]["status"], "verified")
+        self.assertEqual(stale_consumer["findings"][0]["status"], "stale")
+        self.assertNotEqual(verified_consumer["sha256"], stale_consumer["sha256"])
 
     def test_content_addressed_persistence_is_idempotent_and_append_only(self):
         first = {
