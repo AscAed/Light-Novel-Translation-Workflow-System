@@ -13,9 +13,11 @@
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Codex/Agent 工作约束、验证与文档维护规则 |
 | [项目现状](docs/project-status.md) | 以仓库证据记录已实现、部分实现、计划和未知 |
+| [项目自检](docs/audits/2026-11-21-project-self-audit.md) | 当前审计范围、风险优先级、证据和未验收门槛 |
 | [架构与边界](docs/architecture.md) | 当前模块、数据流、接口与目标边界 |
 | [翻译流程](docs/translation-workflow.md) | 当前流水线阶段、角色职责、质量要求 |
 | [知识库治理](docs/knowledge-governance.md) | 当前知识数据与建议的审核、写入规则 |
+| [全书到单话目标](docs/end-to-end-workflow-target.md) | 目标流程、分阶段设计和未实现验收条件 |
 | [开发与验证](docs/development.md) | 环境、配置、命令、测试事实和限制 |
 | [路线图](docs/roadmap.md) | 分阶段目标、依赖、交付物与验收条件 |
 | [试点映射人工审阅](docs/handoffs/2026-11-16-pilot-plan-review.md) | 88 话计划摘要、人工核对项及尚未批准的边界 |
