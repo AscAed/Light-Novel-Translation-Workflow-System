@@ -49,3 +49,7 @@
 - `已验证` 当前 Windows/Python 3.14.7 工作树运行 785 项非 E2E 测试，780 项通过、5 项因 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过。`pip check`、YAML 语法、相关 runner/模块编译与 `git diff --check` 通过。
 - `未验证` 其他 Python/OS 组合、真实 Provider/质量与部署；hosted matrix 仅证明提交 `36881d8` 在指定 Python 3.14 runner 上的自动化回归结果。
 - 其余人工试点、真实 Provider/质量、依赖锁定以及是否建立分支保护等门槛不因 CI 配置而关闭。
+- `已验证` 本次续接开始时 HEAD 为 `07d5a0334de945fb47bff5571c76efc703ca980c`；其前代码提交 `611805a93278b13fe24734922159d2b8b0be5c53` 新增 K3 正式润色响应契约失败事务回归：异常时不创建译文、不更新 TM，StageReport 记录 `polishing`。完整非 E2E 回归 788 项运行、783 项通过、5 项因 Windows symlink/FIFO 能力跳过；loopback mock E2E 7 项通过（209.754 秒）；`.venv` `pip check` 无依赖冲突。详细证据见[开发与验证](../development.md#2026-11-21-k3-正式润色失败事务门禁)。
+- `已验证` hosted run `44832466495` 覆盖实现提交 `611805a93278b13fe24734922159d2b8b0be5c53`，run `44833281731` 覆盖随后纯文档提交 `07d5a0334de945fb47bff5571c76efc703ca980c`；两次 Ubuntu/Windows Python 3.14 job 均通过，CodeRabbit 为 `SKIPPED`。PR #71 仍为 `OPEN`、mergeable，但无正式 review decision，未合并。
+- `用户报告` 人类版与 AI 版部分单话和合集抽样结果已记入[开发记录](../development.md#2026-11-21-用户报告的原文抽样核实)。抽查日期、样本清单及标准未知；不作为全量人工验收或 Codex 独立核实证据。
+- 当前未关闭项仍包括 88 话映射/双版本逐话人工验收、计划审批回执和 reviewed 全书知识、真实 Provider 受控试译与人工语义质量验收；部署形态未确认，依赖未锁定。自检没有足够证据支持删除或升级直接依赖，也没有验证过的线上部署目标。
