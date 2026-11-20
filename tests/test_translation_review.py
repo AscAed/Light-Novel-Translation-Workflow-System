@@ -174,7 +174,7 @@ def _review_until_run_state_checkpoint(
             }
         )
 
-    def checkpoint_before_run_state(run_root, run, run_bytes):
+    def checkpoint_before_run_state(run_root, run, run_bytes, **_kwargs):
         _write_durable_checkpoint_marker(
             Path(marker_path),
             {
@@ -4008,6 +4008,21 @@ class TranslationReviewTests(unittest.TestCase):
             source_bytes,
             (self.ai_root / run["episodes"][0]["source_input_file"]).read_bytes(),
         )
+        with patch.object(
+            translation_review,
+            "_verify_run_book_bundle",
+            wraps=translation_review._verify_run_book_bundle,
+        ) as verify_bundle:
+            verify_inputs, revalidate_bundle = (
+                translation_review._make_batch_input_verifier(run)
+            )
+            verify_inputs(run, run["episodes"][0])
+            verify_inputs(run, run["episodes"][0])
+            self.assertEqual(verify_bundle.call_count, 1)
+            bundle_path.write_bytes(bundle_bytes + b"changed")
+            with self.assertRaisesRegex(ValueError, "book bundle changed"):
+                revalidate_bundle()
+            self.assertEqual(verify_bundle.call_count, 2)
 
 
 if __name__ == "__main__":

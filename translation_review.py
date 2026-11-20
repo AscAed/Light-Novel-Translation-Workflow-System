@@ -316,6 +316,75 @@ def _load_current_ai_index(run: dict):
     return source_root, ai_root, index_result
 
 
+def _verify_run_book_bundle(
+    run: dict,
+    *,
+    source_root: Path | None = None,
+    ai_root: Path | None = None,
+) -> None:
+    book_bundle = run["book_bundle"]
+    if book_bundle is None:
+        return
+    source_root = source_root or Path(run["source_root"]).resolve(strict=True)
+    ai_root = ai_root or Path(run["ai_root"]).resolve(strict=True)
+    set_path = resolve_relative_path(
+        str(source_root),
+        book_bundle["bundle_set_relative_path"],
+    )
+    with open_regular_file(set_path, binary=True) as stream:
+        set_bytes = stream.read(4 * 1024 * 1024 + 1)
+    if (
+        len(set_bytes) > 4 * 1024 * 1024
+        or not hmac.compare_digest(
+            _sha256_bytes(set_bytes),
+            book_bundle["bundle_set_sha256"],
+        )
+    ):
+        raise ValueError("Translation run book bundle set changed.")
+    try:
+        bundle_set = json.loads(
+            set_bytes.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Translation run book bundle set is invalid.") from exc
+    ai_record = (
+        bundle_set.get("bundles", {}).get("ai")
+        if isinstance(bundle_set, dict)
+        else None
+    )
+    if (
+        not isinstance(ai_record, dict)
+        or ai_record.get("bundle_id") != book_bundle["ai_bundle_id"]
+        or ai_record.get("relative_path")
+        != book_bundle["ai_bundle_relative_path"]
+        or ai_record.get("sha256") != book_bundle["ai_bundle_sha256"]
+        or bundle_set.get("source_snapshot_id")
+        != book_bundle["source_snapshot_id"]
+    ):
+        raise ValueError("Translation run book bundle set identity changed.")
+    ai_bundle_path = resolve_relative_path(
+        str(ai_root),
+        book_bundle["ai_bundle_relative_path"],
+    )
+    ai_bundle_digest = hashlib.sha256()
+    ai_bundle_size = 0
+    with open_regular_file(ai_bundle_path, binary=True) as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            ai_bundle_size += len(chunk)
+            if ai_bundle_size > DEFAULT_MAX_TOTAL_BUNDLE_BYTES:
+                raise ValueError("Translation run AI book bundle is too large.")
+            ai_bundle_digest.update(chunk)
+    if not hmac.compare_digest(
+        ai_bundle_digest.hexdigest(),
+        book_bundle["ai_bundle_sha256"],
+    ):
+        raise ValueError("Translation run AI book bundle changed.")
+
+
 def _verify_index_bound_inputs(
     run: dict,
     episode: dict,
@@ -323,65 +392,14 @@ def _verify_index_bound_inputs(
     source_root: Path,
     ai_root: Path,
     index_result: dict,
+    verify_book_bundle: bool = True,
 ) -> bytes:
-    book_bundle = run["book_bundle"]
-    if book_bundle is not None:
-        set_path = resolve_relative_path(
-            str(source_root),
-            book_bundle["bundle_set_relative_path"],
+    if verify_book_bundle:
+        _verify_run_book_bundle(
+            run,
+            source_root=source_root,
+            ai_root=ai_root,
         )
-        with open_regular_file(set_path, binary=True) as stream:
-            set_bytes = stream.read(4 * 1024 * 1024 + 1)
-        if (
-            len(set_bytes) > 4 * 1024 * 1024
-            or not hmac.compare_digest(
-                _sha256_bytes(set_bytes),
-                book_bundle["bundle_set_sha256"],
-            )
-        ):
-            raise ValueError("Translation run book bundle set changed.")
-        try:
-            bundle_set = json.loads(
-                set_bytes.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Translation run book bundle set is invalid.") from exc
-        ai_record = (
-            bundle_set.get("bundles", {}).get("ai")
-            if isinstance(bundle_set, dict)
-            else None
-        )
-        if (
-            not isinstance(ai_record, dict)
-            or ai_record.get("bundle_id") != book_bundle["ai_bundle_id"]
-            or ai_record.get("relative_path")
-            != book_bundle["ai_bundle_relative_path"]
-            or ai_record.get("sha256") != book_bundle["ai_bundle_sha256"]
-            or bundle_set.get("source_snapshot_id")
-            != book_bundle["source_snapshot_id"]
-        ):
-            raise ValueError("Translation run book bundle set identity changed.")
-        ai_bundle_path = resolve_relative_path(
-            str(ai_root),
-            book_bundle["ai_bundle_relative_path"],
-        )
-        ai_bundle_digest = hashlib.sha256()
-        ai_bundle_size = 0
-        with open_regular_file(ai_bundle_path, binary=True) as stream:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                ai_bundle_size += len(chunk)
-                if ai_bundle_size > DEFAULT_MAX_TOTAL_BUNDLE_BYTES:
-                    raise ValueError("Translation run AI book bundle is too large.")
-                ai_bundle_digest.update(chunk)
-        if not hmac.compare_digest(
-            ai_bundle_digest.hexdigest(),
-            book_bundle["ai_bundle_sha256"],
-        ):
-            raise ValueError("Translation run AI book bundle changed.")
     indexed = index_result["episodes_by_id"].get(episode["episode_id"])
     if (
         indexed is None
@@ -400,7 +418,12 @@ def _verify_index_bound_inputs(
     )
 
 
-def _verify_current_inputs(run: dict, episode: dict) -> bytes:
+def _verify_current_inputs(
+    run: dict,
+    episode: dict,
+    *,
+    verify_book_bundle: bool = True,
+) -> bytes:
     source_root, ai_root, index_result = _load_current_ai_index(run)
     if index_result["index_sha256"] != run["ai_index_sha256"]:
         raise ValueError("AI edition index changed after translation.")
@@ -410,6 +433,7 @@ def _verify_current_inputs(run: dict, episode: dict) -> bytes:
         source_root=source_root,
         ai_root=ai_root,
         index_result=index_result,
+        verify_book_bundle=verify_book_bundle,
     )
 
 
@@ -423,6 +447,33 @@ def _verify_historical_publication_inputs(run: dict, episode: dict) -> bytes:
         ai_root=ai_root,
         index_result=index_result,
     )
+
+
+def _make_batch_input_verifier(run: dict):
+    bundle_verified = False
+    bundle_error = None
+
+    def verify_inputs(active_run: dict, episode: dict) -> bytes:
+        nonlocal bundle_verified, bundle_error
+        if not bundle_verified and bundle_error is None:
+            try:
+                _verify_run_book_bundle(active_run)
+            except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+                bundle_error = exc
+        if bundle_error is not None:
+            raise bundle_error
+        bundle_verified = True
+        return _verify_current_inputs(
+            active_run,
+            episode,
+            verify_book_bundle=False,
+        )
+
+    def revalidate_bundle() -> None:
+        if bundle_verified:
+            _verify_run_book_bundle(run)
+
+    return verify_inputs, revalidate_bundle
 
 
 def _load_draft(
@@ -1564,7 +1615,11 @@ def has_verified_translation_publication(
 
 
 def _mark_run_published_if_complete(
-    run_root: Path, run: dict, run_bytes: bytes
+    run_root: Path,
+    run: dict,
+    run_bytes: bytes,
+    *,
+    input_verifier=_verify_current_inputs,
 ) -> str | None:
     """Advance run state only while every publication artifact still matches."""
 
@@ -1586,6 +1641,7 @@ def _mark_run_published_if_complete(
                 run,
                 run_bytes,
                 episode,
+                input_verifier=input_verifier,
             ):
                 complete = False
                 break
@@ -1606,6 +1662,7 @@ def publish_reviewed_translation(
     review_file: str | Path,
     *,
     reconcile_run: bool = True,
+    _input_verifier=_verify_current_inputs,
 ) -> dict:
     run_root, run, run_bytes = _load_run(run_directory)
     episode = _run_episode(run, episode_id)
@@ -1616,6 +1673,7 @@ def publish_reviewed_translation(
         run=run,
         run_bytes=run_bytes,
         episode=episode,
+        input_verifier=_input_verifier,
     )
     _demote_published_run_if_needed(run_root, run)
     output_root = Path(run["translation_root"]).resolve(strict=True)
@@ -1750,7 +1808,12 @@ def publish_reviewed_translation(
             raise ValueError("Existing publication receipt conflicts with this run.")
 
     run_status = (
-        _mark_run_published_if_complete(run_root, run, run_bytes)
+        _mark_run_published_if_complete(
+            run_root,
+            run,
+            run_bytes,
+            input_verifier=_input_verifier,
+        )
         if reconcile_run
         else None
     )
@@ -1784,6 +1847,7 @@ def publish_reviewed_run(
         raise ValueError("Review directory must not be a symbolic link.")
     reviews_root_exists = reviews_root.is_dir()
     _demote_published_run_if_needed(run_root, run)
+    batch_input_verifier, revalidate_bundle = _make_batch_input_verifier(run)
     published = []
     pending = []
     failed = []
@@ -1804,6 +1868,7 @@ def publish_reviewed_run(
                     run,
                     run_bytes,
                     episode,
+                    input_verifier=batch_input_verifier,
                 )
                 if candidate_bytes is not None:
                     output_root = Path(run["translation_root"]).resolve(
@@ -1825,6 +1890,7 @@ def publish_reviewed_run(
                     run,
                     run_bytes,
                     episode,
+                    input_verifier=batch_input_verifier,
                 )
             except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
                 failed.append(
@@ -1861,6 +1927,7 @@ def publish_reviewed_run(
                 episode["episode_id"],
                 review_path,
                 reconcile_run=False,
+                _input_verifier=batch_input_verifier,
             )
         except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
             failed.append(
@@ -1882,6 +1949,18 @@ def publish_reviewed_run(
             }
         )
 
+    try:
+        revalidate_bundle()
+    except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
+        failed.append(
+            {
+                "episode_id": None,
+                "position": None,
+                "scope": "run",
+                "error": type(exc).__name__,
+            }
+        )
+
     run_status = None
     if failed:
         _, state = _load_run_state(run_root, run)
@@ -1892,6 +1971,7 @@ def publish_reviewed_run(
                 run_root,
                 run,
                 run_bytes,
+                input_verifier=batch_input_verifier,
             )
         except (OSError, UnicodeError, ValueError, FileExistsError, KeyError) as exc:
             failed.append(

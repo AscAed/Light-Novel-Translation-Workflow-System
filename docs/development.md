@@ -2,6 +2,15 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-21 PR #71 批量发布 bundle 校验优化
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，起始提交 `86ea78a5d5888e04ef470187cb15d0f38ee951cd`。保留既有未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未读取/改写试点小说正文、人读/AI合集、API profile、凭据或 freshness 快照。
+- `已实现` `translation_review.py` 将 run 所绑定的 bundle-set 与 AI book bundle 内容校验提取为独立步骤。批量发布的 review/snapshot 输入通过批次级 verifier 复用一次校验结果，仍对每话重新核对当前 AI 索引和来源；批次结束后、更新 run 状态前再次核验整书 bundle，以发现批次期间的变更。单话 `publish_reviewed_translation()` 默认完整校验行为不变。
+- `已验证` 在现有 16 MiB 以上 bundle 测试中增加批次调用次数断言：两次 episode 输入只进行一次整书校验；批尾变更 bundle 后，第二次完整校验拒绝该快照。原单项测试通过；`tests.test_translation_review`、`tests.test_translation_review_state`、`tests.test_kakuyomu_workflow`、`tests.test_pipeline_contracts` 共 271 项通过；完整非 E2E 动态回归 772 项运行、768 项通过、4 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 7 项通过（367.555 秒，runner 退出码 0）。`py_compile` 和 `git diff --check` 通过。mock/合成测试未连接真实 Provider。
+- `已复核` 当前代码已使用 bundle 聚合大小上限，而非 16 MiB run manifest 上限；对应 `test_review_input_accepts_bundle_larger_than_run_manifest_limit` 覆盖超限场景。当前 Kakuyomu 与通用项目映射使用相同 `source-edition:` TM key；tokenizer loader 调用 `no_truncation()`；正式 Kakuyomu run 强制启用 reviewed glossary；已发布章节会从待执行章节映射中排除。以上为当前代码路径复核，不是本轮各自的独立新修复。
+- `部分实现` 尚无真实 88 话 bundle 批量发布的耗时/IO 基准。批次级复用只覆盖 bundle-set 与整书 AI bundle 内容哈希，不减少逐话来源核验，也不提供目录句柄级并发替换保护；单话操作仍会按原路径重复校验。
+- `未验证` 真实 Provider、试点译文质量、K5 88 话映射/双版本审阅及计划回执、reviewed 全书知识、实际部署仍未完成；本仓库仍是本地 CLI，无 CI/依赖锁/部署清单。此增量不关闭这些门禁。
+
 ## 2026-11-20 依赖更新后复验
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `6b18579f8d3cf03b23095dcea771a589d727de50`。环境调整不改源码、依赖清单或项目数据；仅更新仓库忽略的 `.venv`。
