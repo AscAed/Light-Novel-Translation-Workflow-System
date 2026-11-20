@@ -2,6 +2,13 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-21 依赖与漏洞公告复查
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `bf4bbb6a65497387d5f63394ecf499244e0276ed`；Python 3.14.7，忽略的 `.venv`。未改动依赖清单或环境。
+- `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`。经仓库代理查询，`pip list --outdated --format=json` 仅列出 `pip` 26.2.1→26.3 和 `tenacity` 9.1.4→9.2.1；`pip show tenacity` 确认它由 `google-genai` 引入，不是直接依赖。
+- `已验证` `uvx --from pip-audit pip-audit --path .venv\Lib\site-packages` 返回 `No known vulnerabilities found`。结果只覆盖本机当前安装环境和审计工具可获取的公告数据。
+- `未变更` 本轮未升级 `pip` 或传递依赖 `tenacity`：未发现安全公告或兼容性故障要求紧急升级；`requirements.txt` 未锁定版本，仓库也无依赖锁文件，只更新本机环境不会形成可复现依赖集。此前针对代码 HEAD `c1d140d` 的完整单元/mock 回归记录仍适用代码；本次 `bf4bbb6` 仅为文档提交，未重跑软件测试。
+
 ## 2026-11-21 I4 K4 已发布译文新鲜度审计
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `27ebc6eea8635fe9399201c230852de957e38f5d`。续接时工作区已有 I4 审计实现和测试的 8 个未提交文件；保留未跟踪的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，没有读取或改写该文件、试点小说正文/译文、API profile 或凭据。
