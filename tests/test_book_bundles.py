@@ -242,6 +242,64 @@ class BookBundleTests(unittest.TestCase):
                 ai_root=str(self.ai_root),
             )
 
+    def test_ai_bundle_loader_rejects_duplicate_or_missing_catalog_episodes(self):
+        report = self._export()
+        ai_bundle_path = (
+            self.ai_root / report["bundles"]["ai"]["relative_path"]
+        )
+        bundle_set_path = (
+            self.source_root / report["bundle_set_relative_path"]
+        )
+        ai_bundle = json.loads(ai_bundle_path.read_text(encoding="utf-8"))
+        bundle_set = json.loads(bundle_set_path.read_text(encoding="utf-8"))
+        first_episode = ai_bundle["episodes"][0]
+        invalid_episode_lists = (
+            [first_episode],
+            [first_episode, first_episode],
+        )
+
+        for episodes in invalid_episode_lists:
+            with self.subTest(episode_count=len(episodes)):
+                mutated_bundle = dict(ai_bundle)
+                mutated_bundle["episodes"] = episodes
+                bundle_bytes = json.dumps(
+                    mutated_bundle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                ai_bundle_path.write_bytes(bundle_bytes)
+
+                mutated_set = dict(bundle_set)
+                mutated_records = dict(bundle_set["bundles"])
+                mutated_ai_record = dict(bundle_set["bundles"]["ai"])
+                mutated_ai_record["sha256"] = hashlib.sha256(
+                    bundle_bytes
+                ).hexdigest()
+                mutated_records["ai"] = mutated_ai_record
+                mutated_set["bundles"] = mutated_records
+                bundle_set_path.write_text(
+                    json.dumps(
+                        mutated_set,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(ValueError):
+                    load_verified_ai_book_bundle(
+                        source_root=str(self.source_root),
+                        catalog_relative_path="catalog.json",
+                        checkpoint_relative_path="source_checkpoint.json",
+                        bundle_set_relative_path=report[
+                            "bundle_set_relative_path"
+                        ],
+                        human_root=str(self.human_root),
+                        ai_root=str(self.ai_root),
+                    )
+
     def test_failed_partial_export_can_resume_before_completion_marker(self):
         original = book_bundles._write_immutable
         failed = [False]

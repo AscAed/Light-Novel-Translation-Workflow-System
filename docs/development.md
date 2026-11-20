@@ -34,11 +34,20 @@
 - `已实现` `pipeline.py` 的非正式兼容模式现在同时检查 `OUTPUT_DIR` 和 `CHAPTER_MAP` 中每个映射译文目标，拒绝将文件写进项目 `熟肉/` 或显式配置的正式发布目录；工作区根下的 sibling drafts 仍允许。路径按现有映射处理时的实际解析位置比较。
 - `已实现` 正式 run 不再把共享 TM 中的孤立 `tm_key` 视为当前 run 已有译文。仅当本 run 的 Drafts 目标文件存在但其来源/TM 不匹配时继续 fail-closed；只有 TM 旧键且当前输出缺失时允许重新翻译，由既有逐章事务在成功提交时替换该键。章节知识预检也不会因孤立 TM 项而跳过 reviewed chapter knowledge。该行为保留其他 run 目录中的草稿，但未独立归档没有对应输出文件的旧 TM 词对。
 - `已实现` `pipeline.py` 在事务恢复后遇到既有失败阶段报告时，验证 run/episode 身份并追加一次 `recovered` 尝试；既有成功或恢复记录不重复追加，失败尝试保留。`translation_plan_approval.py::write_new_json` 改用同目录临时文件完整写入、flush/fsync 后 create-only 链接发布，写入异常不暴露半截目标文件。
-- `已复核` PR #71 其余活动线程所指代码当前已有相应保护：规范化来源过期异常被单独归为 `stale`；source/edition manifest 相同路径在导出前拒绝；续跑时已核验发布章节从执行 map 排除；checkpoint 路径与摘要参与 bundle snapshot 身份；loader 要求 bundle episode 集合与当前已验证索引一致；显式 schema-v3 catalog 的 work metadata 会传入归档。上述为本地实现复核，不是本轮新增修复。
+- `已复核` PR #71 其余活动线程所指代码当前已有相应保护：规范化来源过期异常被单独归为 `stale`；source/edition manifest 相同路径在导出前拒绝；续跑时已核验发布章节从执行 map 排除；checkpoint 路径与摘要参与 bundle snapshot 身份；loader 要求 bundle episode 集合与当前已验证索引一致；显式 schema-v3 catalog 的 work metadata 会传入归档。除下方新增 bundle episode 集合回归外，上述为本地实现复核，不是本轮新增修复。
 - `已验证` 定向命令 `.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_translation_plan_approval -q`：181 项通过；新增覆盖映射发布目标拦截、sibling draft 放行、孤立 TM 可续跑、知识预检不信任孤立 TM、失败后恢复报告幂等及 JSON create-only 写入中断。
 - `已验证` 全部非 E2E 测试 776 项运行、772 项通过、4 项 Windows 能力跳过、0 失败（158.895 秒）；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（402.149 秒，runner 退出码 0）；`py_compile` 与 `git diff --check` 通过。E2E 输出中的 content-filter 与段落对齐异常来自预期负向 fixture。mock 未连接真实 Provider。
 - `部分实现` 新 run 重译时，如果共享 TM 键存在而本 run 没有对应输出，成功事务会替换该键；没有版本化 TM 历史/多写入者协调。工作区中已有上一 run Drafts 的不变文件不受影响；孤立旧 TM 词对若无其他副本可能被新候选覆盖，正式发布仍以审核 TM 快照为检索来源。
 - `未验证` 真实 Provider/API profile、语义质量、K5 88 话映射及双版本人工审批、reviewed 全书知识、真实试译和部署仍未完成；本地 CLI 仓库仍无 CI、锁文件或部署清单。当前没有由本地测试证明的已知失败，但以上人工、外部服务和部署门禁不因此关闭。
+
+## 2026-11-21 PR #71 AI bundle 话目覆盖回归
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `1d7ad9dfbae740fb8fa79b05c4e52d32432c0f92`。保留既有测试工作区改动；未读取、暂存或修改受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，也未读取书籍正文、API profile 或凭据。
+- `已验证` 新增 `tests.test_book_bundles.BookBundleTests.test_ai_bundle_loader_rejects_duplicate_or_missing_catalog_episodes`：分别构造缺失话目和重复话目场景，并同步更新 bundle-set 内 AI bundle 摘要，确保 loader 因话目集合不匹配而拒绝，而不是仅因外层摘要失配失败。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_book_bundles -q`：13 项通过；来源 edition、知识 provenance、知识抽取及概要审查模块合计 101 项通过；翻译审核状态、发布及 Kakuyomu 工作流模块合计 133 项运行、132 项通过、1 项因普通 Windows 会话无法创建符号链接而跳过。按用户授权提权单独复跑该用例，1 项通过。
+- `已验证` 当前完整非 E2E runner 共 786 项运行、781 项通过、5 项跳过、0 失败；其中 4 项符号链接用例在普通权限下不可创建，1 项 FIFO 用例不受 Windows 支持。将 4 项符号链接用例分别置于管理员会话复跑后均通过，故权限相关覆盖已验证，FIFO 是唯一平台跳过。基线 HEAD `1d7ad9d` 的 Ubuntu/Windows Python 3.14 hosted CI 已通过，但尚不包含本次新测试。
+- `部分实现` PR #71 当前活动 review findings 已在代码/既有测试中复核；本次直接补齐 bundle episode 集合语义的回归断言。新增测试经推送并由新 head CI 通过后，才可将相应远端 review thread 标记为 resolved。
+- `未验证` 本次回归使用合成 fixture，不连接真实 Provider、不运行试点正文，也不验证语义翻译质量或部署。新提交的 hosted CI 尚待完成。
 
 ## 2026-11-21 PR #71 批量发布 bundle 校验优化
 
