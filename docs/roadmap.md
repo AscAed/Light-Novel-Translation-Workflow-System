@@ -2,7 +2,7 @@
 
 2026-11-21 K3 门禁回归增量：新增正式项目 `run_chapter` 润色响应契约失败用例，验证不生成译文、不更新 TM，StageReport 记录 `polishing` 失败。当前完整非 E2E 本地回归 788 项运行、783 项通过、5 项因 Windows symlink/FIFO 能力跳过；loopback mock E2E 7 项通过（209.754 秒）。实现提交 `611805a` 的 hosted run `44832466495` 与随后纯文档提交 `07d5a03` 的 run `44833281731` 均通过 Ubuntu/Windows Python 3.14；CodeRabbit 跳过。该增量不定义“信、达、雅”语义阈值，也未调用真实 Provider。详见[开发与验证](development.md#2026-11-21-k3-正式润色失败事务门禁)及[项目现状](project-status.md#2026-11-21-k3-正式润色失败门禁)。
 
-2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射校验历史来源、审核快照/回执与译文字节；AI edition index 不可信时将下游译文状态传播为 `stale`/`unverified`，并由最终状态重算 consumer 摘要。项目采集在无当前映射但检测到已有 run/译文时写聚合 `current_mapping_unavailable` finding；空输出根不生成噪声状态。完整非 E2E 784 项（780 通过、4 项 Windows 能力跳过）；loopback mock E2E 7 项通过（229.117 秒）。该能力不回写译文/TM/知识、不自动重译。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
+2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射核验来源、审核快照/回执与译文字节；AI edition index 不可信时将译文状态传播为 `stale`/`unverified`。当前映射外残留 Markdown 标为 `unindexed`，符号链接标为 `invalid`，有界扫描不可完成时标为 `unverified`；项目采集在当前映射不可用且检测到已有产物时写聚合 finding。最新完整非 E2E 792 项运行、787 项通过、5 项 Windows 能力跳过；最终生产代码的 loopback mock E2E 7 项通过（210.577 秒）。审计不回写或重译消费者数据。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
 
 2026-11-21 CI 基线增量：新增 GitHub Actions workflow，在 Ubuntu/Windows Python 3.14 上安装当前 requirements、执行依赖一致性检查、完整非 E2E 单测及 loopback mock E2E。已验证 hosted run `44824283137` 对提交 `f8ac16163ac4260f16db668f6660b273f1d564d0` 的两个平台 job 均通过；该结果不等于依赖锁定、真实 Provider 质量或部署验收。实现见[开发与验证](development.md#持续集成)，阶段 5 的用户交互/部署决策仍独立。
 

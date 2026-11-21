@@ -37,6 +37,7 @@ from utils import (
 _MAX_RUN_BYTES = 16 * 1024 * 1024
 _MAX_REVIEW_BYTES = 256 * 1024
 _MAX_TRANSLATION_BYTES = 16 * 1024 * 1024
+_MAX_FRESHNESS_OUTPUT_ENTRIES = 100_000
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 _REVIEW_CHECKS = (
@@ -1596,6 +1597,89 @@ def _verify_archived_run_source(run: dict, episode: dict) -> bytes:
     return content
 
 
+def _audit_unmapped_translation_outputs(
+    output_root: Path,
+    expected_files: set[str],
+) -> list[dict[str, str]]:
+    findings = []
+    pending = [output_root]
+    inspected = 0
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    inspected += 1
+                    if inspected > _MAX_FRESHNESS_OUTPUT_ENTRIES:
+                        return [
+                            {
+                                "translation_file": "translation_root_scan",
+                                "status": "unverified",
+                                "detail": (
+                                    "Translation output contains too many entries "
+                                    "to audit."
+                                ),
+                            }
+                        ]
+
+                    relative_path = Path(entry.path).relative_to(
+                        output_root
+                    ).as_posix()
+                    normalized_path = os.path.normcase(relative_path)
+                    if normalized_path in expected_files:
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            findings.append(
+                                {
+                                    "translation_file": relative_path,
+                                    "status": "invalid",
+                                    "detail": (
+                                        "Translation output contains a symbolic link."
+                                    ),
+                                }
+                            )
+                        elif entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                        elif (
+                            entry.is_file(follow_symlinks=False)
+                            and entry.name.casefold().endswith(".md")
+                        ):
+                            findings.append(
+                                {
+                                    "translation_file": relative_path,
+                                    "status": "unindexed",
+                                    "detail": (
+                                        "Markdown translation has no current "
+                                        "chapter mapping."
+                                    ),
+                                }
+                            )
+                    except OSError:
+                        findings.append(
+                            {
+                                "translation_file": relative_path,
+                                "status": "unverified",
+                                "detail": (
+                                    "Translation output entry could not be "
+                                    "safely inspected."
+                                ),
+                            }
+                        )
+        except OSError:
+            relative_directory = directory.relative_to(output_root).as_posix()
+            findings.append(
+                {
+                    "translation_file": relative_directory or ".",
+                    "status": "unverified",
+                    "detail": (
+                        "Translation output directory could not be safely enumerated."
+                    ),
+                }
+            )
+    return sorted(findings, key=lambda finding: finding["translation_file"])
+
+
 def audit_published_translation_freshness(
     runs_root: str | Path,
     translation_root: str | Path,
@@ -1625,6 +1709,10 @@ def audit_published_translation_freshness(
             raise ValueError("Current translation mapping is invalid or duplicated.")
         expected_by_file[item["translation_file"]] = item
 
+    expected_output_paths = {
+        os.path.normcase(Path(path.replace("\\", "/")).as_posix())
+        for path in expected_by_file
+    }
     run_directories = []
     if supplied_runs_root.exists():
         if not supplied_runs_root.is_dir():
@@ -1752,6 +1840,12 @@ def audit_published_translation_freshness(
                 "detail": detail,
             }
         )
+    findings.extend(
+        _audit_unmapped_translation_outputs(
+            output_root,
+            expected_output_paths,
+        )
+    )
     return findings
 
 

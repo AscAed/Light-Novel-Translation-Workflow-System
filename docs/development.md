@@ -47,6 +47,8 @@
 - `已验证` 新增审计、快照摘要传播、无映射聚合状态及空目录边界用例通过。最终全量非 E2E 动态发现 784 项运行、780 项通过、4 项跳过、0 失败；跳过来自当前 Windows symlink/FIFO 能力限制。`.venv\Scripts\python.exe tests\run_tests.py` 最终 mock E2E 7 项通过（229.117 秒，退出码 0）。E2E 内打印的 content-filter/段落错配堆栈属于预期负向 fixture；调用只到 loopback mock server。
 - `已验证` `.venv\Scripts\python.exe -m pip check` 返回 `No broken requirements found`；普通权限安全路径模块 11 项运行、7 项通过、4 项跳过（3 项 symlink 因 Windows `WinError 1314`、1 项 FIFO 不受支持）。按用户授权以管理员 PowerShell 在本次提交复跑同一模块，11 项运行、10 项通过、仅 FIFO 跳过，3 项 symlink 均实际执行并通过。修改涉及 Python 文件的 `py_compile` 与 `git diff --check` 通过。
 - `用户报告` 2026-11-21 PowerShell 输出显示 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 运行 9 项、用时 0.032 秒、3 项跳过且无失败。`-q` 未显示逐项跳过原因，运行 checkout SHA 未提供；当前 checkout 的该模块包含 11 项测试，因此此结果单独保留，不能据此确认 symlink 用例通过或替代当前 HEAD 验证。
+- `已实现` 后续 I4 审计递归扫描熟肉输出根中的额外 Markdown：当前话目映射未覆盖的文件记为 `unindexed`，符号链接记为 `invalid`；目录不可枚举或扫描超过 100,000 个目录项时写入 `unverified` finding。扫描不跟随符号链接、不读取文件正文、不删除或重写输出，避免删话/改映射后遗留的 Markdown 静默脱离新鲜度报告。
+- `已验证` 该增量基线为 `863b740`。定向翻译审核/下游新鲜度/Kakuyomu 编排 105 项通过，Kakuyomu 采集 37 项通过；4 项新增扫描回归均通过。完整非 E2E 回归 792 项运行、787 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；最终生产代码下的 mock E2E 7 项通过（210.577 秒，退出码 0）。回归覆盖嵌套未映射 Markdown 为 `unindexed`、扫描超限和目录枚举失败为 `unverified`、符号链接报告 `invalid` 且不跟随；当前 K4 发布仍为 `verified`。未连接真实 Provider。
 - `部分实现` freshness snapshot 只做只读核验，不重译、不修改正式译文/TM/知识、不自动重建派生产物，也不取代正式 run 门禁。项目采集发现已有 run 项或译文文件、但当前 AI 话目映射不可用时，会记录聚合 `current_mapping_unavailable` finding，状态为 `stale` 或 `unverified`，不作逐话判断；两根均为空时不创建该 consumer。显式快照 CLI 的 `--runs-root` 仍要求可加载当前项目/配置映射。历史 run 扫描范围为 runs 根的直接子目录；目录中不相关或无效 run 不作为证据。
 - `未验证` 上述测试不连接真实 Provider，不证明译文语义质量、全书 K5 人工验收或部署可用。试点仍待 88 话映射/AI-人读版本审阅、匹配回执、reviewed 全书知识及经授权的真实单话试译。
 

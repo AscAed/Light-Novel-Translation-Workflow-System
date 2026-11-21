@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import translation_review
 import ai_translation_review
@@ -553,6 +553,129 @@ class TranslationReviewTests(unittest.TestCase):
                     "status": "verified",
                     "detail": (
                         "Published bytes match a valid K4 receipt for the current source."
+                    ),
+                }
+            ],
+        )
+
+    def test_publication_freshness_reports_unmapped_markdown_outputs(self):
+        review_path = self._approved_review()
+        publish_reviewed_translation(
+            self.run_root,
+            self.episode_id,
+            review_path,
+        )
+        stale_output = self.translation_root / "retired" / "episode-0000.md"
+        stale_output.parent.mkdir()
+        stale_output.write_bytes(b"stale translated output")
+
+        findings = audit_published_translation_freshness(
+            self.run_root.parent,
+            self.translation_root,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "tm_key": f"source-edition:{self.work_id}:{self.episode_id}",
+                    "source_version_id": self.plan["episodes"][0][
+                        "source_version_id"
+                    ],
+                    "source_sha256": self.plan["episodes"][0]["source_sha256"],
+                }
+            ],
+        )
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "translation_file": "episode-0001.md",
+                    "status": "verified",
+                    "detail": (
+                        "Published bytes match a valid K4 receipt for the current source."
+                    ),
+                },
+                {
+                    "translation_file": "retired/episode-0000.md",
+                    "status": "unindexed",
+                    "detail": (
+                        "Markdown translation has no current chapter mapping."
+                    ),
+                },
+            ],
+        )
+
+    def test_publication_freshness_bounds_unmapped_output_scan(self):
+        (self.translation_root / "extra-a.md").write_bytes(b"extra output a")
+        (self.translation_root / "extra-b.md").write_bytes(b"extra output b")
+        expected = [
+            {
+                "translation_file": "episode-0001.md",
+                "tm_key": f"source-edition:{self.work_id}:{self.episode_id}",
+                "source_version_id": self.plan["episodes"][0]["source_version_id"],
+                "source_sha256": self.plan["episodes"][0]["source_sha256"],
+            }
+        ]
+
+        with patch("translation_review._MAX_FRESHNESS_OUTPUT_ENTRIES", 1):
+            findings = audit_published_translation_freshness(
+                self.run_root.parent,
+                self.translation_root,
+                expected,
+            )
+
+        scan_finding = next(
+            finding
+            for finding in findings
+            if finding["translation_file"] == "translation_root_scan"
+        )
+        self.assertEqual(scan_finding["status"], "unverified")
+
+    def test_unmapped_output_scan_marks_symlink_without_following_it(self):
+        entry = MagicMock()
+        entry.name = "linked.md"
+        entry.path = str(self.translation_root / "linked.md")
+        entry.is_symlink.return_value = True
+        scanner = MagicMock()
+        scanner.__enter__.return_value = iter([entry])
+
+        with patch("translation_review.os.scandir", return_value=scanner):
+            findings = translation_review._audit_unmapped_translation_outputs(
+                self.translation_root,
+                set(),
+            )
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "translation_file": "linked.md",
+                    "status": "invalid",
+                    "detail": "Translation output contains a symbolic link.",
+                }
+            ],
+        )
+        entry.is_dir.assert_not_called()
+        entry.is_file.assert_not_called()
+
+    def test_unmapped_output_scan_reports_enumeration_errors(self):
+        with patch(
+            "translation_review.os.scandir",
+            side_effect=PermissionError("synthetic permission failure"),
+        ):
+            findings = translation_review._audit_unmapped_translation_outputs(
+                self.translation_root,
+                set(),
+            )
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "translation_file": ".",
+                    "status": "unverified",
+                    "detail": (
+                        "Translation output directory could not be safely "
+                        "enumerated."
                     ),
                 }
             ],
