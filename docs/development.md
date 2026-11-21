@@ -11,6 +11,7 @@
 - `已验证` hosted run `44832466495` 对实现提交 `611805a93278b13fe24734922159d2b8b0be5c53` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。后续文档提交未改动已验证代码。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
 - `已验证` hosted run `44841786744` 对提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 2 分 7 秒和 4 分 46 秒。CodeRabbit 为 `SKIPPED`。该 run 只验证该提交在指定 runner 上的自动化检查，不证明真实 Provider、语义质量、K5 人审或部署。
 - `已验证` hosted run `44843028671` 对文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 2 分 2 秒和 4 分 31 秒。该提交只改 Markdown，CodeRabbit 为 `SKIPPED`。代码行为验证仍绑定前述 `180afdc` 及其测试/CI 证据。
+- `已验证` hosted run `44853150345` 对代码提交 `f6131b34396feec9d5f7145d0ace8b8a513c18d6` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 1 分 52 秒和 3 分 55 秒。该 run 覆盖新增结构审阅 CLI 与审批测试，不连接真实 Provider，不验证语义质量或部署。
 
 ## 2026-11-21 K3 正式润色失败事务门禁
 
@@ -161,7 +162,7 @@
 - `已验证` 新结构审阅写入本机忽略的数据目录 `projects/祝福のネトラレラ/Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.codex-structural-2026-11-21.json`；mapping、AI edition、human edition 各 88 项 `pass`，0 issue。现有 `.human-review.json` 模板保持原样、264 项仍 `pending`。`scripts/approve_translation_plan.py` 随后依据精确 plan SHA、当前人读索引和 review SHA 创建 schema v2 回执：`projects/祝福のネトラレラ/Workflow/Approvals/translation_plan_review_ai_raw_html_schema2_2026-11-19.codex-structural-2026-11-21.json`。计划 SHA 同上，review SHA-256 `92a37df05a2fe6187b4304b79e6620ff8e28794e457700e2c5bb8f345f0e52b8`；审核者字段是未认证声明。
 - `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_plan_approval -q`：23 项通过；新用例覆盖全量 validator 成功、状态未验证/摘要错配拒绝及不产生输出。完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 795 项运行、790 项通过、5 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（214.701 秒，退出码 0）。新脚本与测试 `py_compile`、CLI `--help` 通过。
 - `已验证` Markdown 相对目标检查覆盖 87 份已跟踪 Markdown、432 个本地链接目标，0 个缺失；`git diff --check` 通过。mock E2E 日志中的 content-filter 与段落错配错误由负向 fixture 触发，不代表 runner 失败。
-- 结构审阅仅接受当前 catalog 映射、来源 lineage、镜像字节和确定性清洗 profile；未判断逐段语义、阅读器视觉效果或目录之外的作品完整性。未调用真实 Provider、未生成译文、未读取/写入 reviewed 全书知识，也未启动部署。全量回归与 CI 需在本次代码提交后复跑。
+- 结构审阅仅接受当前 catalog 映射、来源 lineage、镜像字节和确定性清洗 profile；未判断逐段语义、阅读器视觉效果或目录之外的作品完整性。未调用真实 Provider、未生成译文、未读取/写入 reviewed 全书知识，也未启动部署。代码提交 `f6131b3` 的本地全量回归与 hosted Ubuntu/Windows CI 均通过；此后文档变更需按提交 SHA 重新确认托管状态。
 
 ## 2026-11-20 K4 终审逐次评估持久化
 

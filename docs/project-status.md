@@ -5,6 +5,7 @@
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
 - `已验证` 当前工作树 Windows/Python 3.14.7 非 E2E 回归 795 项运行、790 项通过、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（214.701 秒）。本次 K5 审阅工具的增量记录见[开发与验证](development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)；I4 扫描回归历史见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+- `已验证` hosted run `44853150345` 对代码提交 `f6131b34396feec9d5f7145d0ace8b8a513c18d6` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；新 K5 审阅入口已包含在该验证中。此前 hosted run 的失败定位与修复见[开发与验证](development.md#持续集成)。
 - `已验证` hosted run `44843028671` 对当前文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过；该文档提交未改代码，前一实现提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 CI 也通过。CI 细节见[开发与验证](development.md#持续集成)；CodeRabbit 为 `SKIPPED`。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
