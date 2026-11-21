@@ -9,6 +9,7 @@
 - CI 安装未锁版本的 `requirements.txt`，所以它检查当前可解析依赖集合，不保证历史环境可复现。CI 通过也不证明真实 API、翻译语义质量、试点人审或部署验收。
 - 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言；run `44811940468`（head `99c3f8b`）Ubuntu job 通过，Windows 定位到临时路径包含断言；run `44812666313`（head `aa0dadb`）Ubuntu job 通过，Windows 单测中的 `test_workflow_retry_allows_verified_completed_episode` 仍因 `RAWs_AI` 短/长路径别名断言失败。run `44813333408`（head `e77d0b2`）Ubuntu job 与 Windows 单测通过，Windows E2E 随后因 `config_file` 的 `runneradmin`/`RUNNER~1` 等价路径直接字符串比较而失败。提交 `36881d8` 将该断言改为比较 `Path.resolve()` 后的路径；run `44815736864` 对 Ubuntu/Windows Python 3.14 均通过依赖检查、非 E2E 单测和 loopback mock E2E，矩阵全绿。
 - `已验证` hosted run `44832466495` 对实现提交 `611805a93278b13fe24734922159d2b8b0be5c53` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。后续文档提交未改动已验证代码。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
+- `已验证` hosted run `44841786744` 对提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 2 分 7 秒和 4 分 46 秒。CodeRabbit 为 `SKIPPED`。该 run 只验证该提交在指定 runner 上的自动化检查，不证明真实 Provider、语义质量、K5 人审或部署。
 
 ## 2026-11-21 K3 正式润色失败事务门禁
 

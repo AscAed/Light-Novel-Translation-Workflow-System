@@ -54,3 +54,6 @@
 - `用户报告` 人类版与 AI 版部分单话和合集抽样结果已记入[开发记录](../development.md#2026-11-21-用户报告的原文抽样核实)。抽查日期、样本清单及标准未知；不作为全量人工验收或 Codex 独立核实证据。
 - `用户报告` `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 输出 `Ran 9 tests in 0.032s`、`OK (skipped=3)`。该结果未附 checkout/commit、跳过原因或可确认权限级别，不能据此判断符号链接权限问题是否解决，也不覆盖本审计中绑定当前基线的 11 项安全模块验证。
 - 当前未关闭项仍包括 88 话映射/双版本逐话人工验收、计划审批回执和 reviewed 全书知识、真实 Provider 受控试译与人工语义质量验收；部署形态未确认，依赖未锁定。自检没有足够证据支持删除或升级直接依赖，也没有验证过的线上部署目标。
+- `已实现` 提交 `180afdc` 为只读已发布译文新鲜度审计增加映射外 Markdown 扫描：未映射文件报告 `unindexed`，符号链接报告 `invalid`，枚举错误或超过 100,000 项报告 `unverified`；不跟随链接、不读取正文、不修改输出。该变更由 4 项新增回归覆盖。
+- `已验证` 该提交的完整本地非 E2E 与 loopback mock E2E 结果，以及 hosted run `44841786744` 的 Ubuntu/Windows Python 3.14 结果，见[持续集成记录](../development.md#持续集成)与[I4 新鲜度回归记录](../development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)；CodeRabbit 跳过。
+- `未验证` PR #71 仍为 `OPEN`、mergeable，但没有正式 review decision；最新 Codex 自动审查未能完成，不能作为通过或代码缺陷结论。该 PR 未合并。受保护的未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取、暂存、修改或提交。
