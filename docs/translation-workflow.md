@@ -106,15 +106,23 @@ python scripts/prepare_translation_plan_review.py `
   --human-index <人读根>\SOURCE_MAP.json `
   --output <计划审阅.json>
 
-# 人工逐话填写 mapping_decision、ai_edition_decision、
-# human_edition_decision；三项均为 pass 且 issues 为空后：
+# 对已验证的完整双版本输入，可生成仅覆盖结构与来源完整性的审阅：
+python scripts/create_verified_translation_plan_review.py `
+  --plan <计划文件.json> `
+  --human-index <人读根>\SOURCE_MAP.json `
+  --output <新的结构审阅.json>
+
+# 如使用人工审阅模板，则逐话填写三项决定；两种审阅文件均需三项
+# 为 pass 且 issues 为空后，才能创建绑定 review_sha256 的回执：
 python scripts/approve_translation_plan.py `
   --plan <计划文件.json> `
-  --review <计划审阅.json> `
+  --review <结构审阅.json> `
   --human-index <人读根>\SOURCE_MAP.json `
   --receipt <审批回执.json> `
   --reviewer <审核者标签>
 ```
+
+`create_verified_translation_plan_review.py` 在本地重验完整 raw/catalog/manifest、AI/人读索引与两版文件，只有 88/88 等全量计数、索引摘要和计划摘要一致时才 create-only 写入审阅文件。它不调用模型/API、不输出章节正文、不创建审批回执或启动翻译；每话 `pass` 的范围限于映射、来源 lineage、文件字节和清洗 profile，不表示语义保真或第三方阅读器视觉效果通过。若此结构审阅范围不适合项目验收标准，应继续使用 `prepare_translation_plan_review.py` 生成的 `pending` 模板，由审核者作出更广范围的决定。审批 CLI 仍会校验 review 和当前人读索引，并要求操作者确认完整计划 SHA-256。
 
 计划核对 catalog 与 manifest 的作品/章节元数据，验证最新 raw 与 normalized artifact 文件哈希及父版本关系，并标记已存在的译文目标。默认 AI 版模式要求索引完整覆盖 catalog 的 episode ID/位置/标题；每个 AI 输出须同时匹配版本归档清单和 `RAWs_AI` 镜像哈希，且清洗版本必须以当前 raw 为父版本。指定 `--source-edition normalized_source` 才改用采集器规范化版本。stdout JSON 只含章节 ID、位置、标题、来源相对路径/版本、目标路径、TM 键和问题代码，不包含原文/译文/知识内容。`--plan-output` 会排他新建一个 JSON 文件；目标已存在时拒绝覆盖。`ready_for_review` 只表示本地来源与映射检查通过，尚不表示人工批准；存在来源缺失、过期、损坏、元数据错配或目标冲突时计划为 `blocked`。
 

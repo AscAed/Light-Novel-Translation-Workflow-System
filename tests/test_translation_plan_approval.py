@@ -8,6 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.approve_translation_plan import main
+from scripts.create_verified_translation_plan_review import (
+    main as create_verified_review_main,
+)
 from source_ingestion import source_artifact_id
 from translation_plan_approval import (
     create_plan_review_template,
@@ -450,6 +453,130 @@ class TranslationPlanApprovalTests(unittest.TestCase):
         write_new_json(self.receipt_path, receipt)
         verified = verify_approval_receipt(self.receipt_path, plan)
         self.assertEqual(verified["review_sha256"], review_sha256)
+
+    def test_verified_review_requires_full_current_edition_validation(self):
+        plan, human_index_path = self._ai_plan_with_human_index()
+        plan["source_root"] = str(self.root / "source")
+        Path(plan["source_root"]).mkdir()
+        write_new_json(self.plan_path, plan)
+        human_index_sha256 = hashlib.sha256(
+            human_index_path.read_bytes()
+        ).hexdigest()
+        report = {
+            "status": "verified",
+            "episode_count": 1,
+            "ai_index_sha256": plan["source_edition"]["index_sha256"],
+            "human_index_sha256": human_index_sha256,
+        }
+        output_path = self.root / "codex-review.json"
+        output = io.StringIO()
+
+        with (
+            patch(
+                "scripts.create_verified_translation_plan_review."
+                "validate_source_editions",
+                return_value=report,
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = create_verified_review_main(
+                [
+                    "--plan",
+                    str(self.plan_path),
+                    "--human-index",
+                    str(human_index_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        review = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(review["plan_sha256"], plan["plan_sha256"])
+        self.assertEqual(review["episodes"][0]["mapping_decision"], "pass")
+        self.assertEqual(review["episodes"][0]["ai_edition_decision"], "pass")
+        self.assertEqual(review["episodes"][0]["human_edition_decision"], "pass")
+        self.assertIn("structural review", review["episodes"][0]["notes"])
+        self.assertIn(
+            "does not establish semantic fidelity",
+            review["episodes"][0]["notes"],
+        )
+        self.assertNotIn("source_text", review)
+        self.assertNotIn("synthetic human edition", output.getvalue())
+
+    def test_verified_review_refuses_unverified_or_stale_validation(self):
+        plan, human_index_path = self._ai_plan_with_human_index()
+        plan["source_root"] = str(self.root / "source")
+        Path(plan["source_root"]).mkdir()
+        write_new_json(self.plan_path, plan)
+        report = {
+            "status": "unverified",
+            "episode_count": 1,
+            "ai_index_sha256": plan["source_edition"]["index_sha256"],
+            "human_index_sha256": "f" * 64,
+        }
+        output_path = self.root / "codex-review.json"
+        error = io.StringIO()
+
+        with (
+            patch(
+                "scripts.create_verified_translation_plan_review."
+                "validate_source_editions",
+                return_value=report,
+            ),
+            contextlib.redirect_stderr(error),
+        ):
+            result = create_verified_review_main(
+                [
+                    "--plan",
+                    str(self.plan_path),
+                    "--human-index",
+                    str(human_index_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertFalse(output_path.exists())
+        self.assertIn("ValueError", error.getvalue())
+
+    def test_verified_review_refuses_validation_hash_mismatch(self):
+        plan, human_index_path = self._ai_plan_with_human_index()
+        plan["source_root"] = str(self.root / "source")
+        Path(plan["source_root"]).mkdir()
+        write_new_json(self.plan_path, plan)
+        report = {
+            "status": "verified",
+            "episode_count": 1,
+            "ai_index_sha256": "f" * 64,
+            "human_index_sha256": "e" * 64,
+        }
+        output_path = self.root / "codex-review.json"
+        error = io.StringIO()
+
+        with (
+            patch(
+                "scripts.create_verified_translation_plan_review."
+                "validate_source_editions",
+                return_value=report,
+            ),
+            contextlib.redirect_stderr(error),
+        ):
+            result = create_verified_review_main(
+                [
+                    "--plan",
+                    str(self.plan_path),
+                    "--human-index",
+                    str(human_index_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertFalse(output_path.exists())
+        self.assertIn("ValueError", error.getvalue())
 
     def test_plan_review_template_rejects_stale_human_index(self):
         plan, human_index_path = self._ai_plan_with_human_index()

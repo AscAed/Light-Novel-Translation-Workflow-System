@@ -67,6 +67,7 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 | `kakuyomu_page_source.py` | 检查 Kakuyomu robots；从作品页 Next.js Apollo 目录中按 `publicEpisodeCount` 校验并发现公开 episode URL，再提取可见标题/正文文本并返回原始 HTTP 响应体 bytes；不登录、不跟随重定向、不访问 `/read` | 作品主页或显式 episode catalog -> UTF-8 章节文本、页面响应 bytes、目录与来源指纹 |
 | `scripts/ingest_kakuyomu_pages.py` | 从作品主页发现公开目录或加载显式 catalog，验证输出不覆盖输入并把全部所列页面接入版本化归档核心 | `source-root` + work URL/catalog + output-root -> discovered catalog/manifest/checkpoint/raw source |
 | `scripts/run_kakuyomu_workflow.py` | `--plan-only` 默认核验并选用 AI 清洗版，输出章节映射预览；完整采集后自动生成 AI/人读版，再默认选 AI 版；`--source-edition normalized_source` 是显式兼容覆盖；正式模式先校验项目配置和 Provider 授权/凭据 | source root + catalog/manifest + optional AI edition root + translation root -> JSON 映射预览；或 work URL/catalog + project JSON -> catalog/versioned source/AI edition/human edition/translation/TM |
+| `scripts/create_verified_translation_plan_review.py` | 只有全量双版本字节/profile/lineage 验证及计划/索引摘要一致时，才 create-only 写入结构审阅；不调用模型或 Provider | 当前计划 + 人读索引 + raw/AI/人读根目录 -> 内容无关的逐话结构审阅 JSON |
 | `prompts/*.md` | 阶段角色的指令文本 | 被 `TranslationPipeline` 按路径读取 |
 | `tests/` | Mock API 和本地行为测试 | 临时项目目录；无真实模型质量验证 |
 

@@ -152,6 +152,17 @@
 - 本条记录时间为 2026-11-21；实际检查日期、抽样文件清单和检查标准未提供。本轮未独立读取或复查这些书籍文件。附带的 `book-ai.json` 是核实对象，不是仓库指令或实现证据。
 - 这是部分抽样结论，不代表全量覆盖、逐段语义保真、映射正确性或阅读器显示已通过；不替代 88 话映射与双版本的结构化人工验收。
 
+## 2026-11-21 K5 Codex AI 结构审阅与计划审批
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，起始 HEAD `e3b0a1bf18a381e0754887c603e20612506d3400`。只读检查确认工作区唯一既有未跟踪项仍为受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未读取、修改或暂存。
+- `已实现` 新增 `scripts/create_verified_translation_plan_review.py`：加载并校验当前计划，调用 `validate_source_editions` 全量重算 raw、AI、人读版字节/profile/lineage，核对话数与两份索引摘要后才生成 create-only 结构审阅。输出复用现有 schema v1，不含章节正文；每话备注限定结论范围。失败或摘要错配时不生成文件。
+- `已验证` 只读计划预检：`ready_for_review`，计划 SHA-256 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`，88/88 来源有效、0 issue/目标冲突/网络请求/Provider 调用/文件写入，`source_text_included=false`。
+- `已验证` `scripts/validate_source_editions.py`：`verified`，88 话；raw 793,183 bytes、AI 774,253 bytes、人读 799,293 bytes；AI index SHA-256 `09da2e6c...`，human index SHA-256 `f8ab7563...`。`scripts/validate_kakuyomu_html_archive.py`：`verified`，88/88 HTML 正文重放、356 个归档文件哈希有效、4,814,835 HTML bytes；未输出正文。
+- `已验证` 新结构审阅写入本机忽略的数据目录 `projects/祝福のネトラレラ/Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.codex-structural-2026-11-21.json`；mapping、AI edition、human edition 各 88 项 `pass`，0 issue。现有 `.human-review.json` 模板保持原样、264 项仍 `pending`。`scripts/approve_translation_plan.py` 随后依据精确 plan SHA、当前人读索引和 review SHA 创建 schema v2 回执：`projects/祝福のネトラレラ/Workflow/Approvals/translation_plan_review_ai_raw_html_schema2_2026-11-19.codex-structural-2026-11-21.json`。计划 SHA 同上，review SHA-256 `92a37df05a2fe6187b4304b79e6620ff8e28794e457700e2c5bb8f345f0e52b8`；审核者字段是未认证声明。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_translation_plan_approval -q`：23 项通过；新用例覆盖全量 validator 成功、状态未验证/摘要错配拒绝及不产生输出。完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 795 项运行、790 项通过、5 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（214.701 秒，退出码 0）。新脚本与测试 `py_compile`、CLI `--help` 通过。
+- `已验证` Markdown 相对目标检查覆盖 87 份已跟踪 Markdown、432 个本地链接目标，0 个缺失；`git diff --check` 通过。mock E2E 日志中的 content-filter 与段落错配错误由负向 fixture 触发，不代表 runner 失败。
+- 结构审阅仅接受当前 catalog 映射、来源 lineage、镜像字节和确定性清洗 profile；未判断逐段语义、阅读器视觉效果或目录之外的作品完整性。未调用真实 Provider、未生成译文、未读取/写入 reviewed 全书知识，也未启动部署。全量回归与 CI 需在本次代码提交后复跑。
+
 ## 2026-11-20 K4 终审逐次评估持久化
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；本轮在既有混合工作区上增量修改，未读取或改动受保护 freshness JSON、小说正文、本机 API profile 或凭据，也未暂存、提交、重置或清理。

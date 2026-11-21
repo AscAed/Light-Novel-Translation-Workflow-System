@@ -4,7 +4,7 @@
 
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
-- `已验证` 最新完整本地 Windows/Python 3.14.7 非 E2E 回归 792 项运行、787 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过（210.577 秒）。I4 新增映射外输出扫描回归见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+- `已验证` 当前工作树 Windows/Python 3.14.7 非 E2E 回归 795 项运行、790 项通过、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（214.701 秒）。本次 K5 审阅工具的增量记录见[开发与验证](development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)；I4 扫描回归历史见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
 - `已验证` hosted run `44843028671` 对当前文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过；该文档提交未改代码，前一实现提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 CI 也通过。CI 细节见[开发与验证](development.md#持续集成)；CodeRabbit 为 `SKIPPED`。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
@@ -29,9 +29,11 @@
 
 - `已验证` 当前只读预检仍返回 `ready_for_review`、88/88 来源有效、0 issue/目标冲突/网络请求/Provider 调用/文件写入，`source_text_included=false`；摘要与计划绑定值一致。
 - `已验证` 当前 raw/AI/人类版 88 话经 `validate_source_editions.py` 字节与 lineage 校验通过；用户指定的 `book-ai.json` 与其 bundle-set 经正式 loader 验证通过，摘要及范围见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。
-- `部分实现` 计划审阅模板的 88 个话目中，映射、AI 版和人类版决定仍各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 不存在，因此本次没有批准回执、运行或 reviewed 全书知识。
-- `用户报告` 部分单话与合集抽样未发现明显问题；该结果不替代结构化逐话审批。执行命令、摘要和验证范围见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。
-- `未验证` 真实 Provider、译文语义质量和部署仍未验证；正式试译须等待有权限的人完成 264 项人审决定、全书知识审阅和匹配审批回执。
+- `已实现` `scripts/create_verified_translation_plan_review.py` 只在全量双版本 validator 返回 `verified` 且话数/AI 与人读索引摘要均匹配当前计划时，才 create-only 生成结构审阅；三类决定限于映射、来源 lineage、文件字节和清洗 profile，不调用模型/API。
+- `已验证` Codex AI 依据当次 88 话计划预检、raw/AI/人读版全量重算及 HTML archive replay，创建独立结构审阅，mapping/AI edition/human edition 各 88 项 `pass`、0 issue；审批 CLI 创建并复核 schema v2 回执，绑定计划 SHA `63b286ca...` 和 review SHA `92a37df0...`。原始 264 项 pending 模板保留不变。
+- `部分实现` 结构审阅明确不证明逐段语义保真、第三方阅读器视觉呈现或平台公开目录以外的作品完整性。`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 仍不存在；没有翻译 run 或译文。
+- `用户报告` 部分单话与合集抽样未发现明显问题；该局部结果单独记录，不作为本次 88 话全量结构审阅的证据。抽样详情见[开发与验证](development.md#2026-11-21-用户报告的原文抽样核实)。
+- `未验证` reviewed 全书知识、真实 Provider 路由/授权/预算、译文语义质量、阅读器视觉效果和部署仍未验证；创建审批回执没有触发翻译。具体命令、摘要与边界见[开发与验证](development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)。
 
 ## 2026-11-21 PR #71 自检与恢复修复
 
