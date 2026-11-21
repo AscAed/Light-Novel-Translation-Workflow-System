@@ -57,4 +57,4 @@
 - `已实现` 提交 `180afdc` 为只读已发布译文新鲜度审计增加映射外 Markdown 扫描：未映射文件报告 `unindexed`，符号链接报告 `invalid`，枚举错误或超过 100,000 项报告 `unverified`；不跟随链接、不读取正文、不修改输出。该变更由 4 项新增回归覆盖。
 - `已验证` 该提交的完整本地非 E2E 与 loopback mock E2E 结果，以及 hosted run `44841786744` 的 Ubuntu/Windows Python 3.14 结果，见[持续集成记录](../development.md#持续集成)与[I4 新鲜度回归记录](../development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)；CodeRabbit 跳过。
 - `未验证` PR #71 仍为 `OPEN`、mergeable，但没有正式 review decision；最新 Codex 自动审查未能完成，不能作为通过或代码缺陷结论。该 PR 未合并。受保护的未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取、暂存、修改或提交。
-- `已验证` 2026-11-21 对当前 K5 计划重新执行只读预检，88/88 来源有效且无计划问题；三类逐话审阅仍各 `pending=88`，未发现审批、run 或 reviewed 全书概要。命令、plan digest 和证据边界见[最新 K5 复核](../development.md#2026-11-21-k5-只读门禁复核)。
+- `已验证` 2026-11-21 对当前 K5 计划重新执行只读预检，88/88 来源有效且无计划问题；raw/AI/人类版及指定 AI book bundle 的字节/lineage 核验通过。三类逐话审阅仍各 `pending=88`，未发现审批、run 或 reviewed 全书概要。命令、摘要和证据边界见[最新 K5 复核](../development.md#2026-11-21-k5-只读门禁复核)。

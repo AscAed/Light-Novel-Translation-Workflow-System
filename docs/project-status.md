@@ -28,6 +28,7 @@
 ## 2026-11-21 K5 门禁复核
 
 - `已验证` 当前只读预检仍返回 `ready_for_review`、88/88 来源有效、0 issue/目标冲突/网络请求/Provider 调用/文件写入，`source_text_included=false`；摘要与计划绑定值一致。
+- `已验证` 当前 raw/AI/人类版 88 话经 `validate_source_editions.py` 字节与 lineage 校验通过；用户指定的 `book-ai.json` 与其 bundle-set 经正式 loader 验证通过，摘要及范围见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。
 - `部分实现` 计划审阅模板的 88 个话目中，映射、AI 版和人类版决定仍各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 不存在，因此本次没有批准回执、运行或 reviewed 全书知识。
 - `用户报告` 部分单话与合集抽样未发现明显问题；该结果不替代结构化逐话审批。执行命令、摘要和验证范围见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。
 - `未验证` 真实 Provider、译文语义质量和部署仍未验证；正式试译须等待有权限的人完成 264 项人审决定、全书知识审阅和匹配审批回执。

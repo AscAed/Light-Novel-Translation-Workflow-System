@@ -137,10 +137,12 @@
 
 ## 2026-11-21 K5 只读门禁复核
 
-- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `d569d3cecc4a4b249d1040f7c79d3a226019e9c1`。只检查项目计划、审阅模板结构/决定状态和相关路径存在性；未打开章节正文、知识内容或凭据，也未修改项目数据。
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `d569d3cecc4a4b249d1040f7c79d3a226019e9c1`。只读核验当前计划、来源/双版本、指定 AI book bundle 与审阅模板；未输出或外发章节正文、未读取知识正文或凭据，也未修改项目数据。
 - 按当前计划绑定的 `SourceArchive`、catalog、manifest 和译文根执行 `scripts/run_kakuyomu_workflow.py --plan-only`：`ready_for_review`，plan SHA-256 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`，88/88 来源有效、0 issue、0 目标冲突、0 网络请求、0 Provider 调用、0 文件写入，`source_text_included=false`。
-- 当前人审模板仍绑定同一 plan SHA，含 88 个位置；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各有 88 项且全部为 `pending`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。
-- `未验证` 本次计划预检不验证人类版全部章节的当前字节、语义质量、真实 Provider 或部署。用户报告的人类版/AI 版部分单话与合集抽样另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)；它不改变上述 264 项待审状态。
+- 按 `workflow_paths.json` 配置的人读版根、`RAWs_AI/` 和同一归档/catalog 执行 `scripts/validate_source_editions.py`，结果为 `verified`：88 话；读取并核对 raw 793,183 bytes、AI 版 774,253 bytes、人读版 799,293 bytes。返回的 AI 索引摘要为 `09da2e6cd41c549827fbf7eba15abf217cc8814a55a5a15bf9ab1524fe1c3246`，人读索引摘要为 `f8ab75632b104836f81d2fddb3c27ca498bf0fabc5dc560d617f033285dfbe6c`。该验证证明当前字节、归档 lineage 与清洗 profile 一致，不证明语义保真。
+- 对用户指定的 `book-ai.json` 使用 `book_bundles.load_verified_ai_book_bundle`，连同其 `bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json` 验证，结果为 `verified`、88 话；AI bundle SHA-256 为 `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`，bundle-set SHA-256 为 `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`。其 `completeness` 仅声明覆盖该 catalog，不独立证明平台枚举穷尽。
+- 当前人审模板绑定同一 plan SHA，且其 AI/人读索引 SHA-256 与刚验证的两个索引一致；88 个位置的 `mapping_decision`、`ai_edition_decision`、`human_edition_decision` 仍各有 88 项且全部为 `pending`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。
+- `未验证` 用户报告的人类版/AI 版部分单话与合集抽样结论另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)；本次结构和字节核验不代表全量人工语义验收、真实 Provider 质量或部署。抽样报告不改变上述 264 项待审状态。
 - 下一步仍需有权限的人按既有模板完成人工映射和双版本审阅并签发匹配回执，再审查全书知识；随后由凭据所有者执行端点/授权/预算核验及获准的单话真实 Provider 试译。
 
 ## 2026-11-21 用户报告的原文抽样核实

@@ -4,7 +4,7 @@
 
 2026-11-21 I4 增量：只读 freshness snapshot 纳入 K4 已发布译文，按当前版本化话目映射核验来源、审核快照/回执与译文字节；AI edition index 不可信时将译文状态传播为 `stale`/`unverified`。当前映射外残留 Markdown 标为 `unindexed`，符号链接标为 `invalid`，有界扫描不可完成时标为 `unverified`；项目采集在当前映射不可用且检测到已有产物时写聚合 finding。最新完整非 E2E 792 项运行、787 项通过、5 项 Windows 能力跳过；最终生产代码的 loopback mock E2E 7 项通过（210.577 秒）。审计不回写或重译消费者数据。详见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)与[项目现状](project-status.md#2026-11-21-i4-已发布译文新鲜度审计)。
 
-2026-11-21 K5 只读门禁复核：当前计划仍为 `ready_for_review`，88/88 来源有效、0 issue，结构化审阅模板的 264 项映射/双版本决定仍全部 `pending`；没有 Approval、Run 或 reviewed 全书概要。`--plan-only` 复核未产生网络/Provider 调用或写入。此状态以[开发与验证](development.md#2026-11-21-k5-只读门禁复核)中的当前提交证据为准；用户抽样报告不作为逐话批准。后续需先完成人工 K5 审阅，再进入获批 Provider 单话试译。
+2026-11-21 K5 只读门禁复核：当前计划仍为 `ready_for_review`，88/88 来源有效、raw/AI/人类版与指定 AI book bundle 的字节/lineage 校验均通过，0 issue；结构化审阅模板的 264 项映射/双版本决定仍全部 `pending`，没有 Approval、Run 或 reviewed 全书概要。`--plan-only` 未产生网络/Provider 调用或写入；bundle 完整性仅覆盖声明 catalog，不证明平台枚举穷尽或语义质量。证据见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。后续需先完成人工 K5 审阅，再进入获批 Provider 单话试译。
 
 2026-11-21 CI 基线增量：新增 GitHub Actions workflow，在 Ubuntu/Windows Python 3.14 上安装当前 requirements、执行依赖一致性检查、完整非 E2E 单测及 loopback mock E2E。已验证 hosted run `44824283137` 对提交 `f8ac16163ac4260f16db668f6660b273f1d564d0` 的两个平台 job 均通过；该结果不等于依赖锁定、真实 Provider 质量或部署验收。实现见[开发与验证](development.md#持续集成)，阶段 5 的用户交互/部署决策仍独立。
 
