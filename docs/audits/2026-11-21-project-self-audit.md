@@ -23,7 +23,7 @@
 | 安全 | `部分实现` | 当前虚拟环境漏洞扫描无已知发现；限定 PR 差异扫描覆盖 9 个文件、无可报告发现；路径越界/符号链接用例有本地和管理员验证。它们不是全仓库渗透测试、真实 Provider 安全评估或部署安全认证。原文和译文未被本次自检读取。 |
 | 兼容性 | `部分实现` | 仅能确认当前 Windows + Python 3.14.7 虚拟环境及其依赖组合通过记录的本地测试。其他 Python 版本、操作系统、API endpoint/model 与外部客户端协议没有矩阵或真实端点验证。 |
 | CI 与部署 | `部分实现` / `未验证` | run `44815736864` 已验证 Ubuntu/Windows Python 3.14 依赖检查、非 E2E 单测及 loopback mock E2E 全通过。矩阵仅覆盖这两个 runner 和 Python 3.14；仓库无 Docker/Compose 或部署清单，产品仍为本地 CLI，没有已验证线上服务。PR #71 的 mergeable 状态不代表人类审批、真实服务或项目验收。 |
-| 试点数据与人审 | `部分实现` | 当前计划含 88 话；映射、AI 版、人读版决定各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 和 `STORY_SUMMARY_reviewed.json` 均不存在。用户报告部分单话及合集抽样未见明显问题，但样本清单/标准未知，不能替代逐话审阅或全书验收。详见[K5 试点门禁](../project-status.md#2026-11-20-k5-试点门禁复核)。 |
+| 试点数据与人审 | `部分实现` | 当前计划含 88 话；映射、AI 版、人读版决定各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 和 `STORY_SUMMARY_reviewed.json` 均不存在。用户报告部分单话及合集抽样未见明显问题，但样本清单/标准未知，不能替代逐话审阅或全书验收。详见[K5 门禁复核](../project-status.md#2026-11-21-k5-门禁复核)。 |
 
 ## 优先问题
 
@@ -57,3 +57,4 @@
 - `已实现` 提交 `180afdc` 为只读已发布译文新鲜度审计增加映射外 Markdown 扫描：未映射文件报告 `unindexed`，符号链接报告 `invalid`，枚举错误或超过 100,000 项报告 `unverified`；不跟随链接、不读取正文、不修改输出。该变更由 4 项新增回归覆盖。
 - `已验证` 该提交的完整本地非 E2E 与 loopback mock E2E 结果，以及 hosted run `44841786744` 的 Ubuntu/Windows Python 3.14 结果，见[持续集成记录](../development.md#持续集成)与[I4 新鲜度回归记录](../development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)；CodeRabbit 跳过。
 - `未验证` PR #71 仍为 `OPEN`、mergeable，但没有正式 review decision；最新 Codex 自动审查未能完成，不能作为通过或代码缺陷结论。该 PR 未合并。受保护的未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取、暂存、修改或提交。
+- `已验证` 2026-11-21 对当前 K5 计划重新执行只读预检，88/88 来源有效且无计划问题；三类逐话审阅仍各 `pending=88`，未发现审批、run 或 reviewed 全书概要。命令、plan digest 和证据边界见[最新 K5 复核](../development.md#2026-11-21-k5-只读门禁复核)。

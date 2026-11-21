@@ -4,8 +4,8 @@
 
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
-- `已验证` 最新完整本地 Windows/Python 3.14.7 非 E2E 回归 788 项运行、783 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 最近一次 7 项通过（209.754 秒）。K3 新增正式润色失败事务门禁回归见[开发与验证](development.md#2026-11-21-k3-正式润色失败事务门禁)。
-- `已验证` hosted run `44832466495` 对实现提交 `611805a93278b13fe24734922159d2b8b0be5c53` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。后续文档提交未改动已验证代码。此前的 Windows 短/长临时路径断言修复由早期矩阵验证，历史过程见[开发与验证](development.md#持续集成)。
+- `已验证` 最新完整本地 Windows/Python 3.14.7 非 E2E 回归 792 项运行、787 项通过、5 项 Windows symlink/FIFO 能力跳过、0 失败；loopback mock E2E 7 项通过（210.577 秒）。I4 新增映射外输出扫描回归见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+- `已验证` hosted run `44843028671` 对当前文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过；该文档提交未改代码，前一实现提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 CI 也通过。CI 细节见[开发与验证](development.md#持续集成)；CodeRabbit 为 `SKIPPED`。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
 
@@ -24,6 +24,13 @@
 - `部分实现` 本审计只读且只核验已有 K4 证据和当前可见输出，不修复或重译 stale 译文，不写回 TM/知识库，也不替代正式运行时门禁。当前 AI 映射不可用时，若项目采集检测到非空 run 根或译文文件，会记录聚合 `current_mapping_unavailable` 的 `stale`/`unverified` finding，不声称逐话已核验；两根均为空时不生成 consumer。显式快照 CLI 的 `--runs-root` 仍要求可加载当前项目映射。
 - `未验证` 当前试点无已批准 88 话映射/双版本审阅、无匹配计划回执、无 reviewed 全书知识，也未连接真实 Provider 或运行真实翻译；此功能不构成部署验收。
 - 详情和当前工作树证据见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+
+## 2026-11-21 K5 门禁复核
+
+- `已验证` 当前只读预检仍返回 `ready_for_review`、88/88 来源有效、0 issue/目标冲突/网络请求/Provider 调用/文件写入，`source_text_included=false`；摘要与计划绑定值一致。
+- `部分实现` 计划审阅模板的 88 个话目中，映射、AI 版和人类版决定仍各 `pending=88`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 不存在，因此本次没有批准回执、运行或 reviewed 全书知识。
+- `用户报告` 部分单话与合集抽样未发现明显问题；该结果不替代结构化逐话审批。执行命令、摘要和验证范围见[开发与验证](development.md#2026-11-21-k5-只读门禁复核)。
+- `未验证` 真实 Provider、译文语义质量和部署仍未验证；正式试译须等待有权限的人完成 264 项人审决定、全书知识审阅和匹配审批回执。
 
 ## 2026-11-21 PR #71 自检与恢复修复
 

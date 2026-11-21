@@ -10,6 +10,7 @@
 - 托管 run `44806459456`（head `3bd3638`）Ubuntu job 通过，Windows 单测因默认 cp1252 无法输出中文及 8.3 短/长路径别名比较失败。修复包括 CI 显式启用 UTF-8、审核候选路径拒绝符号链接后规范化、以及平台无关的路径断言。后续 run `44809747249`（head `594879a`）Ubuntu job 通过，Windows 剩余 3 项仍在测试预期字符串中使用短路径；run `44811100768`（head `dce8695`）Ubuntu job 通过，Windows 又定位到 2 个未规范化路径断言；run `44811940468`（head `99c3f8b`）Ubuntu job 通过，Windows 定位到临时路径包含断言；run `44812666313`（head `aa0dadb`）Ubuntu job 通过，Windows 单测中的 `test_workflow_retry_allows_verified_completed_episode` 仍因 `RAWs_AI` 短/长路径别名断言失败。run `44813333408`（head `e77d0b2`）Ubuntu job 与 Windows 单测通过，Windows E2E 随后因 `config_file` 的 `runneradmin`/`RUNNER~1` 等价路径直接字符串比较而失败。提交 `36881d8` 将该断言改为比较 `Path.resolve()` 后的路径；run `44815736864` 对 Ubuntu/Windows Python 3.14 均通过依赖检查、非 E2E 单测和 loopback mock E2E，矩阵全绿。
 - `已验证` hosted run `44832466495` 对实现提交 `611805a93278b13fe24734922159d2b8b0be5c53` 的 Ubuntu/Windows Python 3.14 job 均通过依赖检查、非 E2E 单测和 loopback mock E2E；CodeRabbit 为 `SKIPPED`，不计作通过。后续文档提交未改动已验证代码。这些结果不验证其他 Python/OS、真实 Provider、试点质量或部署。早期 Windows 短/长临时路径断言修复过程见下文历史记录。
 - `已验证` hosted run `44841786744` 对提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 2 分 7 秒和 4 分 46 秒。CodeRabbit 为 `SKIPPED`。该 run 只验证该提交在指定 runner 上的自动化检查，不证明真实 Provider、语义质量、K5 人审或部署。
+- `已验证` hosted run `44843028671` 对文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；分别耗时 2 分 2 秒和 4 分 31 秒。该提交只改 Markdown，CodeRabbit 为 `SKIPPED`。代码行为验证仍绑定前述 `180afdc` 及其测试/CI 证据。
 
 ## 2026-11-21 K3 正式润色失败事务门禁
 
@@ -133,6 +134,14 @@
 - `scripts/validate_source_editions.py` 对同一 catalog、当前 source/edition manifests、AI root 和配置的人读 root 返回 `verified`：88 话；读取源 793,183 bytes，AI 输出 774,253 bytes，人读输出 799,293 bytes。验证器只读并逐话按当前 profile 重算、比对镜像与归档；这证明字节/版本一致性，不证明语义保真或人类阅读体验。
 - 当前人审模板与计划摘要、AI 索引 SHA-256、人读索引 SHA-256 均匹配；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 `pending:88`。`Workflow/Approvals/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。没有产生审批回执、知识产物或译文；未调用真实 Provider。
 - 下一步需要有权限的人审阅既有 88 话模板及双版本，并通过 `scripts/approve_translation_plan.py` 生成匹配回执；之后才可审核/生成当前 bundle 绑定的全书概要与术语。以上门槛完成后，再由凭据所有者核验端点授权/路由/预算，开展获准单话 Provider 试译和人工质量验收。用户已确认作品授权和职责所需数据类别，不应重复列为待确认项。
+
+## 2026-11-21 K5 只读门禁复核
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `d569d3cecc4a4b249d1040f7c79d3a226019e9c1`。只检查项目计划、审阅模板结构/决定状态和相关路径存在性；未打开章节正文、知识内容或凭据，也未修改项目数据。
+- 按当前计划绑定的 `SourceArchive`、catalog、manifest 和译文根执行 `scripts/run_kakuyomu_workflow.py --plan-only`：`ready_for_review`，plan SHA-256 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`，88/88 来源有效、0 issue、0 目标冲突、0 网络请求、0 Provider 调用、0 文件写入，`source_text_included=false`。
+- 当前人审模板仍绑定同一 plan SHA，含 88 个位置；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各有 88 项且全部为 `pending`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。
+- `未验证` 本次计划预检不验证人类版全部章节的当前字节、语义质量、真实 Provider 或部署。用户报告的人类版/AI 版部分单话与合集抽样另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)；它不改变上述 264 项待审状态。
+- 下一步仍需有权限的人按既有模板完成人工映射和双版本审阅并签发匹配回执，再审查全书知识；随后由凭据所有者执行端点/授权/预算核验及获准的单话真实 Provider 试译。
 
 ## 2026-11-21 用户报告的原文抽样核实
 
