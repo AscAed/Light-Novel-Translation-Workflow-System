@@ -22,6 +22,8 @@ from source_manifest import load_manifest, verify_current_normalized_source
 
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_BYTES = 16 * 1024 * 1024
+_MAX_SOURCE_COUNT = 1000
+_MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _DECISIONS = frozenset({"approved", "rejected", "escalated"})
 
@@ -100,7 +102,11 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
         raise ValueError("Knowledge provenance is not a complete schema v1 artifact.")
 
     source_files = provenance.get("source_files")
-    if not isinstance(source_files, list) or not source_files:
+    if (
+        not isinstance(source_files, list)
+        or not source_files
+        or len(source_files) > _MAX_SOURCE_COUNT
+    ):
         raise ValueError("Knowledge provenance has no source files.")
     paragraphs_by_filename = {}
     for source in source_files:
@@ -116,10 +122,10 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
             or filename in paragraphs_by_filename
             or isinstance(paragraph_count, bool)
             or not isinstance(paragraph_count, int)
-            or paragraph_count < 1
+            or paragraph_count < 0
             or isinstance(included_characters, bool)
             or not isinstance(included_characters, int)
-            or included_characters < 1
+            or included_characters < 0
             or not isinstance(included_digest, str)
             or not _SHA256_PATTERN.fullmatch(included_digest)
         ):
@@ -129,6 +135,35 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
             "included_characters": included_characters,
             "included_sha256": included_digest,
         }
+
+    coverage = provenance.get("input_coverage")
+    if coverage is not None:
+        if not isinstance(coverage, dict):
+            raise ValueError("Knowledge provenance has malformed input coverage.")
+        if coverage.get("scope") == "all_configured_chapters":
+            configured_count = coverage.get("configured_chapter_count")
+            included_count = coverage.get("included_chapter_count")
+            input_characters = coverage.get("input_characters")
+            input_character_limit = coverage.get("input_character_limit")
+            if (
+                coverage.get("complete_for_configured_chapters") is not True
+                or isinstance(configured_count, bool)
+                or not isinstance(configured_count, int)
+                or configured_count != len(source_files)
+                or isinstance(included_count, bool)
+                or not isinstance(included_count, int)
+                or included_count != len(source_files)
+                or isinstance(input_characters, bool)
+                or not isinstance(input_characters, int)
+                or input_characters < 0
+                or isinstance(input_character_limit, bool)
+                or not isinstance(input_character_limit, int)
+                or input_character_limit < 1
+                or input_characters > input_character_limit
+            ):
+                raise ValueError(
+                    "Knowledge provenance has incomplete full-book coverage."
+                )
 
     evidence = provenance.get("glossary_evidence")
     if not isinstance(evidence, list):
@@ -188,6 +223,7 @@ def _verify_source_evidence(
     evidence_by_source: dict,
 ) -> None:
     paragraphs_by_filename = {}
+    total_source_bytes = 0
     for source in provenance["source_files"]:
         filename = source["filename"]
         version = verify_current_normalized_source(
@@ -205,6 +241,9 @@ def _verify_source_evidence(
             source_bytes = stream.read(_MAX_SOURCE_BYTES + 1)
         if len(source_bytes) > _MAX_SOURCE_BYTES:
             raise ValueError("Source chapter exceeds the review size limit.")
+        total_source_bytes += len(source_bytes)
+        if total_source_bytes > _MAX_TOTAL_SOURCE_BYTES:
+            raise ValueError("Knowledge review sources exceed the total size limit.")
         if hashlib.sha256(source_bytes).hexdigest() != version["content_sha256"]:
             raise ValueError("Source chapter changed during review publication.")
         try:

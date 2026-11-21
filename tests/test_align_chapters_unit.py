@@ -26,6 +26,7 @@ from scripts.align_chapters import (
     _find_ordered_paragraph_indices,
     generate_embeddings_batched,
     load_existing_tm,
+    _verify_bound_sources_current,
     main as align_main,
 )
 from utils import split_paragraphs
@@ -372,9 +373,17 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
             root = Path(temp_dir)
             raw_dir = root / "生肉"
             output_dir = root / "熟肉"
+            ai_root = root / "RAWs_AI"
             (raw_dir / "第一卷").mkdir(parents=True)
             (output_dir / "Ntera").mkdir(parents=True)
+            ai_root.mkdir()
             (raw_dir / "第一卷" / "第1話.md").write_text(
+                "「synthetic source」", encoding="utf-8"
+            )
+            ai_input_file = "episodes/0001-episode-1.md"
+            ai_input_path = ai_root / ai_input_file
+            ai_input_path.parent.mkdir(parents=True)
+            ai_input_path.write_text(
                 "「synthetic source」", encoding="utf-8"
             )
             source_version_id = "source-version-1"
@@ -423,44 +432,68 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                     "translation_file": "Ntera/第一話.md",
                     "tm_key": "Volume1/第1話.md",
                     "source_version_id": source_version_id,
+                    "source_input_file": ai_input_file,
+                    "source_sha256": hashlib.sha256(
+                        ai_input_path.read_bytes()
+                    ).hexdigest(),
                 }
             ]
+            (raw_dir / "第一卷" / "第1話.md").unlink()
+            raw_source_path.unlink()
             stdout = io.StringIO()
             with patch("sys.argv", ["align_chapters.py"]):
                 with patch("pipeline.Config.load_config"):
                     with patch.object(Config, "RAW_DIR", str(raw_dir)):
                         with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
-                            with patch.object(Config, "CHAPTER_MAP", chapter_map):
-                                with patch.object(
-                                    Config,
-                                    "SOURCE_MANIFEST_PATH",
-                                    "source_manifest.json",
-                                ):
+                            with patch.object(
+                                Config,
+                                "AI_EDITION_ROOT",
+                                str(ai_root),
+                            ):
+                                with patch.object(Config, "CHAPTER_MAP", chapter_map):
                                     with patch.object(
                                         Config,
-                                        "TM_PATH",
-                                        str(root / "translation_memory.json"),
+                                        "SOURCE_MANIFEST_PATH",
+                                        "source_manifest.json",
                                     ):
-                                        with patch(
-                                            "scripts.align_chapters.load_existing_tm",
-                                            return_value={"chapters": {}},
+                                        with patch.object(
+                                            Config,
+                                            "TM_PATH",
+                                            str(root / "translation_memory.json"),
                                         ):
                                             with patch(
-                                                "scripts.align_chapters.generate_embeddings_batched",
-                                                return_value=[[0.5]],
+                                                "scripts.align_chapters.load_existing_tm",
+                                                return_value={"chapters": {}},
                                             ):
                                                 with patch(
-                                                    "scripts.align_chapters.save_tm"
-                                                ) as save_tm:
-                                                    with redirect_stdout(stdout):
-                                                        with self.assertRaises(
-                                                            SystemExit
-                                                        ) as raised:
-                                                            align_main()
+                                                    "scripts.align_chapters.generate_embeddings_batched",
+                                                    return_value=[[0.5]],
+                                                ):
+                                                    with patch(
+                                                        "scripts.align_chapters.save_tm"
+                                                    ) as save_tm:
+                                                        with redirect_stdout(stdout):
+                                                            with self.assertRaises(
+                                                                SystemExit
+                                                            ) as raised:
+                                                                align_main()
 
             self.assertEqual(raised.exception.code, 0)
             tm_data = save_tm.call_args.args[1]
             self.assertIn("Volume1/第1話.md", tm_data["chapters"])
+            self.assertEqual(
+                tm_data["chapters"]["Volume1/第1話.md"][0][
+                    "embedding_identity"
+                ],
+                {
+                    "schema_version": 1,
+                    "provider": "gemini",
+                    "protocol": "google-genai",
+                    "model": "gemini-embedding-2",
+                    "task_type": "default",
+                    "dimensions": 1,
+                },
+            )
             provenance = tm_data["source_provenance"]["Volume1/第1話.md"]
             self.assertEqual(
                 provenance["raw_file"], "第一卷/第1話.md"
@@ -472,6 +505,66 @@ class TestParagraphAlignmentUnit(unittest.TestCase):
                 provenance["source_version_id"], source_version_id
             )
             self.assertIn("Successfully aligned chapter", stdout.getvalue())
+
+    def test_ai_bound_source_revalidation_checks_mirror_without_archive_bodies(self):
+        from source_manifest import new_manifest
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "SourceArchive"
+            ai_root = root / "RAWs_AI"
+            raw_dir.mkdir()
+            ai_root.mkdir()
+            ai_path = ai_root / "chapters" / "episode-1.md"
+            ai_path.parent.mkdir()
+            ai_bytes = b"synthetic AI edition"
+            ai_path.write_bytes(ai_bytes)
+            manifest_path = raw_dir / "source_editions_manifest.json"
+            manifest = new_manifest()
+            manifest["artifacts"] = [
+                {
+                    "artifact_id": "synthetic-raw",
+                    "version_id": "raw-source-version-1",
+                    "kind": "raw_source",
+                    "content_sha256": hashlib.sha256(b"raw source").hexdigest(),
+                    "relative_path": "raw/episode-1.txt",
+                    "parent_version_ids": [],
+                },
+                {
+                    "artifact_id": "synthetic-ai",
+                    "version_id": "ai-source-version-1",
+                    "kind": "normalized_source",
+                    "content_sha256": hashlib.sha256(ai_bytes).hexdigest(),
+                    "relative_path": "editions/ai/episode-1.md",
+                    "parent_version_ids": ["raw-source-version-1"],
+                },
+            ]
+            manifest_path.write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+            spec = SimpleNamespace(
+                raw_file="editions/ai/episode-1.md",
+                source_version_id="ai-source-version-1",
+                source_input_file="chapters/episode-1.md",
+                source_sha256=hashlib.sha256(ai_bytes).hexdigest(),
+            )
+
+            _verify_bound_sources_current(
+                str(raw_dir),
+                "source_editions_manifest.json",
+                [spec],
+                str(ai_root),
+            )
+
+            ai_path.write_bytes(b"changed AI edition")
+            with self.assertRaisesRegex(ValueError, "AI edition source"):
+                _verify_bound_sources_current(
+                    str(raw_dir),
+                    "source_editions_manifest.json",
+                    [spec],
+                    str(ai_root),
+                )
 
     def test_cli_does_not_save_when_bound_source_changes_during_alignment(self):
         from pipeline import Config

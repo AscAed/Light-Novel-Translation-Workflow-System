@@ -6,6 +6,7 @@ from pathlib import Path
 
 from rag_engine import RAGEngine
 from scripts.apply_knowledge_review import (
+    _validate_evidence,
     apply_knowledge_review,
     create_knowledge_review_template,
     main,
@@ -156,6 +157,64 @@ class KnowledgeReviewTests(unittest.TestCase):
             output,
         )
 
+    def test_full_book_coverage_accepts_empty_chapter_evidence(self):
+        provenance = json.loads(self.provenance_bytes)
+        empty_digest = hashlib.sha256(b"").hexdigest()
+        provenance["source_files"] = [
+            *provenance["source_files"],
+            {
+                "filename": "empty-chapter.md",
+                "tm_key": "第2話.md",
+                "source_sha256": empty_digest,
+                "source_version_id": "empty-version",
+                "included_characters": 0,
+                "included_sha256": empty_digest,
+                "included_paragraph_count": 0,
+            },
+        ]
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 2,
+            "included_chapter_count": 2,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+
+        evidence = _validate_evidence(
+            provenance,
+            {"alpha": "阿尔法", "not-found": "不存在词"},
+        )
+
+        self.assertEqual(
+            evidence["alpha"],
+            [
+                {
+                    "chapter": self.artifact["relative_path"],
+                    "paragraph_indices": [1],
+                }
+            ],
+        )
+
+    def test_full_book_coverage_must_match_source_file_count(self):
+        provenance = json.loads(self.provenance_bytes)
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 2,
+            "included_chapter_count": 1,
+            "input_characters": 100,
+            "input_character_limit": 500,
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "incomplete full-book coverage"
+        ):
+            _validate_evidence(
+                provenance,
+                {"alpha": "阿尔法", "not-found": "不存在词"},
+            )
+
     def test_review_template_binds_candidates_and_is_not_publishable_until_completed(self):
         result = create_knowledge_review_template(
             str(self.knowledge_root),
@@ -295,6 +354,91 @@ class KnowledgeReviewTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "requires a source root"):
             engine.get_cleaned_glossary("alpha")
+
+    def test_strict_rag_requires_a_reviewed_glossary_bundle(self):
+        legacy_glossary = self.knowledge_root / "Glossary.json"
+        legacy_glossary.write_text(
+            '{"alpha":"unreviewed translation"}',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "requires a reviewed glossary bundle"):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(legacy_glossary),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                require_reviewed_glossary=True,
+            )
+
+    def test_strict_rag_rejects_a_missing_reviewed_glossary_bundle(self):
+        with self.assertRaisesRegex(
+            ValueError, "requires a readable reviewed glossary bundle"
+        ):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(self.knowledge_root / "Glossary_reviewed.json"),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                require_reviewed_glossary=True,
+            )
+
+    def test_strict_rag_rejects_a_malformed_reviewed_glossary_bundle(self):
+        reviewed_glossary = self.knowledge_root / "Glossary_reviewed.json"
+        reviewed_glossary.write_text(
+            '{"_knowledge_review_schema":1,"terms":',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "requires a valid reviewed glossary bundle"
+        ):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(reviewed_glossary),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                require_reviewed_glossary=True,
+            )
+
+    def test_strict_rag_validates_reviewed_glossary_during_initialization(self):
+        self._publish()
+        engine = RAGEngine(
+            str(self.root / "translation_memory.json"),
+            str(self.knowledge_root / "Glossary_reviewed.json"),
+            str(self.root / "guidelines.txt"),
+            source_root=str(self.archive_root),
+            source_manifest_path="source_manifest.json",
+            require_reviewed_glossary=True,
+        )
+
+        self.assertEqual(
+            engine.get_cleaned_glossary("alpha"),
+            [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
+        )
+
+    def test_strict_rag_rejects_stale_reviewed_glossary_during_initialization(self):
+        self._publish()
+        self.source_file.write_text(
+            "updated alpha appears.\n\nbeta appears.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        self._collect_and_materialize("updated-checkpoint.json")
+
+        with self.assertRaisesRegex(
+            ValueError, "source versions are not current"
+        ):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(self.knowledge_root / "Glossary_reviewed.json"),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                require_reviewed_glossary=True,
+            )
 
     def test_rejects_changed_candidate_hash_before_writing(self):
         (self.knowledge_root / "Glossary_draft.json").write_text(

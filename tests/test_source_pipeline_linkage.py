@@ -165,6 +165,20 @@ class SourcePipelineLinkageTests(unittest.TestCase):
             [item["status"] for item in unverified],
         )
 
+    def test_tm_audit_requires_source_version_when_manifest_is_configured(self):
+        tm_data = self._translation_memory()
+        del tm_data["source_provenance"]["Volume1/第1話.md"]["source_version_id"]
+
+        findings = audit_translation_memory(
+            tm_data,
+            str(self.archive_root),
+            str(self.translation_root),
+            "source_manifest.json",
+        )
+
+        self.assertEqual([item["status"] for item in findings], ["unverified"])
+        self.assertIn("No source_version_id", findings[0]["detail"])
+
     def test_tm_audit_marks_older_manifest_version_stale(self):
         tm_data = self._translation_memory()
         updated_text = "Synthetic updated source."

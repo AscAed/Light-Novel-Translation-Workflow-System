@@ -18,6 +18,7 @@ def main(argv=None) -> int:
     parser.add_argument("--knowledge-root", required=True)
     parser.add_argument("--source-root")
     parser.add_argument("--manifest")
+    parser.add_argument("--source-input-root")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--create-template", metavar="FILENAME")
     mode.add_argument("--review", metavar="RECEIPT")
@@ -26,9 +27,15 @@ def main(argv=None) -> int:
 
     try:
         if args.create_template:
-            if args.source_root or args.manifest or args.output:
+            if (
+                args.source_root
+                or args.manifest
+                or args.source_input_root
+                or args.output
+            ):
                 parser.error(
-                    "--source-root, --manifest, and --output are only valid with --review."
+                    "--source-root, --manifest, --source-input-root, and "
+                    "--output are only valid with --review."
                 )
             result = create_summary_review_template(
                 args.knowledge_root,
@@ -46,6 +53,7 @@ def main(argv=None) -> int:
                 args.manifest,
                 args.review,
                 args.output,
+                source_input_root=args.source_input_root,
             )
             label = "Approved summary bundle created"
     except (OSError, UnicodeError, ValueError) as exc:

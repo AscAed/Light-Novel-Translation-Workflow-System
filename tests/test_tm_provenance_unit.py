@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from pipeline import Config
 from scripts.validate_tm_provenance import audit_translation_memory, main
+from source_manifest import append_artifact
 from utils import validate_tm_source_provenance
 
 
@@ -373,6 +374,140 @@ class TestTMProvenanceAudit(unittest.TestCase):
 
         self.assertEqual(
             [finding["status"] for finding in findings], ["invalid"]
+        )
+
+    def test_project_tm_audit_reads_ai_mirror_not_archive_body(self):
+        source_root = self.root / "SourceArchive"
+        ai_root = self.root / "RAWs_AI"
+        source_root.mkdir()
+        ai_root.mkdir()
+        source_text = "AI edition paragraph."
+        translated_text = "AI 版段落。"
+        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        raw_path = source_root / "raw" / "episode.txt"
+        raw_path.parent.mkdir()
+        raw_path.write_text("archived raw source", encoding="utf-8")
+        normalized_path = source_root / "editions" / "ai" / "episode.md"
+        normalized_path.parent.mkdir(parents=True)
+        normalized_path.write_text("different archived copy", encoding="utf-8")
+        ai_path = ai_root / "episode.md"
+        ai_path.write_text(source_text, encoding="utf-8")
+        (self.translation_dir / "episode.md").write_text(
+            translated_text, encoding="utf-8"
+        )
+        append_artifact(
+            source_root / "source_manifest.json",
+            {
+                "artifact_id": "episode:raw",
+                "version_id": "raw-v1",
+                "kind": "raw_source",
+                "content_sha256": hashlib.sha256(
+                    b"archived raw source"
+                ).hexdigest(),
+                "relative_path": "raw/episode.txt",
+                "parent_version_ids": [],
+            },
+        )
+        append_artifact(
+            source_root / "source_manifest.json",
+            {
+                "artifact_id": "episode:normalized",
+                "version_id": "ai-v1",
+                "kind": "normalized_source",
+                "content_sha256": source_hash,
+                "relative_path": "editions/ai/episode.md",
+                "parent_version_ids": ["raw-v1"],
+            },
+        )
+        provenance = self._source_provenance(
+            source_text,
+            translated_text,
+            [self._mapping(1, [1], [1], "matched")],
+        )
+        provenance.update(
+            {
+                "raw_file": "editions/ai/episode.md",
+                "source_version_id": "ai-v1",
+                "translation_file": "episode.md",
+            }
+        )
+        tm_data = {
+            "chapters": {
+                "episode-key": [
+                    {"raw": source_text, "translated": translated_text}
+                ]
+            },
+            "source_provenance": {"episode-key": provenance},
+        }
+
+        with patch(
+            "source_manifest._verify_artifact_file",
+            side_effect=AssertionError("archive body read during translation"),
+        ):
+            findings = audit_translation_memory(
+                tm_data,
+                str(source_root),
+                str(self.translation_dir),
+                "source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map={
+                    "editions/ai/episode.md": {
+                        "source_version_id": "ai-v1",
+                        "source_input_file": "episode.md",
+                        "source_sha256": source_hash,
+                    }
+                },
+            )
+
+        self.assertEqual([item["status"] for item in findings], ["verified"])
+
+    def test_project_cli_passes_ai_input_map_to_tm_audit(self):
+        chapter_map = [
+            {
+                "raw_file": "editions/ai/episode.md",
+                "source_version_id": "ai-v1",
+                "source_input_file": "episode.md",
+                "source_sha256": "a" * 64,
+            }
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(Config, "load_config"),
+            patch.multiple(
+                Config,
+                TM_PATH="Knowledge/translation_memory.json",
+                RAW_DIR="SourceArchive",
+                OUTPUT_DIR="translations",
+                SOURCE_MANIFEST_PATH="source_editions_manifest.json",
+                AI_EDITION_ROOT="RAWs_AI",
+                CHAPTER_MAP=chapter_map,
+            ),
+            patch(
+                "scripts.validate_tm_provenance._load_tm",
+                return_value={"chapters": {}},
+            ),
+            patch(
+                "scripts.validate_tm_provenance.audit_translation_memory",
+                return_value=[],
+            ) as audit,
+            redirect_stdout(output),
+        ):
+            exit_code = main(["--project", "synthetic"])
+
+        self.assertEqual(exit_code, 0)
+        audit.assert_called_once_with(
+            {"chapters": {}},
+            "SourceArchive",
+            "translations",
+            "source_editions_manifest.json",
+            source_input_root="RAWs_AI",
+            source_input_map={
+                "editions/ai/episode.md": {
+                    "source_version_id": "ai-v1",
+                    "source_input_file": "episode.md",
+                    "source_sha256": "a" * 64,
+                }
+            },
         )
 
     def test_source_schema_rejects_reused_paragraph_indices(self):

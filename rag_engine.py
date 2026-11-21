@@ -8,9 +8,13 @@ import json
 import re
 import hashlib
 import numpy as np
-import urllib.error
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from embedding_provider import (
+    embedding_identity_for_vector,
+    generate_embeddings,
+    is_compatible_embedding,
+)
 from utils import (
     extract_chapter_num,
     open_regular_file,
@@ -30,6 +34,18 @@ _KNOWLEDGE_REVIEW_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _EXPECTED_TM_HASH_UNSET = object()
 
 
+def _glossary_aliases(key: str) -> list[str]:
+    clean_key = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
+    raw_aliases = re.split(r"/|／|\bor\b|,|，|、", clean_key)
+    return [alias.strip() for alias in raw_aliases if alias.strip()]
+
+
+def _glossary_destination(value: Any) -> str:
+    parts = re.split(r"[/／\(\)（）]", str(value))
+    candidates = [part.strip() for part in parts if part.strip()]
+    return candidates[0] if candidates else str(value).strip()
+
+
 class RAGEngine:
     """RAGEngine handles similarity search, glossary parsing, and partitioned guidelines."""
 
@@ -44,10 +60,19 @@ class RAGEngine:
         source_manifest_path: Optional[str] = None,
         reviewed_tm_path: Optional[str] = None,
         translation_root: Optional[str] = None,
+        allow_unreviewed_tm: bool = False,
+        require_reviewed_glossary: bool = False,
+        source_input_root: Optional[str] = None,
+        source_input_map: Optional[dict] = None,
+        reviewed_tm_translation_root: Optional[str] = None,
     ):
         """Initialise paths and load initial database contents from disk."""
         self.logger = logging.getLogger(__name__)
 
+        if not isinstance(allow_unreviewed_tm, bool):
+            raise ValueError("allow_unreviewed_tm must be a boolean.")
+        if not isinstance(require_reviewed_glossary, bool):
+            raise ValueError("require_reviewed_glossary must be a boolean.")
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
@@ -55,6 +80,15 @@ class RAGEngine:
         self.source_manifest_path = source_manifest_path
         self.reviewed_tm_path = reviewed_tm_path
         self.translation_root = translation_root
+        self.reviewed_tm_translation_root = (
+            translation_root
+            if reviewed_tm_translation_root is None
+            else reviewed_tm_translation_root
+        )
+        self.allow_unreviewed_tm = allow_unreviewed_tm
+        self.require_reviewed_glossary = require_reviewed_glossary
+        self.source_input_root = source_input_root
+        self.source_input_map = source_input_map
         reject_knowledge_draft_path(self.glossary_path, "glossary input")
         self.api_timeout = parse_api_timeout(
             api_timeout if api_timeout is not None else os.environ.get("API_TIMEOUT", 10.0)
@@ -74,13 +108,37 @@ class RAGEngine:
             self._reviewed_tm_data = load_reviewed_tm_snapshot(
                 self.reviewed_tm_path,
                 self.source_root,
-                self.translation_root,
+                self.reviewed_tm_translation_root,
                 self.source_manifest_path,
+                source_input_root=self.source_input_root,
+                source_input_map=self.source_input_map,
             )
 
         # Initialise glossary raw content
         self.glossary_raw = ""
-        if os.path.exists(self.glossary_path):
+        if self.require_reviewed_glossary:
+            try:
+                with open_regular_file(self.glossary_path) as f:
+                    self.glossary_raw = f.read()
+            except (OSError, ValueError):
+                raise ValueError(
+                    "Project translation requires a readable reviewed glossary bundle."
+                ) from None
+            try:
+                reviewed_glossary = json.loads(self.glossary_raw)
+            except json.JSONDecodeError:
+                raise ValueError(
+                    "Project translation requires a valid reviewed glossary bundle."
+                ) from None
+            if (
+                not isinstance(reviewed_glossary, dict)
+                or "_knowledge_review_schema" not in reviewed_glossary
+            ):
+                raise ValueError(
+                    "Project translation requires a reviewed glossary bundle."
+                )
+            self._parse_reviewed_glossary_bundle(reviewed_glossary)
+        elif os.path.exists(self.glossary_path):
             try:
                 with open(self.glossary_path, "r", encoding="utf-8") as f:
                     self.glossary_raw = f.read()
@@ -98,75 +156,26 @@ class RAGEngine:
 
     def _generate_embedding_sync(self, text: str) -> List[float]:
         """Generate embedding vector using Gemini Embedding 2 via mock or real API."""
-        mock_port = os.environ.get("MOCK_SERVER_PORT")
-        if mock_port:
-            import urllib.request
-            url = f"http://127.0.0.1:{mock_port}/gemini/embedContent"
-            payload = {"model": "gemini-embedding-2", "contents": [text]}
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=self.api_timeout) as resp:
-                    res_data = json.loads(resp.read().decode("utf-8"))
-                    values = res_data.get("embedding", {}).get("values")
-                    if not isinstance(values, list) or not values:
-                        raise RuntimeError("Mock embedding response did not contain vector values.")
-                    return values
-            except (TimeoutError, urllib.error.URLError) as e:
-                logger.warning(
-                    "Mock server request failed (timeout or URL error; %s).",
-                    type(e).__name__,
-                )
-                raise RuntimeError("Mock embedding request failed.") from e
-            except Exception as e:
-                logger.warning(
-                    "Mock server request failed with unexpected error (%s).",
-                    type(e).__name__,
-                )
-                raise RuntimeError("Mock embedding request failed.") from e
-        else:
-            require_provider_data_authorized(
-                "gemini",
-                {"source_text"},
-                self.provider_data_policy,
-            )
-            from google import genai
-            from google.genai import types
-
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                raise RuntimeError("GEMINI_API_KEY is required for Gemini embeddings.")
-            client = genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(
-                    timeout=int(self.api_timeout * 1000)
-                ),
-            )
-            response = client.models.embed_content(
-                model="gemini-embedding-2",
-                contents=[text]
-            )
-            return response.embeddings[0].values
+        vectors, _ = generate_embeddings(
+            [text],
+            batch_size=1,
+            api_timeout=self.api_timeout,
+            provider_data_policy=self.provider_data_policy,
+            require_api_key=True,
+        )
+        return vectors[0]
 
     @property
     def tm_retrieval_data(self) -> dict:
-        return self._reviewed_tm_data or self.tm_data
+        if self._reviewed_tm_data is not None:
+            return self._reviewed_tm_data
+        if self.allow_unreviewed_tm:
+            return self.tm_data
+        return {"chapters": {}}
 
     async def query_translation_memory(self, raw_text: str, top_k: int = 3) -> List[Dict[str, str]]:
         """Query translation memory using cosine similarity matching."""
         if not raw_text.strip():
-            return []
-
-        try:
-            q_emb = self._generate_embedding_sync(raw_text)
-        except Exception as e:
-            logger.warning(
-                "Failed to generate embedding for query (%s).",
-                type(e).__name__,
-            )
             return []
 
         candidates = []
@@ -176,17 +185,34 @@ class RAGEngine:
             for pair in pairs:
                 if isinstance(pair, dict) and "raw" in pair and "translated" in pair:
                     emb = pair.get("embedding")
-                    if emb and isinstance(emb, list) and len(emb) > 0:
-                        candidates.append((pair["raw"], pair["translated"], emb))
+                    identity = pair.get("embedding_identity")
+                    if is_compatible_embedding(emb, identity):
+                        candidates.append(
+                            (pair["raw"], pair["translated"], emb, identity)
+                        )
 
         if not candidates:
             return []
 
+        try:
+            q_emb = self._generate_embedding_sync(raw_text)
+        except Exception as e:
+            logger.warning(
+                "Failed to generate embedding for query (%s).",
+                type(e).__name__,
+            )
+            raise RuntimeError(
+                "Translation-memory embedding failed; the chapter was not processed."
+            ) from None
+
         q_arr = np.array(q_emb)
         q_norm = np.linalg.norm(q_arr) or 1e-9
 
+        query_identity = embedding_identity_for_vector(q_emb)
         scores = []
-        for raw, trans, emb in candidates:
+        for raw, trans, emb, identity in candidates:
+            if identity != query_identity:
+                continue
             c_arr = np.array(emb)
             c_norm = np.linalg.norm(c_arr) or 1e-9
             sim = np.dot(q_arr, c_arr) / (q_norm * c_norm)
@@ -343,27 +369,78 @@ class RAGEngine:
             },
             self.source_root,
             self.source_manifest_path,
+            source_input_root=self.source_input_root,
+            source_input_map=self.source_input_map,
         )
         if not findings or any(item["status"] != "verified" for item in findings):
             raise ValueError("Reviewed glossary source versions are not current.")
         return terms
 
-    def get_cleaned_glossary(self, raw_text: str) -> List[Dict[str, str]]:
+    def get_cleaned_glossary(
+        self,
+        raw_text: str,
+        additional_glossary: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, str]]:
         """Filter and return cleaned terminology mapping matching the raw text."""
-        merged = self._parse_glossary_json()
+        entries = [
+            (key, value, False)
+            for key, value in self._parse_glossary_json().items()
+        ]
+        if additional_glossary is not None:
+            if not isinstance(additional_glossary, dict):
+                raise ValueError("Additional glossary must be a JSON object.")
+            for source, translation in additional_glossary.items():
+                if (
+                    not isinstance(source, str)
+                    or not source
+                    or not isinstance(translation, str)
+                    or not translation
+                ):
+                    raise ValueError("Additional glossary contains an invalid term.")
+                existing_values = [
+                    value for key, value, _ in entries if key == source
+                ]
+                if any(
+                    _glossary_destination(value)
+                    != _glossary_destination(translation)
+                    for value in existing_values
+                ):
+                    raise ValueError(
+                        "Reviewed global and chapter glossaries conflict."
+                    )
+                entries.append((source, translation, True))
+
         results = []
-        for key, val in merged.items():
-            clean_k = re.sub(r"[\(\（\[\]\{\}].*?[\)\）\[\]\{\}]", "", key).strip()
-            raw_keywords = re.split(r"/|／|\bor\b|,|，|、", clean_k)
-            keywords = [kw.strip() for kw in raw_keywords if kw.strip()]
+        destinations_by_alias = {}
+        aliases_with_additional_terms = set()
+        for key, val, is_additional in entries:
+            keywords = _glossary_aliases(key)
             if not keywords:
                 continue
             if any(kw in raw_text for kw in keywords):
-                src = keywords[0]
-                parts_v = re.split(r"[/／\(\)（）]", str(val))
-                dst_candidates = [item.strip() for item in parts_v if item.strip()]
-                dst = dst_candidates[0] if dst_candidates else str(val).strip()
-                results.append({"src": src, "dst": dst, "info": str(val).strip()})
+                dst = _glossary_destination(val)
+                for alias in keywords:
+                    previous_destinations = destinations_by_alias.get(alias, [])
+                    if (
+                        (is_additional or alias in aliases_with_additional_terms)
+                        and any(previous != dst for previous in previous_destinations)
+                    ):
+                        raise ValueError(
+                            "Glossary entries resolve to conflicting source terms."
+                        )
+                for alias in keywords:
+                    destinations_by_alias.setdefault(alias, []).append(dst)
+                    if is_additional:
+                        aliases_with_additional_terms.add(alias)
+
+                result = {
+                    "src": keywords[0],
+                    "dst": dst,
+                    "info": str(val).strip(),
+                }
+                if is_additional and result in results:
+                    continue
+                results.append(result)
         return results
 
     def _parse_guidelines_content(self) -> Tuple[str, Dict[float, str]]:
@@ -411,35 +488,48 @@ class RAGEngine:
                 return fn
         return None
 
-    def _get_chapter_tm_embedding(self, filename: str) -> Optional[np.ndarray]:
+    def _get_chapter_tm_embedding(
+        self, filename: str, expected_identity: dict
+    ) -> Optional[np.ndarray]:
         """Compute the average paragraph embedding for chapter in TM."""
         if not hasattr(self, '_chapter_tm_embeddings_cache'):
             self._chapter_tm_embeddings_cache = {}
-        if filename in self._chapter_tm_embeddings_cache:
-            return self._chapter_tm_embeddings_cache[filename]
+        identity_key = json.dumps(expected_identity, sort_keys=True)
+        cache_key = (filename, identity_key)
+        if cache_key in self._chapter_tm_embeddings_cache:
+            return self._chapter_tm_embeddings_cache[cache_key]
 
         pairs = self.tm_retrieval_data.get("chapters", {}).get(filename, [])
         vectors = []
         for pair in pairs:
+            if not isinstance(pair, dict):
+                continue
             emb = pair.get("embedding")
-            if emb and isinstance(emb, list) and len(emb) > 0:
+            identity = pair.get("embedding_identity")
+            if (
+                identity == expected_identity
+                and is_compatible_embedding(emb, identity)
+            ):
                 vectors.append(emb)
         result = np.mean(vectors, axis=0) if vectors else None
-        self._chapter_tm_embeddings_cache[filename] = result
+        self._chapter_tm_embeddings_cache[cache_key] = result
         return result
 
     def _find_best_semantic_match(self, curr_emb: np.ndarray, candidates: list) -> Optional[float]:
         """Compare current chapter embedding with candidates and select highest similarity."""
         best_sim = -1.0
         best_chap = None
+        curr_identity = embedding_identity_for_vector(curr_emb.tolist())
         for num in candidates:
             fn = self._find_tm_filename(num)
             if not fn:
                 continue
-            cand_emb = self._get_chapter_tm_embedding(fn)
+            cand_emb = self._get_chapter_tm_embedding(fn, curr_identity)
             if cand_emb is None:
                 continue
-            sim = np.dot(curr_emb, cand_emb) / (np.linalg.norm(curr_emb) * np.linalg.norm(cand_emb))
+            curr_norm = np.linalg.norm(curr_emb) or 1e-9
+            cand_norm = np.linalg.norm(cand_emb) or 1e-9
+            sim = np.dot(curr_emb, cand_emb) / (curr_norm * cand_norm)
             if sim > best_sim:
                 best_sim = sim
                 best_chap = num
@@ -607,7 +697,8 @@ class RAGEngine:
             if not raw_text.strip() or not translated_text.strip():
                 continue
             embedding = pair.get("embedding")
-            if not embedding:
+            embedding_identity = pair.get("embedding_identity")
+            if not is_compatible_embedding(embedding, embedding_identity):
                 try:
                     embedding = self._generate_embedding_sync(raw_text)
                 except Exception as e:
@@ -615,11 +706,15 @@ class RAGEngine:
                         "Failed to generate embedding for raw text (%s).",
                         type(e).__name__,
                     )
-                    embedding = []
+                    raise RuntimeError(
+                        "Translation-memory embedding failed; the TM update was aborted."
+                    ) from None
+                embedding_identity = embedding_identity_for_vector(embedding)
             new_pairs.append({
                 "raw": raw_text,
                 "translated": translated_text,
-                "embedding": embedding
+                "embedding": embedding,
+                "embedding_identity": embedding_identity,
             })
 
         updated_tm_data = dict(self.tm_data)
@@ -656,4 +751,9 @@ class RAGEngine:
         self.tm_data = updated_tm_data
         self._tm_disk_sha256 = hashlib.sha256(content).hexdigest()
         if hasattr(self, "_chapter_tm_embeddings_cache"):
-            self._chapter_tm_embeddings_cache.pop(chapter_filename, None)
+            for cache_key in list(self._chapter_tm_embeddings_cache):
+                if (
+                    isinstance(cache_key, tuple)
+                    and cache_key[0] == chapter_filename
+                ) or cache_key == chapter_filename:
+                    self._chapter_tm_embeddings_cache.pop(cache_key, None)

@@ -229,6 +229,38 @@ def write_new_child_text(root: str, filename: str, content: str) -> None:
         stream.write(content)
 
 
+def write_new_child_bytes_atomically(
+    root: str,
+    filename: str,
+    content: bytes,
+) -> None:
+    """Publish complete bytes as a new child without replacing an existing file."""
+    if not isinstance(content, bytes):
+        raise TypeError("New child content must be bytes.")
+    root_path = Path(root)
+    root_path.mkdir(parents=True, exist_ok=True)
+    target = resolve_child_path(str(root_path), filename, allow_missing=True)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary_path, target)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
 def write_new_relative_text(root: str, relative_path: str, content: str) -> None:
     """Create a mapped file under root without replacing an existing file."""
     path = resolve_relative_path(root, relative_path, allow_missing=True)
@@ -237,6 +269,19 @@ def write_new_relative_text(root: str, relative_path: str, content: str) -> None
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o666)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(content)
+
+
+def write_new_relative_bytes(root: str, relative_path: str, content: bytes) -> None:
+    """Create a mapped binary file under root without replacing an existing file."""
+    if not isinstance(content, bytes):
+        raise TypeError("Mapped binary content must be bytes.")
+    path = resolve_relative_path(root, relative_path, allow_missing=True)
+    if not path.parent.is_dir():
+        raise ValueError("Mapped output parent directory does not exist.")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o666)
+    with os.fdopen(descriptor, "wb") as stream:
         stream.write(content)
 
 
@@ -303,6 +348,7 @@ def write_bytes_atomically(path: str, content: bytes) -> None:
 
 
 def split_paragraphs(text: str) -> List[str]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = []
     for paragraph in text.split("\n\n"):
         if not paragraph.strip():
@@ -408,6 +454,7 @@ def require_aligned_paragraphs(source: List, target: List, stage: str) -> None:
                 f"{stage} returned an empty or non-text paragraph at index {index}."
             )
         normalized = paragraph.strip(" \t\r\n\f\v")
+        normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
         split_result = split_paragraphs(normalized)
         if len(split_result) != 1 or split_result[0] != normalized:
             raise ValueError(

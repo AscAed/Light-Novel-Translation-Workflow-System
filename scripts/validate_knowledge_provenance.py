@@ -10,10 +10,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_manifest import (
+    StaleSourceVersionError,
     latest_artifacts_by_kind,
     latest_raw_parent_for_normalized,
     load_manifest,
     verify_manifest_artifact,
+    verify_current_normalized_source_metadata,
 )
 from utils import open_regular_file, resolve_relative_path
 
@@ -109,6 +111,9 @@ def audit_knowledge_provenance(
     provenance: dict,
     raw_dir: str,
     source_manifest_path: str,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> list[dict[str, str]]:
     """Check each knowledge source against its recorded and latest versions."""
     source_files = _validate_provenance(provenance)
@@ -120,8 +125,40 @@ def audit_knowledge_provenance(
     for index, source in enumerate(source_files, start=1):
         filename = source["filename"]
         label = f"source[{index}] {filename}"
+        source_input = None
         try:
-            text_digest = _sha256_relative_text(raw_dir, filename)
+            if source_input_root is None:
+                text_digest = _sha256_relative_text(raw_dir, filename)
+            else:
+                source_input = (source_input_map or {}).get(filename)
+                if (
+                    not isinstance(source_input, dict)
+                    or source_input.get("source_version_id")
+                    != source.get("source_version_id")
+                    or not isinstance(source_input.get("source_input_file"), str)
+                ):
+                    findings.append(
+                        _finding(
+                            "mismatch",
+                            label,
+                            "Source entry does not match the current AI edition map.",
+                        )
+                    )
+                    continue
+                from source_editions import read_verified_ai_edition_bytes
+
+                source_bytes = read_verified_ai_edition_bytes(
+                    source_input_root,
+                    source_input["source_input_file"],
+                    source_input["source_sha256"],
+                )
+                source_text = source_bytes.decode("utf-8")
+                normalized_text = source_text.replace(
+                    "\r\n", "\n"
+                ).replace("\r", "\n")
+                text_digest = hashlib.sha256(
+                    normalized_text.encode("utf-8")
+                ).hexdigest()
         except (OSError, UnicodeError, ValueError) as exc:
             findings.append(
                 _finding(
@@ -153,9 +190,24 @@ def audit_knowledge_provenance(
             continue
 
         try:
-            recorded = verify_manifest_artifact(
-                raw_dir, manifest, source_version_id
+            recorded = (
+                verify_current_normalized_source_metadata(
+                    manifest, source_version_id
+                )
+                if source_input_root is not None
+                else verify_manifest_artifact(
+                    raw_dir, manifest, source_version_id
+                )
             )
+        except StaleSourceVersionError:
+            findings.append(
+                _finding(
+                    "stale",
+                    label,
+                    "Recorded normalized source version is no longer current.",
+                )
+            )
+            continue
         except ValueError:
             findings.append(
                 _finding(
@@ -169,6 +221,11 @@ def audit_knowledge_provenance(
         if (
             recorded["kind"] != "normalized_source"
             or recorded["relative_path"] != filename
+            or (
+                source_input is not None
+                and recorded["content_sha256"]
+                != source_input["source_sha256"]
+            )
         ):
             findings.append(
                 _finding(
@@ -199,31 +256,21 @@ def audit_knowledge_provenance(
             )
             continue
         if latest["version_id"] != recorded["version_id"]:
-            try:
-                verify_manifest_artifact(raw_dir, manifest, latest["version_id"])
-            except ValueError:
-                findings.append(
-                    _finding(
-                        "invalid",
-                        label,
-                        "Latest normalized source version does not verify.",
-                    )
+            findings.append(
+                _finding(
+                    "stale",
+                    label,
+                    "A newer normalized source version exists than the one recorded.",
                 )
-            else:
-                findings.append(
-                    _finding(
-                        "stale",
-                        label,
-                        "A newer normalized source version exists than the one recorded.",
-                    )
-                )
+            )
             continue
 
         try:
             latest_raw = latest_raw_parent_for_normalized(manifest, latest)
-            verify_manifest_artifact(
-                raw_dir, manifest, latest_raw["version_id"]
-            )
+            if source_input_root is None:
+                verify_manifest_artifact(
+                    raw_dir, manifest, latest_raw["version_id"]
+                )
         except ValueError:
             findings.append(
                 _finding(

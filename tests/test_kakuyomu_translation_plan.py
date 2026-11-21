@@ -10,12 +10,14 @@ from scripts.run_kakuyomu_workflow import (
     main,
     preview_translation_plan,
 )
+from pipeline import get_chapter_specs
 from source_ingestion import (
     CatalogPage,
     EpisodeMetadata,
     collect_source,
     materialize_episode_markdown,
 )
+from source_editions import prepare_source_editions
 from source_manifest import load_manifest
 
 
@@ -51,6 +53,10 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
         self.translation_root = self.root / "translation"
         self.source_root.mkdir()
         self.translation_root.mkdir()
+        self.ai_root = self.root / "RAWs_AI"
+        self.human_root = self.root / "human"
+        self.ai_root.mkdir()
+        self.human_root.mkdir()
         self.catalog_path = self.source_root / "catalog.json"
         self._write_catalog("Synthetic Episode")
         self._archive_and_materialize()
@@ -99,7 +105,51 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
             source_root=str(self.source_root),
             catalog="catalog.json",
             translation_root=str(self.translation_root),
+            source_edition="normalized_source",
         )
+
+    def _prepare_ai_edition(self):
+        catalog_path = self.source_root / "catalog_with_chapters.json"
+        catalog_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "work_id": WORK_ID,
+                    "episodes": [
+                        {
+                            "episode_id": EPISODE_ID,
+                            "title": "Synthetic Episode",
+                            "position": 1,
+                            "page_url": (
+                                "https://kakuyomu.jp/works/"
+                                f"{WORK_ID}/episodes/{EPISODE_ID}"
+                            ),
+                        }
+                    ],
+                    "chapters": [
+                        {
+                            "group_id": "chapter-one",
+                            "chapter_id": "chapter-one",
+                            "title": "Synthetic Chapter",
+                            "level": 1,
+                            "position_start": 1,
+                            "position_end": 1,
+                            "episode_ids": [EPISODE_ID],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        prepare_source_editions(
+            source_root=str(self.source_root),
+            catalog_relative_path="catalog_with_chapters.json",
+            manifest_relative_path="source_manifest.json",
+            human_root=str(self.human_root),
+            ai_root=str(self.ai_root),
+        )
+        return catalog_path
 
     def test_preview_is_read_only_and_does_not_include_source_text(self):
         before = {
@@ -150,6 +200,8 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
                     "catalog.json",
                     "--translation-root",
                     str(self.translation_root),
+                    "--source-edition",
+                    "normalized_source",
                     "--plan-only",
                 ]
             )
@@ -162,7 +214,9 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
 
     def test_cli_can_write_plan_to_a_new_file_without_overwriting(self):
         output = io.StringIO()
-        plan_path = self.root / "review-plan.json"
+        plan_dir = self.root / "Workflow" / "Plans"
+        plan_dir.mkdir(parents=True)
+        plan_path = plan_dir / "review-plan.json"
         arguments = [
             "--source-root",
             str(self.source_root),
@@ -170,6 +224,8 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
             "catalog.json",
             "--translation-root",
             str(self.translation_root),
+            "--source-edition",
+            "normalized_source",
             "--plan-only",
             "--plan-output",
             str(plan_path),
@@ -210,6 +266,27 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
                     ]
                 )
         self.assertEqual(raised.exception.code, 2)
+
+    def test_plan_output_rejects_source_archive_destination(self):
+        plan_path = self.source_root / "translation_plan_review.json"
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                main(
+                    [
+                        "--source-root",
+                        str(self.source_root),
+                        "--catalog",
+                        "catalog.json",
+                        "--translation-root",
+                        str(self.translation_root),
+                        "--plan-only",
+                        "--plan-output",
+                        str(plan_path),
+                    ]
+                )
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(plan_path.exists())
 
     def test_existing_translation_target_blocks_plan_without_reading_it(self):
         sentinel = "private existing translation"
@@ -293,6 +370,210 @@ class KakuyomuTranslationPlanTests(unittest.TestCase):
             {"episode_id": EPISODE_ID, "code": "missing_normalized_source"},
             plan["issues"],
         )
+
+    def test_default_plan_blocks_when_ai_edition_is_unavailable(self):
+        plan = preview_translation_plan(
+            source_root=str(self.source_root),
+            catalog="catalog.json",
+            translation_root=str(self.translation_root),
+        )
+
+        self.assertEqual(plan["status"], "blocked")
+        self.assertIsNone(plan["source_edition"])
+        self.assertEqual(
+            plan["issues"],
+            [{"episode_id": EPISODE_ID, "code": "invalid_ai_edition"}],
+        )
+        self.assertIsNone(plan["episodes"][0]["source_version_id"])
+
+    def test_explicit_normalized_source_override_uses_collector_output(self):
+        plan = preview_translation_plan(
+            source_root=str(self.source_root),
+            catalog="catalog.json",
+            translation_root=str(self.translation_root),
+            source_edition="normalized_source",
+        )
+        normalized = next(
+            item
+            for item in load_manifest(
+                self.source_root / "source_manifest.json"
+            )["artifacts"]
+            if item["kind"] == "normalized_source"
+        )
+
+        self.assertEqual(plan["status"], "ready_for_review")
+        self.assertIsNone(plan["source_edition"])
+        self.assertEqual(
+            plan["episodes"][0]["source_file"],
+            normalized["relative_path"],
+        )
+
+    def test_normalized_source_override_rejects_ai_root(self):
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            preview_translation_plan(
+                source_root=str(self.source_root),
+                catalog="catalog.json",
+                translation_root=str(self.translation_root),
+                source_edition="normalized_source",
+                ai_edition_root=str(self.ai_root),
+            )
+
+    def test_cli_plan_only_defaults_to_ai_edition(self):
+        catalog_path = self._prepare_ai_edition()
+        plan_dir = self.root / "Workflow" / "Plans"
+        plan_dir.mkdir(parents=True)
+        plan_path = plan_dir / "ai-plan.json"
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            result = main(
+                [
+                    "--source-root",
+                    str(self.source_root),
+                    "--catalog",
+                    catalog_path.name,
+                    "--translation-root",
+                    str(self.translation_root),
+                    "--plan-only",
+                    "--plan-output",
+                    str(plan_path),
+                ]
+            )
+
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        ai_index = json.loads(
+            (self.ai_root / "catalog.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(plan["status"], "ready_for_review")
+        self.assertEqual(plan["source_edition"]["profile_id"], "ai-efficient-v1")
+        self.assertEqual(
+            plan["episodes"][0]["source_version_id"],
+            ai_index["episodes"][0]["ai_edition_version_id"],
+        )
+        self.assertNotIn(SOURCE_TEXT, plan_path.read_text(encoding="utf-8"))
+
+    def test_ai_edition_plan_uses_raws_ai_and_tracks_archive_provenance(self):
+        catalog_path = self._prepare_ai_edition()
+        plan = preview_translation_plan(
+            source_root=str(self.source_root),
+            catalog=str(catalog_path.name),
+            translation_root=str(self.translation_root),
+        )
+
+        ai_index = json.loads(
+            (self.ai_root / "catalog.json").read_text(encoding="utf-8")
+        )
+        episode = plan["episodes"][0]
+        indexed_episode = ai_index["episodes"][0]
+        self.assertEqual(plan["status"], "ready_for_review")
+        self.assertEqual(plan["verified_source_count"], 1)
+        self.assertEqual(
+            plan["source_edition"]["profile_id"],
+            "ai-efficient-v1",
+        )
+        self.assertEqual(
+            plan["source_edition"]["index_root"],
+            str(self.ai_root.resolve()),
+        )
+        self.assertEqual(
+            episode["source_file"],
+            indexed_episode["ai_archive_relative_path"],
+        )
+        self.assertEqual(
+            episode["source_input_file"],
+            indexed_episode["ai_relative_path"],
+        )
+        self.assertEqual(
+            episode["source_sha256"],
+            indexed_episode["output_sha256"],
+        )
+        self.assertEqual(
+            episode["source_version_id"],
+            indexed_episode["ai_edition_version_id"],
+        )
+        self.assertEqual(
+            episode["source_input_version_id"],
+            indexed_episode["raw_source_version_id"],
+        )
+        self.assertNotIn(SOURCE_TEXT, json.dumps(plan, ensure_ascii=False))
+
+        chapter_map = [
+            {
+                "raw_file": episode["source_file"],
+                "source_input_file": episode["source_input_file"],
+                "source_sha256": episode["source_sha256"],
+                "translation_file": episode["translation_file"],
+                "tm_key": episode["tm_key"],
+                "source_version_id": episode["source_version_id"],
+                "chapter_position": episode["position"],
+            }
+        ]
+        specs = get_chapter_specs(
+            str(self.source_root),
+            str(self.translation_root),
+            chapter_map,
+            "source_editions_manifest.json",
+            source_input_root=str(self.ai_root),
+        )
+        self.assertEqual(specs[0].raw_file, episode["source_file"])
+        self.assertEqual(
+            specs[0].source_input_file,
+            episode["source_input_file"],
+        )
+        self.assertEqual(specs[0].source_sha256, episode["source_sha256"])
+        self.assertEqual(
+            (
+                self.ai_root / indexed_episode["ai_relative_path"]
+            ).read_bytes(),
+            (
+                self.source_root / indexed_episode["ai_archive_relative_path"]
+            ).read_bytes(),
+        )
+
+    def test_ai_edition_plan_rejects_incomplete_catalog_index(self):
+        catalog_path = self._prepare_ai_edition()
+        index_path = self.ai_root / "catalog.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["episodes"] = []
+        index_path.write_text(
+            json.dumps(index, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        plan = preview_translation_plan(
+            source_root=str(self.source_root),
+            catalog=str(catalog_path.name),
+            translation_root=str(self.translation_root),
+            ai_edition_root=str(self.ai_root),
+        )
+
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(
+            plan["issues"],
+            [{"episode_id": EPISODE_ID, "code": "stale_ai_edition_catalog"}],
+        )
+        self.assertIsNone(plan["episodes"][0]["source_version_id"])
+
+    def test_ai_edition_plan_rejects_changed_output_bytes(self):
+        catalog_path = self._prepare_ai_edition()
+        ai_path = next(self.ai_root.rglob("*.md"))
+        ai_path.write_bytes(ai_path.read_bytes() + b"changed")
+
+        plan = preview_translation_plan(
+            source_root=str(self.source_root),
+            catalog=str(catalog_path.name),
+            translation_root=str(self.translation_root),
+            ai_edition_root=str(self.ai_root),
+        )
+
+        self.assertEqual(plan["status"], "blocked")
+        self.assertEqual(
+            plan["issues"],
+            [{"episode_id": EPISODE_ID, "code": "invalid_ai_edition"}],
+        )
+        self.assertEqual(plan["provider_calls"], 0)
+        self.assertEqual(plan["network_requests"], 0)
 
 
 if __name__ == "__main__":

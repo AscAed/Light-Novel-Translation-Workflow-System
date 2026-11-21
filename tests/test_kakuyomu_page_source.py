@@ -19,6 +19,7 @@ from kakuyomu_page_source import (
 from scripts.ingest_kakuyomu_pages import (
     _load_catalog,
     _minimum_delay as _ingest_minimum_delay,
+    _record_project_ingestion_freshness,
     main,
 )
 from scripts.run_kakuyomu_workflow import (
@@ -203,6 +204,7 @@ def make_adapter(
     *,
     robots=ROBOTS,
     page=PAGE_HTML,
+    page_content_type="text/html; charset=utf-8",
     episodes=None,
     max_page_bytes=4096,
     max_episode_bytes=4096,
@@ -223,7 +225,7 @@ def make_adapter(
     for item in episodes:
         responses[item.page_url] = (
             page.encode("utf-8") if isinstance(page, str) else page,
-            "text/html; charset=utf-8",
+            page_content_type,
         )
     opener = FakeOpener(responses)
     clock = FakeClock()
@@ -337,6 +339,7 @@ class KakuyomuPageAdapterTests(unittest.TestCase):
         fetched = adapter.fetch_episode(EPISODE_ID)
         self.assertIsInstance(fetched, FetchedEpisode)
         self.assertEqual(fetched.content, EXPECTED_TEXT.encode("utf-8"))
+        self.assertEqual(fetched.page_html, PAGE_HTML.encode("utf-8"))
         self.assertEqual(fetched.metadata.title, "第1話 はじまり")
         self.assertEqual(
             [request[0] for request in opener.requests],
@@ -443,6 +446,19 @@ class KakuyomuPageAdapterTests(unittest.TestCase):
             [request[0] for request in opener.requests],
             ["https://kakuyomu.jp/robots.txt"],
         )
+
+    def test_decodes_and_retains_declared_non_utf8_page_charset(self):
+        page_bytes = PAGE_HTML.encode("shift_jis")
+        adapter, _, _ = make_adapter(
+            page=page_bytes,
+            page_content_type='text/html; charset="Shift_JIS"',
+        )
+
+        fetched = adapter.fetch_episode(EPISODE_ID)
+
+        self.assertEqual(fetched.content, EXPECTED_TEXT.encode("utf-8"))
+        self.assertEqual(fetched.page_html, page_bytes)
+        self.assertEqual(fetched.page_charset, "shift_jis")
 
     def test_empty_robots_response_fails_closed(self):
         opener = FakeOpener(
@@ -1057,6 +1073,330 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(report["completed_count"], 1)
 
+    def test_project_mode_records_source_and_ai_edition_freshness(self):
+        projects_root = self.root / "projects"
+        project_root = projects_root / "synthetic"
+        source_root = project_root / "SourceArchive"
+        translation_root = project_root / "熟肉"
+        source_root.mkdir(parents=True)
+        translation_root.mkdir()
+        catalog = {
+            "schema_version": 1,
+            "work_id": WORK_ID,
+            "episodes": [
+                {
+                    "episode_id": EPISODE_ID,
+                    "position": 1,
+                    "page_url": PAGE_URL,
+                }
+            ],
+        }
+        (source_root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        adapter, _, _ = make_adapter()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "scripts.ingest_kakuyomu_pages._PROJECTS_ROOT",
+                projects_root,
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages.KakuyomuPageAdapter",
+                return_value=adapter,
+            ),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+        ):
+            result = main(
+                [
+                    "--project",
+                    "synthetic",
+                    "--source-root",
+                    str(source_root),
+                    "--catalog",
+                    "catalog.json",
+                    "--output-root",
+                    str(source_root),
+                ]
+            )
+
+        report = json.loads(stdout.getvalue())
+        freshness = report["project_freshness_snapshot"]
+        snapshot_path = source_root / freshness["path"]
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("太郎", stdout.getvalue())
+        self.assertEqual(report["status"], "complete")
+        self.assertEqual(freshness["status"], "persisted")
+        self.assertEqual(
+            freshness["consumers"]["ai_edition_index"]["unverified"],
+            1,
+        )
+        self.assertTrue((source_root / "source_editions_manifest.json").is_file())
+        self.assertEqual(
+            snapshot["consumers"]["ai_edition_index"]["findings"][0]["status"],
+            "unverified",
+        )
+        self.assertEqual(
+            snapshot["source_manifest"]["relative_path"],
+            "source_editions_manifest.json",
+        )
+
+    def test_project_freshness_passes_ai_source_map_to_downstream_audit(self):
+        source_root = self.root / "freshness-source"
+        ai_root = self.root / "freshness-ai"
+        translation_root = self.root / "freshness-translation"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        summary_path = source_root / "STORY_SUMMARY_reviewed.json"
+        summary_path.write_text("{}", encoding="utf-8")
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "runs_root": source_root.parent / "Workflow" / "Runs",
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": summary_path,
+        }
+        expected_sources = [
+            {
+                "filename": "editions/ai-v1/episode.md",
+                "source_version_id": "ai-version-1",
+                "source_input_file": "chapters/episode.md",
+                "source_sha256": "a" * 64,
+                "episode_id": "episode-1",
+                "translation_file": "episode-0001-episode-1.md",
+                "tm_key": "source-edition:work-1:episode-1",
+            }
+        ]
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "verified",
+                        "detail": "verified fixture",
+                    },
+                    expected_sources,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["source_input_root"], str(ai_root))
+        self.assertEqual(
+            kwargs["source_input_map"],
+            {
+                "editions/ai-v1/episode.md": {
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "chapters/episode.md",
+                    "source_sha256": "a" * 64,
+                }
+            },
+        )
+        self.assertEqual(kwargs["expected_sources"], expected_sources)
+        self.assertEqual(
+            kwargs["translation_runs_root"],
+            str(context["runs_root"]),
+        )
+        self.assertEqual(
+            kwargs["expected_translations"],
+            [
+                {
+                    "translation_file": "episode-0001-episode-1.md",
+                    "tm_key": "source-edition:work-1:episode-1",
+                    "source_version_id": "ai-version-1",
+                    "source_sha256": "a" * 64,
+                }
+            ],
+        )
+        self.assertEqual(kwargs["published_source_status"], "verified")
+
+    def test_project_freshness_reports_publications_without_current_ai_map(self):
+        source_root = self.root / "unmapped-freshness-source"
+        ai_root = self.root / "unmapped-freshness-ai"
+        translation_root = self.root / "unmapped-freshness-translation"
+        runs_root = self.root / "Workflow" / "Runs"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        runs_root.mkdir(parents=True)
+        (translation_root / "previous.md").write_text(
+            "existing output",
+            encoding="utf-8",
+        )
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "runs_root": runs_root,
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": source_root / "STORY_SUMMARY_reviewed.json",
+        }
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "unverified",
+                        "detail": "index unavailable",
+                    },
+                    None,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertEqual(kwargs["translation_runs_root"], str(runs_root))
+        self.assertIsNone(kwargs["expected_translations"])
+        self.assertEqual(kwargs["published_source_status"], "unverified")
+
+    def test_project_freshness_ignores_empty_publication_roots_without_ai_map(self):
+        source_root = self.root / "empty-freshness-source"
+        ai_root = self.root / "empty-freshness-ai"
+        translation_root = self.root / "empty-freshness-translation"
+        runs_root = self.root / "EmptyWorkflow" / "Runs"
+        source_root.mkdir()
+        ai_root.mkdir()
+        translation_root.mkdir()
+        runs_root.mkdir(parents=True)
+        context = {
+            "source_root": source_root,
+            "ai_root": ai_root,
+            "translation_root": translation_root,
+            "runs_root": runs_root,
+            "tm_path": source_root / "translation_memory.json",
+            "knowledge_path": source_root / "KNOWLEDGE_PROVENANCE.json",
+            "story_summary_path": source_root / "STORY_SUMMARY_reviewed.json",
+        }
+        snapshot = {"consumers": {}}
+
+        with (
+            patch(
+                "source_editions.synchronize_edition_manifest_with_source_history",
+                return_value={"status": "unchanged"},
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages._ai_edition_index_freshness",
+                return_value=(
+                    {
+                        "identity": "ai_edition_index",
+                        "status": "unverified",
+                        "detail": "index unavailable",
+                    },
+                    None,
+                ),
+            ),
+            patch(
+                "scripts.snapshot_downstream_freshness.build_downstream_freshness_snapshot",
+                return_value=snapshot,
+            ) as build_snapshot,
+            patch(
+                "scripts.snapshot_downstream_freshness.persist_downstream_freshness_snapshot",
+                return_value={
+                    "path": "Workflow/Freshness/test.json",
+                    "snapshot_id": "snapshot",
+                    "created": True,
+                },
+            ),
+        ):
+            _record_project_ingestion_freshness(
+                context=context,
+                catalog_relative_path="catalog.json",
+                manifest_relative_path="source_manifest.json",
+            )
+
+        kwargs = build_snapshot.call_args.kwargs
+        self.assertIsNone(kwargs["translation_runs_root"])
+        self.assertIsNone(kwargs["expected_translations"])
+
+    def test_project_mode_rejects_roots_outside_project_archive_before_fetch(self):
+        projects_root = self.root / "projects"
+        source_root = projects_root / "synthetic" / "SourceArchive"
+        source_root.mkdir(parents=True)
+        with (
+            patch(
+                "scripts.ingest_kakuyomu_pages._PROJECTS_ROOT",
+                projects_root,
+            ),
+            patch(
+                "scripts.ingest_kakuyomu_pages.KakuyomuPageAdapter"
+            ) as adapter_class,
+            patch("sys.stderr", io.StringIO()) as stderr,
+        ):
+            result = main(
+                [
+                    "--project",
+                    "synthetic",
+                    "--source-root",
+                    str(self.source_root),
+                    "--catalog",
+                    "catalog.json",
+                    "--output-root",
+                    str(self.output_root),
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        self.assertIn("ERROR: ValueError", stderr.getvalue())
+        adapter_class.assert_not_called()
+
     def test_cli_discovers_homepage_catalog_and_archives_all_listed_pages(self):
         work_html = make_work_page_html(
             WORK_ID,
@@ -1134,6 +1474,25 @@ class KakuyomuIngestionCLITests(unittest.TestCase):
             )
         )
         self.assertEqual(work_record["metadata"], discovered["work_metadata"])
+        html_artifacts = [
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "raw_page_html"
+        ]
+        raw_artifact = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["kind"] == "raw_source"
+        )
+        self.assertEqual(len(html_artifacts), 1)
+        self.assertEqual(
+            (self.output_root / html_artifacts[0]["relative_path"]).read_bytes(),
+            PAGE_HTML.encode("utf-8"),
+        )
+        self.assertIn(
+            raw_artifact["version_id"],
+            html_artifacts[0]["parent_version_ids"],
+        )
         self.assertEqual(discovered["schema_version"], 3)
         self.assertEqual(
             discovered["work_metadata"],

@@ -5,6 +5,7 @@
 import os
 import json
 import hashlib
+import asyncio
 import unittest
 import tempfile
 import shutil
@@ -13,6 +14,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch, MagicMock
 from rag_engine import RAGEngine
+from embedding_provider import embedding_identity_for_vector
+from embedding_provider import is_compatible_embedding
 from utils import write_bytes_atomically
 
 
@@ -26,11 +29,23 @@ class TestRAGEngineUnit(unittest.TestCase):
         self.guidelines_path = os.path.join(self.test_dir, "guidelines.txt")
 
         # Set up default files with minimal mock data
+        embedding = [0.1] * 768
+        embedding_identity = embedding_identity_for_vector(embedding)
         self.default_tm = {
             "chapters": {
                 "第1話.md": [
-                    {"raw": "こんにちは", "translated": "你好", "embedding": [0.1] * 768},
-                    {"raw": "さようなら", "translated": "再见", "embedding": [-0.1] * 768}
+                    {
+                        "raw": "こんにちは",
+                        "translated": "你好",
+                        "embedding": embedding,
+                        "embedding_identity": embedding_identity,
+                    },
+                    {
+                        "raw": "さようなら",
+                        "translated": "再见",
+                        "embedding": [-0.1] * 768,
+                        "embedding_identity": embedding_identity,
+                    }
                 ]
             }
         }
@@ -86,6 +101,28 @@ Chapter 2 specific guidelines.
                 guidelines_path=self.guidelines_path
             )
 
+    def test_reviewed_tm_uses_publication_root_when_output_is_a_draft_root(self):
+        with patch("rag_engine.load_reviewed_tm_snapshot") as load_snapshot:
+            RAGEngine(
+                self.tm_path,
+                self.glossary_path,
+                self.guidelines_path,
+                source_root="source",
+                source_manifest_path="source_manifest.json",
+                reviewed_tm_path="reviewed_tm.json",
+                translation_root="run/Drafts",
+                reviewed_tm_translation_root="published",
+            )
+
+        load_snapshot.assert_called_once_with(
+            "reviewed_tm.json",
+            "source",
+            "published",
+            "source_manifest.json",
+            source_input_root=None,
+            source_input_map=None,
+        )
+
     def test_draft_glossary_cannot_be_loaded_for_retrieval(self):
         draft_path = os.path.join(self.test_dir, "Glossary_draft.json")
         with open(draft_path, "w", encoding="utf-8") as f:
@@ -105,17 +142,106 @@ Chapter 2 specific guidelines.
         mock_embed.assert_not_called()
 
     @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    def test_unreviewed_tm_is_not_retrieved_by_default(self, mock_embed):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        import asyncio
+        res = asyncio.run(engine.query_translation_memory("hello"))
+
+        self.assertEqual(res, [])
+        self.assertEqual(engine.tm_data, self.default_tm)
+        self.assertEqual(engine.tm_retrieval_data, {"chapters": {}})
+        mock_embed.assert_not_called()
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
     def test_query_translation_memory_similarity(self, mock_embed):
         """Verify cosine similarity search retrieves the closest matches from TM."""
         # Query matching closer to the first vector
         mock_embed.return_value = [0.11] * 768
-        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            allow_unreviewed_tm=True,
+        )
         
         import asyncio
         res = asyncio.run(engine.query_translation_memory("hello", top_k=1))
         
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["raw"], "こんにちは")
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    def test_legacy_vectors_without_identity_are_not_retrieved(self, mock_embed):
+        legacy_tm = json.loads(json.dumps(self.default_tm))
+        for pair in legacy_tm["chapters"]["第1話.md"]:
+            pair.pop("embedding_identity")
+        Path(self.tm_path).write_text(
+            json.dumps(legacy_tm), encoding="utf-8"
+        )
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            allow_unreviewed_tm=True,
+        )
+
+        result = asyncio.run(engine.query_translation_memory("synthetic query"))
+
+        self.assertEqual(result, [])
+        mock_embed.assert_not_called()
+
+    @patch("rag_engine.RAGEngine._generate_embedding_sync")
+    def test_vectors_with_a_different_identity_are_not_retrieved(self, mock_embed):
+        incompatible_tm = json.loads(json.dumps(self.default_tm))
+        for pair in incompatible_tm["chapters"]["第1話.md"]:
+            pair["embedding_identity"]["model"] = "different-model"
+        Path(self.tm_path).write_text(
+            json.dumps(incompatible_tm), encoding="utf-8"
+        )
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            allow_unreviewed_tm=True,
+        )
+
+        result = asyncio.run(engine.query_translation_memory("synthetic query"))
+
+        self.assertEqual(result, [])
+        mock_embed.assert_not_called()
+
+    def test_embedding_identity_requires_exact_model_and_dimension_types(self):
+        vector = [0.25, 0.75]
+        identity = embedding_identity_for_vector(vector)
+
+        self.assertTrue(is_compatible_embedding(vector, identity))
+        self.assertFalse(is_compatible_embedding(vector + [0.5], identity))
+        self.assertFalse(
+            is_compatible_embedding(
+                vector,
+                {**identity, "schema_version": True},
+            )
+        )
+
+    @patch(
+        "rag_engine.RAGEngine._generate_embedding_sync",
+        side_effect=RuntimeError("SYNTHETIC_PRIVATE_ERROR"),
+    )
+    def test_query_embedding_failure_is_not_reported_as_no_matches(self, mock_embed):
+        engine = RAGEngine(
+            self.tm_path,
+            self.glossary_path,
+            self.guidelines_path,
+            allow_unreviewed_tm=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "embedding failed") as raised:
+            import asyncio
+            asyncio.run(engine.query_translation_memory("synthetic query"))
+
+        self.assertNotIn("SYNTHETIC_PRIVATE_ERROR", str(raised.exception))
+        mock_embed.assert_called_once_with("synthetic query")
 
     def test_get_cleaned_glossary_matches(self):
         """Verify glossary cleans keys/values and matches terms in raw text."""
@@ -133,6 +259,89 @@ Chapter 2 specific guidelines.
         self.assertEqual(len(res_test), 1)
         self.assertEqual(res_test[0]["src"], "テスト")
         self.assertEqual(res_test[0]["dst"], "测试")
+
+    def test_get_cleaned_glossary_merges_reviewed_chapter_terms(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        result = engine.get_cleaned_glossary(
+            "alpha appears",
+            additional_glossary={"alpha": "阿尔法"},
+        )
+
+        self.assertEqual(
+            result,
+            [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
+        )
+
+    def test_get_cleaned_glossary_rejects_conflicting_reviewed_terms(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+
+        with self.assertRaisesRegex(ValueError, "glossaries conflict"):
+            engine.get_cleaned_glossary(
+                "ネトラレラ",
+                additional_glossary={"ネトラレラ (Netorarera)": "另一个译名"},
+            )
+
+    def test_get_cleaned_glossary_preserves_global_alias_matches(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲","alpha":"乙"}'
+
+        result = engine.get_cleaned_glossary("alpha")
+
+        self.assertEqual(
+            result,
+            [
+                {"src": "alpha", "dst": "甲", "info": "甲"},
+                {"src": "alpha", "dst": "乙", "info": "乙"},
+            ],
+        )
+
+    def test_get_cleaned_glossary_rejects_local_alias_conflict(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "alpha",
+                additional_glossary={"alpha": "乙"},
+            )
+
+    def test_get_cleaned_glossary_rejects_conflicting_secondary_alias(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "beta",
+                additional_glossary={"beta": "乙"},
+            )
+
+    def test_get_cleaned_glossary_compares_destinations_not_descriptions(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha":"甲（全书说明）"}'
+
+        result = engine.get_cleaned_glossary(
+            "alpha",
+            additional_glossary={"alpha": "甲（本话说明）"},
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {"src": "alpha", "dst": "甲", "info": "甲（全书说明）"},
+                {"src": "alpha", "dst": "甲", "info": "甲（本话说明）"},
+            ],
+        )
+
+    def test_get_cleaned_glossary_keeps_local_participation_for_same_value(self):
+        engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        engine.glossary_raw = '{"alpha/beta":"甲","alpha":"乙"}'
+
+        with self.assertRaisesRegex(ValueError, "conflicting source terms"):
+            engine.get_cleaned_glossary(
+                "alpha",
+                additional_glossary={"alpha": "乙"},
+            )
 
     def test_get_partitioned_guidelines_direct_match(self):
         """Verify guidelines direct matching retrieves specific chapter rules."""
@@ -245,6 +454,10 @@ Chapter 2 specific guidelines.
         self.assertEqual(engine.tm_data["chapters"]["第2話.md"][0]["raw"], "新原文")
         self.assertEqual(engine.tm_data["chapters"]["第2話.md"][0]["embedding"], [0.5] * 768)
         self.assertEqual(
+            engine.tm_data["chapters"]["第2話.md"][0]["embedding_identity"],
+            embedding_identity_for_vector([0.5] * 768),
+        )
+        self.assertEqual(
             engine.tm_data["source_provenance"]["第2話.md"],
             source_provenance,
         )
@@ -344,18 +557,20 @@ Chapter 2 specific guidelines.
         "rag_engine.RAGEngine._generate_embedding_sync",
         side_effect=RuntimeError("SYNTHETIC_PRIVATE_ERROR"),
     )
-    def test_embedding_failure_does_not_store_a_synthetic_vector(self, mock_embed):
+    def test_embedding_failure_aborts_tm_update_without_partial_write(self, mock_embed):
         engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
+        original_data = json.loads(json.dumps(engine.tm_data))
+        original_bytes = Path(self.tm_path).read_bytes()
         with self.assertLogs("rag_engine", level="WARNING") as captured:
-            engine.update_translation_memory(
-                "第3話.md",
-                [{"raw": "新原文", "translated": "新译文"}],
-            )
+            with self.assertRaisesRegex(RuntimeError, "TM update was aborted") as raised:
+                engine.update_translation_memory(
+                    "第3話.md",
+                    [{"raw": "新原文", "translated": "新译文"}],
+                )
 
-        saved_pair = engine.tm_data["chapters"]["第3話.md"][0]
-        self.assertEqual(saved_pair["raw"], "新原文")
-        self.assertEqual(saved_pair["translated"], "新译文")
-        self.assertEqual(saved_pair["embedding"], [])
+        self.assertEqual(engine.tm_data, original_data)
+        self.assertEqual(Path(self.tm_path).read_bytes(), original_bytes)
+        self.assertNotIn("SYNTHETIC_PRIVATE_ERROR", str(raised.exception))
         self.assertNotIn(
             "SYNTHETIC_PRIVATE_ERROR", "\n".join(captured.output)
         )
@@ -450,7 +665,8 @@ Chapter 2 specific guidelines.
         with patch.dict(os.environ, {"MOCK_SERVER_PORT": "1234"}):
             with patch("urllib.request.urlopen", return_value=response):
                 engine = RAGEngine(self.tm_path, self.glossary_path, self.guidelines_path)
-                with self.assertRaisesRegex(RuntimeError, "Mock embedding request failed"):
+                engine.provider_data_policy = {"gemini": {"source_text"}}
+                with self.assertRaisesRegex(RuntimeError, "invalid vector"):
                     engine._generate_embedding_sync("query")
 
     def test_gemini_embedding_client_uses_configured_request_timeout(self):
@@ -514,6 +730,7 @@ Chapter 2 specific guidelines.
             self.glossary_path,
             self.guidelines_path,
             api_timeout=3.5,
+            provider_data_policy={"gemini": {"source_text"}},
         )
         response = json.dumps({"embedding": {"values": [0.5] * 768}}).encode("utf-8")
         with patch.dict(os.environ, {"MOCK_SERVER_PORT": "12345"}, clear=True):

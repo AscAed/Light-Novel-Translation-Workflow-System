@@ -121,9 +121,12 @@ class PandocExecutableResolutionTests(unittest.TestCase):
                     )
                 raise OSError("synthetic conversion stop")
 
-            self.assertEqual(_resolve_pandoc_executable("pandoc"), "pandoc")
             with (
                 patch("epub_builder.subprocess.run", side_effect=run),
+                patch(
+                    "epub_builder.shutil.which",
+                    return_value=expected_executable,
+                ),
                 self.assertRaisesRegex(OSError, "synthetic conversion stop"),
             ):
                 build_epub_candidate(
@@ -142,6 +145,11 @@ class PandocExecutableResolutionTests(unittest.TestCase):
             self.assertEqual(calls[0][0][0], expected_executable)
             self.assertEqual(calls[1][0][0], expected_executable)
             self.assertEqual(Path(calls[1][1]["cwd"]).name, "inputs")
+
+    def test_resolves_bare_pandoc_name_before_changing_working_directory(self):
+        resolved = str(Path.cwd() / "tools" / "pandoc.exe")
+        with patch("epub_builder.shutil.which", return_value=resolved):
+            self.assertEqual(_resolve_pandoc_executable("pandoc"), resolved)
 
 
 class EpubCandidateTests(unittest.TestCase):
@@ -325,6 +333,21 @@ class EpubCandidateTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in output_dir.iterdir()),
             ["build.json", "candidate.epub"],
+        )
+
+    def test_builds_with_bare_pandoc_name_after_changing_working_directory(self):
+        self.pandoc = Path(self.pandoc).name
+
+        result = self._build()
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertTrue(
+            (
+                self.output_root
+                / "synthetic-work"
+                / "edition-001"
+                / "candidate.epub"
+            ).is_file()
         )
 
     def test_build_uses_validated_snapshots_and_terminates_pandoc_options(self):
