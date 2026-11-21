@@ -24,7 +24,7 @@
 
 - 基线：分支 `codex/translation-workflow-audit-20261117`，代码提交 `f8ac16163ac4260f16db668f6660b273f1d564d0`；本次文档变更不影响测试代码。工作区仍保留未跟踪的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未读取、暂存或修改。
 - `已验证` 普通权限运行 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -v`：11 项运行、7 项通过、4 项跳过、0 失败。3 项符号链接测试因 Windows `WinError 1314` 无创建权限跳过；1 项 FIFO 测试因 Windows 不支持 `os.mkfifo` 跳过。此前管理员 PowerShell 对同一代码用例的复跑结果见下方依赖复验记录，3 项符号链接用例均已实际执行并通过。
-- `用户报告` 用户提供的 `-q` 输出为 9 项运行、3 项跳过且无失败；该输出未包含 SHA 或逐项跳过原因，因此独立保留，不与当前 checkout 的 11 项结果合并。
+- `用户报告` 用户在本轮提供 `.venv\Scripts\python.exe -m unittest tests.test_security_path_traversal -q` 输出：`Ran 9 tests in 0.032s`、`OK (skipped=3)`。输出未包含 checkout SHA 或逐项跳过原因，因此仅记录为用户报告，不推断 3 项跳过的具体原因，也不与当前 checkout 的 11 项结果合并。
 
 ## 2026-11-21 K4 发布回执进程中断恢复
 
