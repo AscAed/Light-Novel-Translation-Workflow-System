@@ -2,6 +2,43 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-21 当前工作树综合自检
+
+- 验证针对起始 HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82` 上的现有工作树修改；本轮未读取 `.env`、API profile、密钥、试点正文/译文或受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未调用真实 Provider 或线上部署。
+- `已验证` `.venv\Scripts\python.exe scripts\run_unit_tests.py`：816 项运行、5 项因当前 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过（223.972 秒，退出码 0）。E2E 的内容拦截和段落数量异常来自预期负向 fixture。
+- `已验证` Python 3.14.7 虚拟环境 `pip check` 无依赖冲突；`pip-audit --path .venv\Lib\site-packages` 未报告已知漏洞。漏洞结果仅覆盖当前安装环境及工具可取得的公告数据，不代表依赖未来不会出现漏洞；`requirements.txt` 仍未锁定版本。
+- `已验证` 排除 Git、虚拟环境、项目数据和临时目录后的 Python `compileall`、GitHub Actions workflow YAML 语法解析、3 个新增/更新 CLI 的 `--help`、26 份 Markdown 的 458 个本地链接目标及 `git diff --check` 通过。链接检查只覆盖本地目标，不验证标题锚点。
+- `部分实现` Codex Security 标准只读扫描未报告发现；检查范围为 4 个非项目数据源码面，扫描 ID `9e326075-a4ad-459c-8888-e3f2bf1a79f4`。排除项目、凭据配置和受保护文件，且未进行运行中服务/部署扫描，因此不是全仓库或生产安全认证。
+- `未验证` 真实 Provider 路由、账号权限、实际 tokenizer/model/context 兼容、外发费用、译文语义质量、人工验收与生产部署。仓库当前交付仍为本地 CLI，合成和 loopback mock 验证不关闭这些门槛。
+
+## 2026-11-21 K5 全书知识抽取预检
+
+- `已实现` 新增 `scripts/plan_knowledge_extraction.py`：不调用 `Config.load_config`，因此不读取 `.env`；通过当前 book-bundle loader 验证 catalog、checkpoint、bundle-set、AI/人读版、章节 map 与文件身份，然后按真实抽取器相同的段落编号、prompt renderer、tokenizer 和 batching 规则输出内容无关预算摘要。
+- 输出包含 bundle identity、话数/段落数、输入字符数、tokenizer 摘要、抽取 batch 数、估算输入 token、至少需要的 Provider call 下限及综合调用余量。模型 ID 是调用者声明，不验证 tokenizer 与模型、远端上下文模板或端点；价格未知时 `provider_cost_estimate=null`。该摘要不包含章节路径/正文。
+- 预检不读取 Provider key、不创建 Provider client、不发起网络请求、不写文件；它仍需本地读取完整已验证 bundle 正文来计算 batching。bundle、章节 SHA、字符/token/call 预算不一致时失败关闭。全书综合调用数可能大于报告的下限，真实成本也不能由此推断。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_plan tests.test_knowledge_batching tests.test_book_bundles -q`：27 项通过；`.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_unit -q`：41 项通过。测试包含真实合成 bundle loader 集成、正文不进入报告、零写入/零 Provider 调用、章节摘要/覆盖边界、预算溢出及 synthesis 调用预留。`py_compile` 与 CLI `--help` 通过。
+- `已验证` 完整单测及 mock E2E 的最新计数、时长和环境检查见[当前工作树综合自检](#2026-11-21-当前工作树综合自检)。E2E 输出中的 content-filter 与段落数量异常是负向 fixture 预期日志；没有调用真实 Provider。
+- `未验证` 未对真实试点运行预检：尚无本轮确认的模型匹配 tokenizer/context 参数；这不阻止合成验证，也不代表不能继续静态实施。该工具只降低候选生成前的来源/预算不确定性，不生成候选、不审核语义，也不证明完整覆盖或可执行费用。
+
+## 2026-11-21 K5 全书知识候选语义审核
+
+- `已实现` 新增 `knowledge_ai_review.py` 与 `scripts/review_knowledge_candidates.py`。审核入口重新加载当前 verified AI book bundle、当前 AI 章节 map、候选 glossary、summary/provenance 和逐段 claim evidence；章节/版本/字节/段落 ID 不一致时失败关闭，不信任候选文件单独声明的 bundle 身份。
+- `已实现` 审核提示只接收候选及其显式引用段落；严格要求每个候选恰有一个 `approved`、`rejected` 或 `escalated` 决定。`approved` 必须有当前候选证据，越界引用、重复/遗漏决定、未知状态、不完整 JSON 或理由中复述原文均拒绝。文本校验归一化大小写/空白/标点，拒绝短证据整段复现及连续 16 个以上字母/数字字符的原文片段；它不能识别语义改写。审核范围明确是“候选是否被引用证据支持”，不把候选完整性、整书遗漏、独立审核者身份或文学质量当作通过。
+- `已实现` 默认 CLI 是只读预检：不调用 `Config.load_config`、不读 Provider key、不联网、不写报告正文；输出只包含 bundle identity、候选/批次/预算计数。显式 `--execute` 才加载 `PROOFREAD_MODEL` 路由并检查 `source_text`、`book_knowledge` 授权，逐批调用并排他保存不复制引用段落正文的 batch checkpoint 和最终审核报告；报告绑定候选哈希、bundle identity、模型/tokenizer/预算和每项决定。已有 checkpoint 可复用，调用中断后从下一批继续。
+- `已实现` 复用已有最终报告时重新校验全部匹配 checkpoint、批次输入摘要与 token 计数，并比较报告决定、bundle、候选哈希、provider/model/tokenizer、预算、批次摘要、计数和派生状态；缺失/不匹配 checkpoint 或被改写的报告拒绝复用，不再仅凭 run ID 和候选数返回 `already_reviewed`。这检测并拒绝报告与 checkpoint 不一致，不认证本地文件作者或防止有权修改所有副本的人伪造整套文件。
+- `已实现` 审核报告不自动调用 `apply_knowledge_review.py` 或 `story_summary_review.py` 发布器；存在 `rejected`/`escalated` 时报告状态为 `resolution_required`，即使全为 `approved` 也只标记 `all_candidates_approved`，仍需按各知识类型现有回执和人工/批准流程发布。
+- `已验证` `tests.test_knowledge_ai_review tests.test_book_bundles tests.test_knowledge_review tests.test_story_summary_review`：73 项通过，含格式变体/连续片段原文引文拒绝及改写最终报告后拒绝复用回归；当前工作树完整非 E2E 与 mock E2E 结果见[综合自检](#2026-11-21-当前工作树综合自检)。相关 `py_compile`、CLI `--help` 与 `git diff --check` 通过。尚未用真实试点候选或 Provider 执行审核。
+
+## 2026-11-21 K5 全书知识 bundle 绑定与审核入口
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`，起始 HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。续接依据为三条引用会话、[全书到单话目标方案](end-to-end-workflow-target.md)、[当前交接](handoffs/2026-11-15-translation-workflow.md)及源码；本轮没有生成/读取试点知识、正文、译文、凭据或受保护 freshness JSON，也未调用 Provider/站点、提交或清理工作树。
+- `已实现` AI 版来源的镜像原始字节哈希与 manifest 归档版的 `content_sha256` 分开核验：输入 map 校验实际 AI 镜像字节；来源版本仍要求指向当前 `normalized_source`；规范化解码文本哈希、样本前缀和术语段落位置继续逐项核验。概要审核器采用相同边界，避免把合法清洗差异误判为归档正文损坏。
+- `已实现` 全书 reviewed glossary 发布要求覆盖计数、当前 AI 章节 map 和 bundle identity 一致；AI 来源发布必须提供输入根与 map。RAG 对全书审核 bundle 再核验章节 map、来源版本、bundle ID/SHA、相对路径和话数；正式项目路径传入当前 `EXPECTED_BOOK_BUNDLE` 并开启完整覆盖门禁。map 缺失、计数类型/范围错误、bundle 不匹配或路径不安全时失败关闭。
+- `已实现` `scripts/apply_knowledge_review.py` 的全书 CLI 现在要求 catalog、完整 checkpoint、bundle-set、AI/人读根等路径，并直接调用 `load_verified_ai_book_bundle`；输入 map 与 expected identity 从 loader 的 verified 结果导出，不接受调用者手写它们。局部章节审核可传当前 bundle 参数但不打开 `--require-full-book-coverage`。该入口仍消费已存在的候选和显式回执，不调用 AI reviewer，也不认证 reviewer 声明。
+- `已验证` 定向命令 `.venv\Scripts\python.exe -m unittest tests.test_knowledge_review tests.test_knowledge_provenance_audit tests.test_story_summary_review tests.test_rag_engine_unit tests.test_pipeline_contracts -q`：240 项通过。新负向回归覆盖 AI 输入映射缺失、当前章节映射不一致、布尔覆盖计数和不安全 bundle 路径；CLI 契约验证从已验证 bundle loader 结果派生 map/identity。
+- `已验证` `.venv\Scripts\python.exe scripts\run_unit_tests.py`：798 项运行、5 项因 Windows symlink/FIFO 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过（219.369 秒，退出码 0）。相关 `py_compile`、`scripts\apply_knowledge_review.py --help` 与 `git diff --check` 通过。首次 E2E 暴露旧合成 reviewed glossary 缺少新全书 coverage/bundle 字段，fixture 已按当前契约补齐后全套通过；未放宽生产门禁。
+- `部分实现` CLI 校验当前 catalog/checkpoint/index/bundle-set 与逐话映射，但本地回执和 bundle 摘要不是签名，不能认证审核者或证明知识语义完整。当前试点仍无 reviewed 全书概要/术语、translation run 或真实译文；知识候选生成后的内容审核、冲突升级、真实 Provider 路由/授权/预算与首话质量试点仍待执行。实际 Provider 测试需在明确配置和预算后另行授权触发。
+
 ## 持续集成
 
 - `.github/workflows/tests.yml` 在 push、pull request 和手动触发时运行 Python 3.14 的 Ubuntu/Windows 矩阵；workflow 只授予 `contents: read`，不读取项目数据、不配置 Provider 凭据。
@@ -138,13 +175,14 @@
 
 ## 2026-11-21 K5 只读门禁复核
 
+- 本节记录结构审阅前的历史检查点；其 `pending=88`/264 项状态与“下一步”不代表当前状态。后续 88 话结构审阅及计划回执见[K5 Codex AI 结构审阅与计划审批](#2026-11-21-k5-codex-ai-结构审阅与计划审批)。
 - 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `d569d3cecc4a4b249d1040f7c79d3a226019e9c1`。只读核验当前计划、来源/双版本、指定 AI book bundle 与审阅模板；未输出或外发章节正文、未读取知识正文或凭据，也未修改项目数据。
 - 按当前计划绑定的 `SourceArchive`、catalog、manifest 和译文根执行 `scripts/run_kakuyomu_workflow.py --plan-only`：`ready_for_review`，plan SHA-256 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`，88/88 来源有效、0 issue、0 目标冲突、0 网络请求、0 Provider 调用、0 文件写入，`source_text_included=false`。
 - 按 `workflow_paths.json` 配置的人读版根、`RAWs_AI/` 和同一归档/catalog 执行 `scripts/validate_source_editions.py`，结果为 `verified`：88 话；读取并核对 raw 793,183 bytes、AI 版 774,253 bytes、人读版 799,293 bytes。返回的 AI 索引摘要为 `09da2e6cd41c549827fbf7eba15abf217cc8814a55a5a15bf9ab1524fe1c3246`，人读索引摘要为 `f8ab75632b104836f81d2fddb3c27ca498bf0fabc5dc560d617f033285dfbe6c`。该验证证明当前字节、归档 lineage 与清洗 profile 一致，不证明语义保真。
 - 对用户指定的 `book-ai.json` 使用 `book_bundles.load_verified_ai_book_bundle`，连同其 `bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json` 验证，结果为 `verified`、88 话；AI bundle SHA-256 为 `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`，bundle-set SHA-256 为 `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`。其 `completeness` 仅声明覆盖该 catalog，不独立证明平台枚举穷尽。
 - 当前人审模板绑定同一 plan SHA，且其 AI/人读索引 SHA-256 与刚验证的两个索引一致；88 个位置的 `mapping_decision`、`ai_edition_decision`、`human_edition_decision` 仍各有 88 项且全部为 `pending`。`Workflow/Approvals/`、`Workflow/Runs/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 均不存在。
-- `未验证` 用户报告的人类版/AI 版部分单话与合集抽样结论另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)；本次结构和字节核验不代表全量人工语义验收、真实 Provider 质量或部署。抽样报告不改变上述 264 项待审状态。
-- 下一步仍需有权限的人按既有模板完成人工映射和双版本审阅并签发匹配回执，再审查全书知识；随后由凭据所有者执行端点/授权/预算核验及获准的单话真实 Provider 试译。
+- `未验证` 用户报告的人类版/AI 版部分单话与合集抽样结论另见[抽样核实记录](#2026-11-21-用户报告的原文抽样核实)；本检查点的结构和字节核验不代表全量人工语义验收、真实 Provider 质量或部署。抽样报告也不改变当时 264 项待审状态。
+- 当时下一步为人工映射与双版本审阅；该结构门禁已由后续条目记录为完成。当前待办是审核 bundle 绑定的全书知识，再由凭据所有者核验真实 Provider 端点/授权/预算并执行获准的单话试译。
 
 ## 2026-11-21 用户报告的原文抽样核实
 

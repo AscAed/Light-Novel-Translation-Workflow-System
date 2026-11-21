@@ -136,6 +136,11 @@ def audit_knowledge_provenance(
                     or source_input.get("source_version_id")
                     != source.get("source_version_id")
                     or not isinstance(source_input.get("source_input_file"), str)
+                    or (
+                        source.get("source_input_file") is not None
+                        and source_input.get("source_input_file")
+                        != source.get("source_input_file")
+                    )
                 ):
                     findings.append(
                         _finding(
@@ -221,11 +226,6 @@ def audit_knowledge_provenance(
         if (
             recorded["kind"] != "normalized_source"
             or recorded["relative_path"] != filename
-            or (
-                source_input is not None
-                and recorded["content_sha256"]
-                != source_input["source_sha256"]
-            )
         ):
             findings.append(
                 _finding(

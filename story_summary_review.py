@@ -999,6 +999,7 @@ def verify_summary_sources(
             raise ValueError("Summary source versions are not current.")
 
         source_input_file = source.get("source_input_file")
+        source_input = None
         if source_input_file is not None:
             if source_input_root is None:
                 raise ValueError(
@@ -1015,8 +1016,6 @@ def verify_summary_sources(
                 not isinstance(source_input, dict)
                 or source_input.get("source_version_id") != version_id
                 or source_input.get("source_input_file") != source_input_file
-                or artifact["content_sha256"]
-                != source_input.get("source_sha256")
             ):
                 raise ValueError(
                     "Summary source does not match the current AI edition map."
@@ -1042,7 +1041,10 @@ def verify_summary_sources(
             raise ValueError(
                 "Summary review sources exceed the configured total size limit."
             )
-        if hashlib.sha256(source_bytes).hexdigest() != artifact["content_sha256"]:
+        if source_input is None and (
+            hashlib.sha256(source_bytes).hexdigest()
+            != artifact["content_sha256"]
+        ):
             raise ValueError("Summary source bytes do not match the manifest.")
         try:
             source_text = source_bytes.decode("utf-8")

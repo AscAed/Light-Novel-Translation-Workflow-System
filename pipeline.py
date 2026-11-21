@@ -1852,6 +1852,8 @@ class TranslationPipeline:
             ),
             allow_unreviewed_tm=Config.ALLOW_UNREVIEWED_TM,
             require_reviewed_glossary=Config.REQUIRE_REVIEWED_GLOSSARY,
+            expected_book_bundle=Config.EXPECTED_BOOK_BUNDLE,
+            require_full_book_coverage=Config.REQUIRE_REVIEWED_GLOSSARY,
             source_input_root=source_input_root,
             source_input_map=source_input_map,
         )

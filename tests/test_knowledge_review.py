@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rag_engine import RAGEngine
 from scripts.apply_knowledge_review import (
@@ -148,14 +149,106 @@ class KnowledgeReviewTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _publish(self, output="Glossary_reviewed.json"):
+    def _publish(
+        self,
+        output="Glossary_reviewed.json",
+        *,
+        source_input_root=None,
+        source_input_map=None,
+        expected_book_bundle=None,
+        require_full_book_coverage=False,
+    ):
         return apply_knowledge_review(
             str(self.knowledge_root),
             str(self.archive_root),
             "source_manifest.json",
             "review.json",
             output,
+            source_input_root=source_input_root,
+            source_input_map=source_input_map,
+            expected_book_bundle=expected_book_bundle,
+            require_full_book_coverage=require_full_book_coverage,
         )
+
+    def test_review_cli_derives_current_ai_map_from_verified_bundle(self):
+        identity = {
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book-ai.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": 1,
+        }
+        verified_episode = {
+            "source_file": self.artifact["relative_path"],
+            "source_version_id": self.artifact["version_id"],
+            "source_input_file": "chapters/episode.md",
+            "source_sha256": "e" * 64,
+        }
+        with (
+            patch(
+                "scripts.apply_knowledge_review.load_verified_ai_book_bundle",
+                return_value={
+                    "status": "verified",
+                    **identity,
+                    "episodes_by_source_input_file": {
+                        verified_episode["source_input_file"]: verified_episode
+                    },
+                },
+            ) as load_bundle,
+            patch(
+                "scripts.apply_knowledge_review.apply_knowledge_review",
+                return_value={
+                    "output": "Glossary_reviewed.json",
+                    "approved_term_count": 1,
+                    "decision_count": 1,
+                    "output_sha256": "f" * 64,
+                },
+            ) as apply_review,
+        ):
+            result = main(
+                [
+                    "--knowledge-root",
+                    str(self.knowledge_root),
+                    "--source-root",
+                    str(self.archive_root),
+                    "--manifest",
+                    "source_manifest.json",
+                    "--review",
+                    "review.json",
+                    "--output",
+                    "Glossary_reviewed.json",
+                    "--catalog",
+                    "source_catalog.json",
+                    "--checkpoint",
+                    "source_checkpoint.json",
+                    "--bundle-set",
+                    "collections/set/bundle-set.json",
+                    "--human-root",
+                    str(self.root / "human-edition"),
+                    "--ai-root",
+                    str(self.root / "ai-edition"),
+                    "--require-full-book-coverage",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        load_bundle.assert_called_once()
+        call = apply_review.call_args
+        self.assertEqual(
+            call.kwargs["source_input_map"],
+            {
+                self.artifact["relative_path"]: {
+                    "source_version_id": self.artifact["version_id"],
+                    "source_input_file": "chapters/episode.md",
+                    "source_sha256": "e" * 64,
+                }
+            },
+        )
+        self.assertEqual(call.kwargs["source_input_root"], str(self.root / "ai-edition"))
+        self.assertEqual(call.kwargs["expected_book_bundle"], identity)
+        self.assertTrue(call.kwargs["require_full_book_coverage"])
 
     def test_full_book_coverage_accepts_empty_chapter_evidence(self):
         provenance = json.loads(self.provenance_bytes)
@@ -343,6 +436,200 @@ class KnowledgeReviewTests(unittest.TestCase):
             [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
         )
         self.assertEqual(engine.get_cleaned_glossary("not-found"), [])
+
+    def test_ai_edition_glossary_binds_current_full_book_bundle(self):
+        provenance_path = self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json"
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        ai_text = "alpha appears after cleanup.\n\nbeta appears.\n"
+        ai_root = self.root / "RAWs_AI"
+        ai_root.mkdir()
+        ai_path = ai_root / "episode-ai.md"
+        ai_path.write_text(ai_text, encoding="utf-8")
+        ai_bytes_digest = hashlib.sha256(ai_path.read_bytes()).hexdigest()
+        ai_text_digest = hashlib.sha256(
+            ai_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+        ).hexdigest()
+        provenance["source_files"][0].update(
+            {
+                "source_input_file": "episode-ai.md",
+                "source_sha256": ai_text_digest,
+                "included_characters": len(ai_text),
+                "included_sha256": ai_text_digest,
+                "included_paragraph_count": 2,
+            }
+        )
+        provenance["input_coverage"] = {
+            "scope": "all_configured_chapters",
+            "complete_for_configured_chapters": True,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": len(ai_text),
+            "input_character_limit": len(ai_text),
+        }
+        bundle_identity = {
+            "source_snapshot_id": "source-v1-" + "a" * 64,
+            "ai_bundle_id": "ai-v1-" + "b" * 64,
+            "bundle_set_relative_path": "collections/set/bundle-set.json",
+            "bundle_set_sha256": "c" * 64,
+            "ai_bundle_relative_path": "collections/ai/book-ai.json",
+            "ai_bundle_sha256": "d" * 64,
+            "episode_count": 1,
+        }
+        provenance["book_bundle"] = bundle_identity
+        provenance_path.write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.provenance_bytes = provenance_path.read_bytes()
+        source_input_map = {
+            self.artifact["relative_path"]: {
+                "source_version_id": self.artifact["version_id"],
+                "source_input_file": "episode-ai.md",
+                "source_sha256": ai_bytes_digest,
+            }
+        }
+        self._write_receipt(
+            [
+                self._decision("alpha", "approved"),
+                self._decision("not-found", "rejected"),
+            ]
+        )
+
+        with patch(
+            "source_manifest._verify_artifact_file",
+            side_effect=AssertionError("archive body read for AI source"),
+        ):
+            result = self._publish(
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+                expected_book_bundle=bundle_identity,
+                require_full_book_coverage=True,
+            )
+
+        reviewed_path = self.knowledge_root / result["output"]
+        reviewed = json.loads(reviewed_path.read_text(encoding="utf-8"))
+        self.assertEqual(reviewed["review"]["book_bundle"], bundle_identity)
+        self.assertEqual(
+            reviewed["review"]["input_coverage"],
+            provenance["input_coverage"],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "AI edition knowledge sources require"
+        ):
+            self._publish(
+                output="Glossary_without_ai_map.json",
+                expected_book_bundle=bundle_identity,
+                require_full_book_coverage=True,
+            )
+
+        engine = RAGEngine(
+            str(self.root / "translation_memory.json"),
+            str(reviewed_path),
+            str(self.root / "guidelines.txt"),
+            source_root=str(self.archive_root),
+            source_manifest_path="source_manifest.json",
+            source_input_root=str(ai_root),
+            source_input_map=source_input_map,
+            expected_book_bundle=bundle_identity,
+            require_full_book_coverage=True,
+        )
+        self.assertEqual(
+            engine.get_cleaned_glossary("alpha"),
+            [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
+        )
+
+        without_map_engine = RAGEngine(
+            str(self.root / "translation_memory.json"),
+            str(reviewed_path),
+            str(self.root / "guidelines.txt"),
+            source_root=str(self.archive_root),
+            source_manifest_path="source_manifest.json",
+            expected_book_bundle=bundle_identity,
+            require_full_book_coverage=True,
+        )
+        with self.assertRaisesRegex(ValueError, "current AI chapter map"):
+            without_map_engine.get_cleaned_glossary("alpha")
+
+        bad_coverage_path = self.knowledge_root / "Glossary_bad_coverage.json"
+        bad_coverage = json.loads(reviewed_path.read_text(encoding="utf-8"))
+        bad_coverage["review"]["input_coverage"][
+            "configured_chapter_count"
+        ] = True
+        bad_coverage_path.write_text(
+            json.dumps(bad_coverage, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "current AI chapter map"):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(bad_coverage_path),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+                expected_book_bundle=bundle_identity,
+                require_full_book_coverage=True,
+            ).get_cleaned_glossary("alpha")
+
+        bad_bundle_path = self.knowledge_root / "Glossary_bad_bundle.json"
+        bad_bundle = json.loads(reviewed_path.read_text(encoding="utf-8"))
+        bad_bundle["review"]["book_bundle"][
+            "bundle_set_relative_path"
+        ] = "../bundle-set.json"
+        bad_bundle_path.write_text(
+            json.dumps(bad_bundle, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "malformed book bundle"):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(bad_bundle_path),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+                expected_book_bundle=bundle_identity,
+                require_full_book_coverage=True,
+            ).get_cleaned_glossary("alpha")
+
+        with self.assertRaisesRegex(ValueError, "different AI book bundle"):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(reviewed_path),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+                expected_book_bundle={
+                    **bundle_identity,
+                    "ai_bundle_sha256": "e" * 64,
+                },
+                require_full_book_coverage=True,
+            ).get_cleaned_glossary("alpha")
+
+        with self.assertRaisesRegex(ValueError, "current AI chapter map"):
+            RAGEngine(
+                str(self.root / "translation_memory.json"),
+                str(reviewed_path),
+                str(self.root / "guidelines.txt"),
+                source_root=str(self.archive_root),
+                source_manifest_path="source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map={
+                    **source_input_map,
+                    "new-episode.md": {
+                        "source_version_id": "new-version",
+                        "source_input_file": "new-episode.md",
+                        "source_sha256": "f" * 64,
+                    },
+                },
+                expected_book_bundle=bundle_identity,
+                require_full_book_coverage=True,
+            ).get_cleaned_glossary("alpha")
 
     def test_reviewed_glossary_requires_manifest_for_rag_use(self):
         self._publish()

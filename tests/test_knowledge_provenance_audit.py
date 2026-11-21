@@ -89,7 +89,11 @@ class KnowledgeProvenanceAuditTests(unittest.TestCase):
             "source_manifest.json",
         )
 
-        self.assertEqual([item["status"] for item in findings], ["verified"])
+        self.assertEqual(
+            [item["status"] for item in findings],
+            ["verified"],
+            findings,
+        )
         self.assertEqual(
             (self.archive_root / self.artifact["relative_path"]).read_bytes(),
             self.source_bytes,
@@ -122,7 +126,49 @@ class KnowledgeProvenanceAuditTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual([item["status"] for item in findings], ["verified"])
+        self.assertEqual(
+            [item["status"] for item in findings],
+            ["verified"],
+            findings,
+        )
+
+    def test_project_audit_binds_ai_bytes_separately_from_archive_bytes(self):
+        ai_root = self.root / "RAWs_AI"
+        ai_root.mkdir()
+        ai_path = ai_root / "episode.md"
+        ai_text = "Source paragraph one cleaned.\n\nSource paragraph two.\n"
+        ai_path.write_text(ai_text, encoding="utf-8")
+        ai_bytes_digest = hashlib.sha256(ai_path.read_bytes()).hexdigest()
+        ai_text_digest = hashlib.sha256(
+            ai_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+        ).hexdigest()
+        provenance = json.loads(json.dumps(self.provenance))
+        provenance["source_files"][0]["source_input_file"] = "episode.md"
+        provenance["source_files"][0]["source_sha256"] = ai_text_digest
+
+        with patch(
+            "source_manifest._verify_artifact_file",
+            side_effect=AssertionError("archive body read during AI edition audit"),
+        ):
+            findings = audit_knowledge_provenance(
+                provenance,
+                str(self.archive_root),
+                "source_manifest.json",
+                source_input_root=str(ai_root),
+                source_input_map={
+                    self.artifact["relative_path"]: {
+                        "source_version_id": self.artifact["version_id"],
+                        "source_input_file": "episode.md",
+                        "source_sha256": ai_bytes_digest,
+                    }
+                },
+            )
+
+        self.assertEqual(
+            [item["status"] for item in findings],
+            ["verified"],
+            findings,
+        )
 
     def test_reports_newer_source_version_as_stale(self):
         self.source_file.write_bytes(b"Updated source.\r\n")

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import json
@@ -5,12 +6,17 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import book_bundles
 from book_bundles import export_book_bundles, load_verified_ai_book_bundle
+from pipeline import Config
+from scripts import auto_extract_knowledge
 from scripts.export_book_bundles import main as export_main
+from scripts.review_knowledge_candidates import _load_current_review_inputs
 from source_editions import prepare_source_editions
+from story_summary_review import _validate_summary_provenance
 from source_ingestion import (
     EpisodeMetadata,
     LocalEpisodeFile,
@@ -18,6 +24,7 @@ from source_ingestion import (
     collect_source,
     materialize_episode_markdown,
 )
+from scripts.plan_knowledge_extraction import plan_full_book_extraction
 
 
 class BookBundleTests(unittest.TestCase):
@@ -185,6 +192,257 @@ class BookBundleTests(unittest.TestCase):
                 hashlib.sha256(path.read_bytes()).hexdigest(),
                 bundle_set["bundles"][edition]["sha256"],
             )
+
+    def test_knowledge_extraction_plan_uses_verified_current_bundle(self):
+        report = self._export()
+
+        class CharacterTokenizer:
+            def encode(self, text):
+                return SimpleNamespace(ids=list(text))
+
+        with patch(
+            "scripts.plan_knowledge_extraction.load_tokenizer_json",
+            return_value=(CharacterTokenizer(), "a" * 64),
+        ):
+            plan = plan_full_book_extraction(
+                source_root=str(self.source_root),
+                catalog_relative_path="catalog.json",
+                checkpoint_relative_path="source_checkpoint.json",
+                bundle_set_relative_path=report["bundle_set_relative_path"],
+                human_root=str(self.human_root),
+                ai_root=str(self.ai_root),
+                tokenizer_json="synthetic-tokenizer.json",
+                model_id="synthetic-model-v1",
+                max_input_characters=10_000,
+                context_window_tokens=100_000,
+                max_output_tokens=1_000,
+                safety_margin_tokens=1_000,
+                message_overhead_tokens=100,
+                max_provider_calls=10,
+            )
+
+        self.assertEqual(plan["status"], "ready_for_extraction")
+        self.assertEqual(plan["episode_count"], 2)
+        self.assertEqual(
+            plan["book_bundle"]["source_snapshot_id"],
+            report["source_snapshot_id"],
+        )
+        self.assertEqual(plan["provider_calls_made"], 0)
+        self.assertEqual(plan["files_written"], 0)
+        self.assertFalse(plan["source_text_included"])
+        self.assertNotIn("Synthetic first episode.", json.dumps(plan))
+
+    def test_ai_knowledge_review_inputs_follow_extraction_and_verified_bundle(self):
+        report = self._export()
+        bundle_set = json.loads(
+            (
+                self.source_root / report["bundle_set_relative_path"]
+            ).read_text(encoding="utf-8")
+        )
+        verified = load_verified_ai_book_bundle(
+            source_root=str(self.source_root),
+            catalog_relative_path="catalog.json",
+            checkpoint_relative_path="source_checkpoint.json",
+            bundle_set_relative_path=report["bundle_set_relative_path"],
+            human_root=str(self.human_root),
+            ai_root=str(self.ai_root),
+        )
+        chapter_specs = [
+            SimpleNamespace(
+                raw_file=episode["source_file"],
+                source_input_file=source_input_file,
+                source_sha256=episode["source_sha256"],
+                source_version_id=episode["source_version_id"],
+                chapter_position=episode["position"],
+                tm_key=episode["episode_id"],
+            )
+            for source_input_file, episode in verified[
+                "episodes_by_source_input_file"
+            ].items()
+        ]
+        extraction_response = {
+            "glossary": [
+                {
+                    "src": "Synthetic",
+                    "dst": "合成词条",
+                    "info": "",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "summary_claims": [
+                {
+                    "text": "A synthetic opening claim.",
+                    "evidence_ids": ["C0001P00001"],
+                }
+            ],
+            "worldbuilding_claims": [],
+            "narrative_voice_claims": [],
+        }
+        provider_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            extraction_response,
+                            ensure_ascii=False,
+                        )
+                    ),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=200),
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=AsyncMock(return_value=provider_response)
+                )
+            )
+        )
+
+        class CharacterTokenizer:
+            def encode(self, text):
+                return SimpleNamespace(ids=list(text))
+
+        route = SimpleNamespace(
+            provider_id="synthetic-provider",
+            base_url="https://provider.invalid/v1",
+            api_key_env="SYNTHETIC_KEY",
+            request_model="synthetic-model-v1",
+        )
+        knowledge_root = self.root / "Knowledge"
+        knowledge_root.mkdir()
+        with (
+            patch.object(Config, "PROOFREAD_MODEL", "synthetic-model-v1"),
+            patch.object(Config, "CHAPTER_MAP", [{"chapter_position": 1}, {"chapter_position": 2}]),
+            patch.object(Config, "OUTPUT_DIR", str(self.root / "translations")),
+            patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+            patch.object(Config, "AI_EDITION_ROOT", str(self.ai_root)),
+            patch(
+                "scripts.auto_extract_knowledge.get_primary_provider_route",
+                return_value=route,
+            ),
+            patch("scripts.auto_extract_knowledge.get_api_key", return_value=None),
+            patch(
+                "scripts.auto_extract_knowledge.resolve_openai_client_settings"
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.load_tokenizer_json",
+                return_value=(CharacterTokenizer(), "a" * 64),
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.get_chapter_specs",
+                return_value=chapter_specs,
+            ),
+            patch(
+                "scripts.auto_extract_knowledge.get_openai_client",
+                return_value=client,
+            ),
+            patch("scripts.auto_extract_knowledge._read_source_chapter") as source_reader,
+        ):
+            asyncio.run(
+                auto_extract_knowledge.extract_knowledge(
+                    str(self.source_root),
+                    str(knowledge_root),
+                    full_book=True,
+                    require_book_bundle=True,
+                    max_input_characters=10000,
+                    tokenizer_json="synthetic-tokenizer.json",
+                    context_window_tokens=10000,
+                    max_output_tokens=1000,
+                    safety_margin_tokens=500,
+                    message_overhead_tokens=50,
+                    max_provider_calls=10,
+                    catalog_relative_path="catalog.json",
+                    checkpoint_relative_path="source_checkpoint.json",
+                    bundle_set_relative_path=report["bundle_set_relative_path"],
+                    ai_book_bundle_path=bundle_set["bundles"]["ai"]["relative_path"],
+                    human_root=str(self.human_root),
+                )
+            )
+
+        source_reader.assert_not_called()
+        provenance = json.loads(
+            (knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        claims_by_category = {
+            category: []
+            for category in ("summary", "worldbuilding", "narrative_voice")
+        }
+        for claim in provenance["claim_evidence"]:
+            claims_by_category[claim["category"]].append(claim)
+        expected_summary = (
+            "# Story Summary (Draft)\n\n"
+            + auto_extract_knowledge._render_full_book_summary(
+                claims_by_category,
+                synthesized=False,
+            )
+        )
+        self.assertEqual(
+            (knowledge_root / "STORY_SUMMARY_draft.md").read_text(
+                encoding="utf-8"
+            ),
+            expected_summary,
+        )
+        normalized_provenance = _validate_summary_provenance(provenance)
+        normalized_claims_by_category = {
+            category: []
+            for category in ("summary", "worldbuilding", "narrative_voice")
+        }
+        for claim in normalized_provenance["claim_evidence"]:
+            normalized_claims_by_category[claim["category"]].append(claim)
+        normalized_expected = (
+            "# Story Summary (Draft)\n\n"
+            + auto_extract_knowledge._render_full_book_summary(
+                normalized_claims_by_category,
+                synthesized=(
+                    normalized_provenance["token_budget"].get(
+                        "synthesis_status"
+                    )
+                    == "completed"
+                ),
+            )
+        )
+        self.assertEqual(
+            (knowledge_root / "STORY_SUMMARY_draft.md").read_text(
+                encoding="utf-8"
+            ),
+            normalized_expected,
+        )
+        (
+            current_identity,
+            _,
+            _,
+            _,
+            _,
+            _,
+            candidates,
+        ) = _load_current_review_inputs(
+            knowledge_root=str(knowledge_root),
+            source_root=str(self.source_root),
+            manifest_relative_path="source_manifest.json",
+            edition_manifest_relative_path="source_editions_manifest.json",
+            catalog_relative_path="catalog.json",
+            checkpoint_relative_path="source_checkpoint.json",
+            bundle_set_relative_path=report["bundle_set_relative_path"],
+            human_root=str(self.human_root),
+            ai_root=str(self.ai_root),
+        )
+
+        self.assertEqual(
+            current_identity["ai_bundle_sha256"],
+            verified["ai_bundle_sha256"],
+        )
+        self.assertEqual(
+            [item["candidate_id"] for item in candidates],
+            ["G000001", "B0001-summary-0001"],
+        )
+        self.assertEqual(
+            candidates[0]["evidence"][0]["text"],
+            "Synthetic first episode.",
+        )
 
     def test_repeated_export_is_idempotent(self):
         first = self._export()

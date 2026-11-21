@@ -118,7 +118,13 @@ class StorySummaryReviewTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _publish(self, output_filename=None, *, source_input_root=None):
+    def _publish(
+        self,
+        output_filename=None,
+        *,
+        source_input_root=None,
+        source_input_map=None,
+    ):
         return publish_reviewed_summary(
             str(self.knowledge_root),
             str(self.archive_root),
@@ -126,6 +132,7 @@ class StorySummaryReviewTests(unittest.TestCase):
             self.template_path.name,
             output_filename or self.output_path.name,
             source_input_root=source_input_root,
+            source_input_map=source_input_map,
         )
 
     def _load(self, *, source_input_root=None):
@@ -706,15 +713,27 @@ class StorySummaryReviewTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        ai_text = "Synthetic source paragraph.\n\nSecond paragraph cleaned.\n"
+        ai_sha256 = hashlib.sha256(
+            ai_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+        ).hexdigest()
         provenance["input_coverage"] = {
             "scope": "all_configured_chapters",
             "complete_for_configured_chapters": True,
             "configured_chapter_count": 1,
             "included_chapter_count": 1,
-            "input_characters": 1,
-            "input_character_limit": 100,
+            "input_characters": len(ai_text),
+            "input_character_limit": len(ai_text),
         }
-        provenance["source_files"][0]["source_input_file"] = "episode.md"
+        provenance["source_files"][0].update(
+            {
+                "source_input_file": "episode.md",
+                "source_sha256": ai_sha256,
+                "included_characters": len(ai_text),
+                "included_sha256": ai_sha256,
+                "included_paragraph_count": 2,
+            }
+        )
         (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
             json.dumps(provenance, ensure_ascii=False),
             encoding="utf-8",
@@ -722,10 +741,15 @@ class StorySummaryReviewTests(unittest.TestCase):
         ai_root = self.root / "RAWs_AI"
         ai_root.mkdir()
         ai_input = ai_root / "episode.md"
-        ai_input.write_bytes(
-            (self.archive_root / self.artifact["relative_path"]).read_bytes()
-        )
+        ai_input.write_text(ai_text, encoding="utf-8")
         source_sha256 = hashlib.sha256(ai_input.read_bytes()).hexdigest()
+        source_input_map = {
+            self.artifact["relative_path"]: {
+                "source_version_id": self.artifact["version_id"],
+                "source_input_file": "episode.md",
+                "source_sha256": source_sha256,
+            }
+        }
         self._create_template()
         self._complete_receipt()
 
@@ -739,7 +763,10 @@ class StorySummaryReviewTests(unittest.TestCase):
                 side_effect=AssertionError("archive body read during translation"),
             ),
         ):
-            self._publish(source_input_root=str(ai_root))
+            self._publish(
+                source_input_root=str(ai_root),
+                source_input_map=source_input_map,
+            )
             summary = load_reviewed_story_summary(
                 str(self.output_path),
                 str(self.archive_root),
@@ -754,13 +781,7 @@ class StorySummaryReviewTests(unittest.TestCase):
                     }
                 ],
                 source_input_root=str(ai_root),
-                source_input_map={
-                    self.artifact["relative_path"]: {
-                        "source_version_id": self.artifact["version_id"],
-                        "source_input_file": "episode.md",
-                        "source_sha256": source_sha256,
-                    }
-                },
+                source_input_map=source_input_map,
             )
 
         self.assertEqual(summary, self.summary_bytes.decode("utf-8"))
@@ -817,19 +838,11 @@ class StorySummaryReviewTests(unittest.TestCase):
             (self.archive_root / self.artifact["relative_path"]).read_bytes()
         )
         ai_digest = hashlib.sha256(ai_input.read_bytes()).hexdigest()
-        provenance["chapter_local"]["source_sha256"] = ai_digest
+        provenance["chapter_local"]["source_sha256"] = source_digest
         (self.knowledge_root / "KNOWLEDGE_PROVENANCE_draft.json").write_text(
             json.dumps(provenance, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        # The provenance digest is bound by the review template after the final
-        # chapter-local identity has been written.
-        self._create_template()
-        self._complete_receipt()
-        self._publish(source_input_root=str(ai_root))
-
-        expected_bundle = provenance["book_bundle"]
-        expected_chapter = provenance["chapter_local"]
         source_input_map = {
             self.artifact["relative_path"]: {
                 "source_version_id": self.artifact["version_id"],
@@ -837,6 +850,17 @@ class StorySummaryReviewTests(unittest.TestCase):
                 "source_sha256": ai_digest,
             }
         }
+        # The provenance digest is bound by the review template after the final
+        # chapter-local identity has been written.
+        self._create_template()
+        self._complete_receipt()
+        self._publish(
+            source_input_root=str(ai_root),
+            source_input_map=source_input_map,
+        )
+
+        expected_bundle = provenance["book_bundle"]
+        expected_chapter = provenance["chapter_local"]
         loaded = load_reviewed_story_summary(
             str(self.output_path),
             str(self.archive_root),

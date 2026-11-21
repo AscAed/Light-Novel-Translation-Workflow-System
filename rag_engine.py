@@ -32,6 +32,17 @@ from tm_review import load_reviewed_tm_snapshot
 logger = logging.getLogger(__name__)
 _KNOWLEDGE_REVIEW_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _EXPECTED_TM_HASH_UNSET = object()
+_BOOK_BUNDLE_FIELDS = frozenset(
+    {
+        "source_snapshot_id",
+        "ai_bundle_id",
+        "bundle_set_relative_path",
+        "bundle_set_sha256",
+        "ai_bundle_relative_path",
+        "ai_bundle_sha256",
+        "episode_count",
+    }
+)
 
 
 def _glossary_aliases(key: str) -> list[str]:
@@ -62,6 +73,8 @@ class RAGEngine:
         translation_root: Optional[str] = None,
         allow_unreviewed_tm: bool = False,
         require_reviewed_glossary: bool = False,
+        expected_book_bundle: Optional[dict] = None,
+        require_full_book_coverage: bool = False,
         source_input_root: Optional[str] = None,
         source_input_map: Optional[dict] = None,
         reviewed_tm_translation_root: Optional[str] = None,
@@ -73,6 +86,12 @@ class RAGEngine:
             raise ValueError("allow_unreviewed_tm must be a boolean.")
         if not isinstance(require_reviewed_glossary, bool):
             raise ValueError("require_reviewed_glossary must be a boolean.")
+        if not isinstance(require_full_book_coverage, bool):
+            raise ValueError("require_full_book_coverage must be a boolean.")
+        if expected_book_bundle is not None and not isinstance(
+            expected_book_bundle, dict
+        ):
+            raise ValueError("expected_book_bundle must be an object.")
         self.tm_path = tm_path
         self.glossary_path = glossary_path
         self.guidelines_path = guidelines_path
@@ -87,6 +106,8 @@ class RAGEngine:
         )
         self.allow_unreviewed_tm = allow_unreviewed_tm
         self.require_reviewed_glossary = require_reviewed_glossary
+        self.expected_book_bundle = expected_book_bundle
+        self.require_full_book_coverage = require_full_book_coverage
         self.source_input_root = source_input_root
         self.source_input_map = source_input_map
         reject_knowledge_draft_path(self.glossary_path, "glossary input")
@@ -361,6 +382,107 @@ class RAGEngine:
             raise ValueError(
                 "Reviewed glossary requires a source root and manifest."
             )
+        coverage = review.get("input_coverage")
+        full_book_coverage = (
+            isinstance(coverage, dict)
+            and coverage.get("scope") == "all_configured_chapters"
+        )
+        if self.require_full_book_coverage or full_book_coverage:
+            configured_count = (
+                coverage.get("configured_chapter_count")
+                if isinstance(coverage, dict)
+                else None
+            )
+            included_count = (
+                coverage.get("included_chapter_count")
+                if isinstance(coverage, dict)
+                else None
+            )
+            if (
+                not isinstance(coverage, dict)
+                or coverage.get("scope") != "all_configured_chapters"
+                or coverage.get("complete_for_configured_chapters") is not True
+                or isinstance(configured_count, bool)
+                or not isinstance(configured_count, int)
+                or configured_count != len(source_files)
+                or isinstance(included_count, bool)
+                or not isinstance(included_count, int)
+                or included_count != len(source_files)
+                or not isinstance(self.source_input_root, str)
+                or not self.source_input_root
+                or not isinstance(self.source_input_map, dict)
+                or set(self.source_input_map)
+                != {
+                    item.get("filename")
+                    for item in source_files
+                    if isinstance(item, dict)
+                }
+            ):
+                raise ValueError(
+                    "Reviewed glossary lacks complete coverage of the current "
+                    "AI chapter map."
+                )
+
+        book_bundle = review.get("book_bundle")
+        if book_bundle is not None:
+            if (
+                not isinstance(book_bundle, dict)
+                or set(book_bundle) != _BOOK_BUNDLE_FIELDS
+                or any(
+                    not isinstance(book_bundle.get(field), str)
+                    or not _KNOWLEDGE_REVIEW_SHA256.fullmatch(book_bundle[field])
+                    for field in ("bundle_set_sha256", "ai_bundle_sha256")
+                )
+                or not isinstance(book_bundle.get("source_snapshot_id"), str)
+                or not re.fullmatch(
+                    r"source-v1-[0-9a-f]{64}",
+                    book_bundle["source_snapshot_id"],
+                )
+                or not isinstance(book_bundle.get("ai_bundle_id"), str)
+                or not re.fullmatch(
+                    r"ai-v1-[0-9a-f]{64}",
+                    book_bundle["ai_bundle_id"],
+                )
+                or any(
+                    not isinstance(book_bundle.get(field), str)
+                    or len(book_bundle[field]) > 4096
+                    or "\\" in book_bundle[field]
+                    or book_bundle[field].startswith("/")
+                    or any(
+                        part in {"", ".", ".."}
+                        for part in book_bundle[field].split("/")
+                    )
+                    for field in (
+                        "bundle_set_relative_path",
+                        "ai_bundle_relative_path",
+                    )
+                )
+                or isinstance(book_bundle.get("episode_count"), bool)
+                or not isinstance(book_bundle.get("episode_count"), int)
+                or (
+                    book_bundle["episode_count"] != len(source_files)
+                    if self.require_full_book_coverage or full_book_coverage
+                    else book_bundle["episode_count"] < len(source_files)
+                )
+            ):
+                raise ValueError(
+                    "Reviewed glossary has malformed book bundle identity."
+                )
+        if self.require_full_book_coverage and (
+            self.expected_book_bundle is None or book_bundle is None
+        ):
+            raise ValueError(
+                "Reviewed glossary requires a current AI book bundle identity."
+            )
+        if self.expected_book_bundle is not None:
+            if (
+                book_bundle is None
+                or set(self.expected_book_bundle) != _BOOK_BUNDLE_FIELDS
+                or book_bundle != self.expected_book_bundle
+            ):
+                raise ValueError(
+                    "Reviewed glossary belongs to a different AI book bundle."
+                )
         findings = audit_knowledge_provenance(
             {
                 "schema_version": 1,

@@ -4,7 +4,7 @@
 
 - 当前产品范围是日语轻小说译成中文；多语言、多文本类型仍是长期目标。
 - 当前交付形态是本地 Python CLI，试点工作流包含来源版本管理、AI/人读版本、计划与知识审核、逐话翻译审校及受控发布。模块状态与证据见[项目现状](docs/project-status.md)和[架构与边界](docs/architecture.md)。
-- 当前试点仍需完成人工映射与双版本审阅、全书知识审核，以及经授权的真实 Provider 单话试译和质量验收。最新验证结果和限制集中记录在[开发与验证](docs/development.md)；本地测试不代表真实服务、语义质量或部署已通过。
+- 当前 88 话的结构映射、来源 lineage 与双版本机器审阅已有匹配回执；全书知识语义审核、真实 Provider 单话试译和质量验收仍待完成。结构回执不证明逐段语义质量或阅读器视觉效果。最新验证结果和限制集中记录在[开发与验证](docs/development.md)；本地测试不代表真实服务、语义质量或部署已通过。
 - GitHub Actions 已配置 Ubuntu/Windows Python 3.14 回归；以具体 commit 的 hosted check 为准，首次执行及依赖锁定状态见[开发与验证](docs/development.md#持续集成)。
 - 通用阶段、角色职责和质量门禁见[翻译流程](docs/translation-workflow.md)；阶段依赖与验收标准见[路线图](docs/roadmap.md)。
 
@@ -21,6 +21,7 @@
 | [全书到单话目标](docs/end-to-end-workflow-target.md) | 目标流程、分阶段设计和未实现验收条件 |
 | [开发与验证](docs/development.md) | 环境、配置、命令、测试事实和限制 |
 | [路线图](docs/roadmap.md) | 分阶段目标、依赖、交付物与验收条件 |
+| [统一交互 CLI/TUI 开发计划](docs/unified-interactive-cli-plan.md) | 统一本地入口、菜单/命令路由、脚本接入策略与分阶段验收 |
 | [试点映射人工审阅](docs/handoffs/2026-11-16-pilot-plan-review.md) | 88 话计划摘要、人工核对项及尚未批准的边界 |
 | [模型与 API 配置方案](docs/model-provider-configuration-plan.md) | 模型候选、职责分配、配置交互、安全边界与实施计划（计划，未经实测） |
 | [原文采集与成果归档方案](docs/source-ingestion-and-publication-plan.md) | 来源许可、原文版本、翻译衔接、EPUB 与 Notion 工作包（部分原型，其余为计划） |

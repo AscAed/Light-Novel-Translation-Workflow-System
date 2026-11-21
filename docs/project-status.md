@@ -1,14 +1,43 @@
 # 项目现状
 
+本页按当前状态优先记录；较早的日期条目是其记录时点的快照，不能覆盖本节。通用验证环境、命令及边界见[开发与验证](development.md)。
+
+## 2026-11-21 当前工作树综合自检
+
+- `已验证` 起始 HEAD 为 `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。该工作树的完整非 E2E 回归为 816 项运行、5 项因 Windows 能力跳过、0 失败；loopback mock E2E 为 7 项通过。依赖、静态检查及扫描范围见[当前工作树综合自检](development.md#2026-11-21-当前工作树综合自检)。
+- `部分实现` 只读安全扫描未报告发现，但范围不包含项目数据、凭据配置或运行中部署；它不是生产环境安全认证。
+- `未验证` 当前试点没有 reviewed 全书知识、正式翻译 run 或译文。真实 Provider 路由/预算、语义质量、人工验收与线上部署仍缺少验证证据；项目交付形态仍是本地 Python CLI。
+
+## 2026-11-21 K5 全书知识抽取预检
+
+- `已实现` `scripts/plan_knowledge_extraction.py` 提供无 Provider、无 key、无文件写入的全书知识抽取预检；它重载并验证当前 AI book bundle，复用抽取器的段落编号、prompt、tokenizer 计数和分批器，给出内容无关的调用预算摘要。
+- `已验证` 27 项预检/batching/book-bundle 回归及 41 项知识抽取回归通过；合成 bundle 真实经过 loader。报告确认 `provider_calls_made=0`、`files_written=0`、`source_text_included=false`，并拒绝错误来源摘要、超限输入、无效覆盖和缺少 synthesis call 预留。
+- `部分实现` 模型 ID 和 tokenizer/context 参数由运行者声明，尚未证明彼此匹配或端点模板兼容；综合调用实际次数可能高于下限，价格未配置则无法估算。预检不生成真实候选或审核语义。
+
+## 2026-11-21 K5 全书知识候选语义审核
+
+- `已实现` `scripts/review_knowledge_candidates.py` 会重新验证当前 verified AI bundle、章节 map、候选哈希和逐段 evidence；审核决定只能是 `approved`、`rejected` 或 `escalated`，且必须覆盖所有候选；理由拒绝短证据整段复现及连续 16 个以上字母/数字字符的归一化原文片段。此文本启发式不能阻止语义改写泄漏。
+- `已实现` 默认模式不加载配置、不读 key、不联网、不写文件；显式 `--execute` 才使用 `PROOFREAD_MODEL` 并检查 `source_text`/`book_knowledge` 授权。批次 checkpoint 和最终报告绑定当前候选、bundle、模型/tokenizer 和预算，支持中断后复用。
+- `已实现` 复用最终报告时与当前批次 checkpoint 逐项交叉核验，验证输入摘要/token 预算和决定一致；报告被改写或 checkpoint 缺失/不匹配时失败关闭。
+- `已实现` 报告不会自动转成 reviewed glossary/summary；有拒绝或升级项时要求解决，全部批准也不替代现有 `apply_knowledge_review.py`、`story_summary_review.py` 的发布门禁。
+- `已验证` 审核入口、book-bundle 与 reviewed 发布器相关回归 73 项通过，含格式变化/长片段原文引文拒绝和改写报告后拒绝复用用例；完整非 E2E 与 loopback mock E2E 最新结果见[当前工作树综合自检](development.md#2026-11-21-当前工作树综合自检)。未对试点书或真实 Provider 执行语义审核。候选完整性、独立审核者身份、整书遗漏和语义质量仍未由该工具证明。
+
 ## 2026-11-21 持续集成基线
 
 - `已实现` `.github/workflows/tests.yml` 为 push、pull request 与手动触发建立 Ubuntu/Windows Python 3.14 测试矩阵；动作按提交 SHA 固定，权限仅为 `contents: read`。安装依赖后执行 `pip check`、稳定排序的非 E2E 单测入口和仓库 loopback mock E2E runner。
 - `已实现` `scripts/run_unit_tests.py` 将非 E2E 测试集合固定为除 `test_e2e.py` 外所有 `test_*.py` 模块；真实集成 E2E 仍由 `tests/run_tests.py` 自行启动 mock server。
-- `已验证` 当前工作树 Windows/Python 3.14.7 非 E2E 回归 795 项运行、790 项通过、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（214.701 秒）。本次 K5 审阅工具的增量记录见[开发与验证](development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)；I4 扫描回归历史见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
+- `已验证` 当前工作树 Windows/Python 3.14.7 非 E2E 回归 816 项运行、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过。具体最新检查结果见[综合自检](development.md#2026-11-21-当前工作树综合自检)。K5 知识来源/bundle 门禁、本轮预检和候选审核分别见[开发与验证](development.md#2026-11-21-k5-全书知识-bundle-绑定与审核入口)、[全书知识抽取预检](development.md#2026-11-21-k5-全书知识抽取预检)及[全书知识候选语义审核](development.md#2026-11-21-k5-全书知识候选语义审核)；I4 扫描回归历史见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
 - `已验证` hosted run `44853150345` 对代码提交 `f6131b34396feec9d5f7145d0ace8b8a513c18d6` 的 Ubuntu/Windows Python 3.14 jobs 均通过依赖检查、非 E2E 单测和 loopback mock E2E；新 K5 审阅入口已包含在该验证中。此前 hosted run 的失败定位与修复见[开发与验证](development.md#持续集成)。
 - `已验证` hosted run `44843028671` 对当前文档提交 `d569d3cecc4a4b249d1040f7c79d3a226019e9c1` 的 Ubuntu/Windows Python 3.14 jobs 均通过；该文档提交未改代码，前一实现提交 `180afdcb5f0f0b9f353819cf5ef57e445b412179` 的 CI 也通过。CI 细节见[开发与验证](development.md#持续集成)；CodeRabbit 为 `SKIPPED`。
 - `未验证` 依赖仍未锁版本；该矩阵不代表其他 Python 版本/操作系统支持，也不验证真实 Provider、语义质量、K5 人审或部署。
 - CI 实现、历史失败定位和复现命令见[开发与验证](development.md#持续集成)。
+
+## 2026-11-21 K5 全书知识运行时绑定
+
+- `已实现` glossary AI 来源与 archive normalized 来源采用分离的原始字节/规范化文本哈希核验；全书发布要求完整 AI 章节 map 与 bundle identity，严格 RAG 再核验当前映射和 bundle，Kakuyomu 项目入口传入从已验证 bundle loader 得到的身份。
+- `已实现` 全书审核 CLI 从当前 catalog、checkpoint、bundle-set、AI/人读版根重载并验证 bundle，再派生来源 map 与 expected identity；CLI 不让调用者自行声明“已验证”map。
+- `已验证` 相关定向回归 240 项通过；完整非 E2E 798 项运行、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（219.369 秒）。首轮 mock E2E 找到过时的合成 glossary fixture 缺字段，按当前 schema 补齐后复跑通过。
+- `部分实现` 只实现候选发布与运行时来源门禁，不会生成/语义审核全书知识。回执未签名；当前试点仍无 reviewed 全书知识、run、真实译文或真实 Provider 记录。下一步按[路线图 K5](roadmap.md#2026-11-21-k5-结构审阅后续状态)继续。
 
 ## 2026-11-21 K3 正式润色失败门禁
 
@@ -23,7 +52,7 @@
 - `已实现` `scripts/snapshot_downstream_freshness.py --runs-root ... --project ...` 可显式请求该审计；Kakuyomu 编排和项目采集在有完整当前 AI 话目映射时自动纳入 run/output 状态。AI edition index 不是 `verified` 时，译文新鲜度会在快照构建阶段降为 `stale` 或 `unverified`，并与最终 consumer 摘要一起计算摘要。
 - `已验证` 最新完整非 E2E 回归 792 项运行、787 项通过、5 项 Windows 能力跳过、0 项失败；loopback mock E2E 7 项通过（210.577 秒）。新增回归覆盖嵌套未映射 Markdown、扫描上限、符号链接拒绝和目录枚举失败；普通权限/管理员安全路径结果和用户另行报告的历史结果分别见[开发记录](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
 - `部分实现` 本审计只读且只核验已有 K4 证据和当前可见输出，不修复或重译 stale 译文，不写回 TM/知识库，也不替代正式运行时门禁。当前 AI 映射不可用时，若项目采集检测到非空 run 根或译文文件，会记录聚合 `current_mapping_unavailable` 的 `stale`/`unverified` finding，不声称逐话已核验；两根均为空时不生成 consumer。显式快照 CLI 的 `--runs-root` 仍要求可加载当前项目映射。
-- `未验证` 当前试点无已批准 88 话映射/双版本审阅、无匹配计划回执、无 reviewed 全书知识，也未连接真实 Provider 或运行真实翻译；此功能不构成部署验收。
+- `未验证` 当前试点已有 AI 结构审阅与匹配计划回执，覆盖 88 话映射、来源 lineage、AI/人读文件字节和清洗 profile；这不等于语义内容或阅读器视觉验收。当前仍无 reviewed 全书知识、翻译 run 或译文，也未连接真实 Provider；此功能不构成部署验收。
 - 详情和当前工作树证据见[开发与验证](development.md#2026-11-21-i4-k4-已发布译文新鲜度审计)。
 
 ## 2026-11-21 K5 门禁复核
@@ -304,7 +333,7 @@
 - `未知` Sakura 服务实际部署位置、模型权重/版本和运行参数。代码默认 URL 为 `http://127.0.0.1:6006/v1`；2026-11-14 本次 `Test-NetConnection` 复核该端口不可达，其他地址未探测。
 - `未验证` 用户要求将疑似旧凭据按已轮换处理；当前凭据、供应商侧审计、账户权限、配额、API 兼容性和真实端到端翻译质量。2026-11-17 最新本地检查确认：忽略的根 `.env` 仅含试点阶段模型、回退开关和类别 allowlist，不含密钥；Process/User/Machine 均未设置 JOJO/JYQF key 或 endpoint。未读取密钥，也未访问供应商控制台或调用外部 API。
 - `未知` 除当前工作区外是否存在云端部署、业务自动化任务或用户界面。仓库已有[GitHub Actions CI](development.md#持续集成)，仅运行依赖检查与测试；它不是业务自动化或应用部署。仓库未发现应用部署清单。
-- `未验证` 当前章节映射的人工接受状态：2026-11-14 的 48 个原文、19 个译文和 19 个 TM 键只是旧库存快照，不作为当前输入。当前来源归档在 `projects/祝福のネトラレラ/SourceArchive`，AI 清洗版在项目 `RAWs_AI`；用户指定外部 `生肉` 有 3 个章节目录、88 个话目 Markdown 和 `SOURCE_MAP.json`，外部 `熟肉` 是译文根。两版各 88 话，均绑定同一来源版本，逐字节 profile 重算通过且两版内容不同。`source_manifest.json` 为 356/356、合并 `source_editions_manifest.json` 为 532/532；当前计划为 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json`，schema v2，88/88 `RAWs_AI` 来源有效、AI 索引/manifest 与当前映射一致、0 问题，摘要 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。旧计划摘要 `331013b8...` 的 88 个 TM key 已不匹配当前 `source-edition:` 契约，不能沿用其审批。新计划没有匹配审批回执；计划和哈希验证不代替人工确认目录映射、AI 清洗效果或人读 Ruby/旁点/缩进显示。作品授权已由用户确认；Provider 和 Notion 接收范围分别处理。
+- `未验证` 当前试点的语义与视觉验收：2026-11-21 已为当前计划生成绑定计划摘要的结构审阅和 schema v2 审批回执，88 话的映射、来源 lineage、AI/人读文件字节及清洗 profile 均通过结构检查；旧人审模板的 264 个 `pending` 值保留为历史模板，不再是结构审阅的当前阻塞。计划和哈希验证不能证明原文语义完整、AI 清洗表达无损或阅读器中的 Ruby/旁点/缩进显示合意。用户报告的部分抽样另见开发记录。试点来源/版本和历史 manifest 数量见[2026-11-21 K5 Codex AI 结构审阅与计划审批](development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)；该回执不批准全书知识，也不触发翻译。作品授权已由用户确认；Provider 和 Notion 接收范围分别处理。
 - `未知` `TEST_READY.md` 中历史“71”计数与当前测试的对应关系；最近一次测试报告按实际 unittest 方法和命令记录，不沿用该计数。
 - `未知` 不同操作系统对无符号链接打开标志和目录并发修改的实际保证；最近一次回归测试状态见[开发与验证](development.md)。
 

@@ -1,5 +1,66 @@
 # 翻译工作流续接交接
 
+## 2026-11-21 综合自检收尾
+
+- 当前工作树自检与证据索引见[项目自检](../audits/2026-11-21-project-self-audit.md)和[开发与验证](../development.md#2026-11-21-当前工作树综合自检)：816 项非 E2E 测试运行、5 项 Windows 能力跳过、0 失败；本地 loopback mock E2E 7 项通过；依赖、编译、CI YAML、文档链接和只读安全扫描均按记录范围检查。
+- 这些结果不验证真实 Provider/模型路由/费用、试点译文语义、人工验收或生产部署；应用仍为本地 CLI。
+- 未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 为受保护对象，本轮保持不读、不改、不暂存、不提交。所有其他纳入变更的范围应以本次最终 staged diff 为准。
+
+## 2026-11-21 K5 真实输入复核与当前断点
+
+- `已验证` 较早的本轮观察只看到仓库外旧式试点目录；该观察范围不完整，不能作为当前项目根判断。当前版本化工作区是仓库内 `projects/祝福のネトラレラ/`，包含 `SourceArchive/`、`RAWs_AI/`、`Knowledge/`、`Workflow/`、`生肉/` 和 `熟肉/`。仓库内 `生肉/`、`熟肉/` 为空；计划绑定的人读版根和译文目标根仍指向仓库外 `祝福のネトラレラ(祝福的寝取系女主)/生肉`、`熟肉`。外部熟肉根当前为空。路径已由当前计划与文件清单核对；没有迁移或改写这两个根。
+- `已验证` `scripts/validate_source_manifest.py` 对当前 `SourceArchive/source_manifest.json` 报告 356/356 文件通过，对 `source_editions_manifest.json` 报告 532/532 文件通过。`scripts/validate_source_editions.py` 使用计划所指向的外部人读版根和仓库内 AI 版根，结果为 `verified`、88 话；AI/人读索引摘要分别匹配计划记录。没有把旧式外部 `SOURCE_MAP.json` 当作版本化索引。
+- `已验证` 当前计划 `translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 自带摘要有效，状态 `ready_for_review`、88/88 来源有效、0 issue、0 网络请求、0 Provider 调用、`source_text_included=false`；其独立 schema v2 审批回执由 `verify_approval_receipt` 对当前计划复核通过，绑定 plan SHA `63b286ca...` 与 review SHA `92a37df0...`。回执是本地未签名记录，不证明审核者身份或语义正确。
+- `已验证` `load_verified_ai_book_bundle` 以当前 source root、catalog、checkpoint、外部人读版根及仓库内 AI 版根检查了两个 bundle-set：`SourceArchive/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json` 验证通过、覆盖 88 话；同目录 `bundle-set.69d4e658ddbb8110b9b222992a5dce08945e5619166bd888c6dc803130ccff83.json` 未通过当前 bundle 校验，不能用于抽取。校验只输出摘要，未输出书籍正文。
+- `已验证` 当前 `Knowledge/` 有旧式 `Glossary.json` 与 `STORY_SUMMARY.md`，但没有 `Glossary_draft.json`、`STORY_SUMMARY_draft.md`、`KNOWLEDGE_PROVENANCE_draft.json`、`Glossary_reviewed.json` 或 `STORY_SUMMARY_reviewed.json`；`Workflow/Runs/` 尚不存在。旧格式文件不等同于当前 bundle 绑定的 reviewed 知识，K5 仍没有正式知识快照、翻译 run 或译文。
+- `未验证` 在仓库、当前试点、外部旧式目录和本轮检查的用户配置目录范围内，文件名搜索没有找到 `tokenizer.json`。预算预检和候选审核 CLI 均要求 tokenizer JSON；当前与运行模型匹配的 tokenizer、model ID、context/template、输入/输出上限、预算以及活动 Provider route 不能确认。没有读取 `.env`、加载 `Config`、查看 API profile/key 或调用真实 Provider。历史记录中的职责授权不证明当前端点、allowlist 和费用配置已生效。
+- 当前实施路线继续采用[端到端工作流目标](../end-to-end-workflow-target.md#实施工作包)的 K0–K5 依赖，不启动独立的 CLI/TUI 规划。K5 子阶段与门槛如下：
+
+| 子阶段 | 状态与依赖 | 交付物及验收 | 风险与回退 |
+| --- | --- | --- | --- |
+| K5.1 输入身份复验 | `已验证`；依赖当前版本化 workspace 与三类 88 话 bundle | manifest、双版本、计划回执及匹配 AI bundle 均通过只读校验；本轮已完成 | 任一来源摘要或 bundle identity 不匹配即停止，不切换到旧目录/旧 bundle |
+| K5.2 抽取预算预检 | `计划`；阻塞于可证明与目标 model 匹配的 tokenizer JSON 及调用方确认的 model/context/output/safety/message/call 参数 | 运行 `scripts/plan_knowledge_extraction.py` 得到不含正文的 88 话覆盖、token/call 与预算计划；需满足显式预算并无输入/来源 issue | 不用通用或猜测 tokenizer 代替；预检只读，不创建候选 |
+| K5.3 候选生成与语义审核 | `计划`；依赖 K5.2、有效 Provider route/授权 allowlist 和获准费用预算 | 用当前 AI bundle 生成带 provenance 的候选；审核报告逐项绑定证据并处置冲突/不确定项，无遗漏决定；拒绝或升级项解决前不发布 | 按 checkpoint 恢复，不覆盖候选；调用前展示 Provider、数据类别和预算，服务失败保留已完成检查点 |
+| K5.4 发布 reviewed 知识 | `计划`；依赖审核报告以及现有 glossary/summary 发布器各自的批准回执 | 分别产出当前 bundle 绑定且覆盖完整的 `Glossary_reviewed.json` 与 `STORY_SUMMARY_reviewed.json`，并通过正式入口的来源/coverage 校验 | create-only 保留旧文件；任一输出已存在或来源过期即停止，使用新候选/新版本修复 |
+| K5.5 第 1 话受控试译 | `计划`；依赖 K5.4、已核验 Provider/费用、当前计划和既有终审策略 | 单话 run 从 AI 版与 reviewed 知识启动，记录各阶段质量/返工/费用/失败恢复；仅全门禁通过才写入计划指定译文根 | 失败留在 run 草稿区，不放宽发布门禁、不覆盖既有译文；外发调用成本不可回滚 |
+
+- 真实试点下一步：由工作区/Provider 配置所有者提供或定位经过核实、与目标 model 匹配的本地 tokenizer JSON，并确认不含密钥的 model ID、context/output/safety/message/call 预算参数与活动 route 状态；随后运行 K5.2 试点预检。参数模板和候选流程见[知识治理](../knowledge-governance.md)与[开发与验证](../development.md#2026-11-21-k5-全书知识抽取预检)。本 K5 实施检查点未运行全量应用测试；本次工作树的完整验证见[综合自检](../development.md#2026-11-21-当前工作树综合自检)。应用仍是本地 CLI，无服务地址。
+
+## 2026-11-21 K5 全书知识候选语义审核续接
+
+- 新增 `knowledge_ai_review.py` 与 `scripts/review_knowledge_candidates.py`。入口重新加载当前 verified AI bundle 和候选 provenance；候选逐项绑定 glossary/claim evidence，审核决定严格为 `approved`/`rejected`/`escalated`，越界引用、遗漏决定及经归一化后匹配原文的长片段理由失败关闭。文本检查不能识别语义改写泄漏。
+- 默认执行是只读预检；`--execute` 才加载 `Config`、`PROOFREAD_MODEL` 和 `source_text`/`book_knowledge` 授权。每批排他保存 checkpoint，最终写入不复制引用段落正文的审核报告；已有 checkpoint 可复用。报告不自动发布 reviewed 知识，也不证明候选完整性、独立审核者身份或语义质量。
+- 复用最终报告现在要求重新加载全部匹配 checkpoint，并逐项比对报告决定、候选/bundle/provider/tokenizer/预算身份、批次输入摘要与 token 计数；报告被改写、检查点缺失或计数/状态失配时失败关闭。回归覆盖篡改报告理由后拒绝复用且不重调 Provider。
+- 验证：审核入口及知识发布相关定向回归 73 项通过，含格式变化/长片段原文引文拒绝及改写报告后拒绝复用；较新的完整非 E2E/mock E2E 结果见[综合自检](../development.md#2026-11-21-当前工作树综合自检)，本次历史检查点的单独完整回归未再执行。`py_compile`、CLI `--help`、`git diff --check` 通过。尚未执行真实 Provider 或试点候选审核。
+- 下一步：先完成全量非 E2E 回归；在有匹配 tokenizer/context、已核验路由/授权/预算后，对当前 bundle 生成候选并运行审核。审核报告通过后，仍需分别填写并运行现有 glossary/summary reviewed 发布器；任何 `rejected`/`escalated` 项先解决或升级，不得自动批准。满足 reviewed 知识门禁后才进入第 1 话受控试译。
+- 细节见[开发与验证](../development.md#2026-11-21-k5-全书知识候选语义审核)、[知识治理](../knowledge-governance.md)、[项目现状](../project-status.md#2026-11-21-k5-全书知识候选语义审核)与[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，无部署地址。
+
+## 2026-11-21 K5 全书知识抽取预算预检续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。保留混合未提交工作树，不暂存、提交、重置或清理；未读取受保护 freshness JSON、书籍正文/译文、`.env`、API profile 或凭据。
+- 已实现 `scripts/plan_knowledge_extraction.py`：不加载配置、不访问 key、不创建 Provider client、不联网或写文件；以当前 bundle loader 检查 AI/人读版本，再以抽取器相同的段落 ID、prompt renderer、tokenizer 和 batching 生成内容无关计划。调用方声明的 model ID 与 tokenizer 兼容性仍未验证，价格未知；多批综合调用只报告最低调用数/剩余预算。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_plan tests.test_knowledge_batching tests.test_book_bundles -q`：27 项通过；`tests.test_knowledge_extraction_unit`：41 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py`：807 项运行、5 项因 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过（214.004 秒，退出码 0）。E2E 中的 content-filter/段落数异常是负向 fixture 预期日志。`py_compile` 与 CLI `--help` 通过；没有调用真实 Provider。
+- 未对试点书运行预检：当前没有确认与目标 Provider/model 匹配的本地 tokenizer、context/template 或费用预算。本工具运行时会在本机读取完整 AI bundle 来计算实际批次，但不会把正文放进报告或发送远端。
+- 下一步：若能从本地既有参数确认 tokenizer/model/context 匹配，可运行上面的预检命令并只记录摘要计数，不记录正文。之后仍须在实际模型路由/授权/预算明确后生成候选；真实候选的证据化语义审核、冲突/不确定项处置、reviewed 知识发布和单话试译仍未完成。
+- 细节见[知识治理](../knowledge-governance.md)、[开发与验证](../development.md#2026-11-21-k5-全书知识抽取预检)、[项目现状](../project-status.md#2026-11-21-k5-全书知识抽取预检)与[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，没有部署地址。
+
+## 2026-11-21 K5 全书知识 bundle 绑定实现续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、起始 HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。工作树包含多项既有及本任务未提交修改；全部保留，未暂存、提交、重置或清理。未读取、修改或暂存受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，也未读取书籍正文、译文、本机凭据或 Provider profile。
+- 已完成：AI 镜像原始字节与 archive normalized 来源哈希分离核验；全书 glossary 发布及正式 RAG 要求当前 AI map、完整 coverage 和匹配 bundle identity；审核 CLI 从已验证 book bundle loader 派生 map/identity。缺 map、错误 coverage、bundle 不匹配或不安全相对路径均失败关闭。该实现是来源/范围门禁，不生成候选，不执行语义审核，也不认证 reviewer。
+- 当前试点基线未变化：88 话结构映射、来源 lineage、AI/人读版字节与 profile 审阅已有匹配回执，88 项通过、0 issue；旧 `.human-review.json` 的 264 个 pending 项不再是结构审查阻塞。尚无 reviewed 全书知识、正式翻译 run、译文或本轮真实 Provider 请求。
+- 验证：定向回归 240 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 798 项运行、5 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（219.369 秒）。相关 Python 编译、`scripts\apply_knowledge_review.py --help` 与 `git diff --check` 已通过。mock E2E 不连接真实 Provider。
+- 续接：先运行 `git status --short --branch` 并保留混合工作树。若继续生成全书知识候选，使用当前 verified bundle 和 tokenizer/context 配置；真实模型调用前须在不显示密钥的前提下确认 Provider 路由、数据范围、费用预算与可用性。候选生成后由 AI 基于来源证据审核语义覆盖、冲突和未知项，无法判定时再升级；发布使用 `scripts/apply_knowledge_review.py` 的 verified bundle 参数，命令与参数边界见[知识库治理](../knowledge-governance.md)。只有 reviewed 知识和 Provider/预算条件齐备后，才进入受控单话试译及质量验收。条件不满足时停在本地 mock/合成验证，不声称真实流程通过。
+- 详细实现和测试证据见[开发与验证](../development.md#2026-11-21-k5-全书知识-bundle-绑定与审核入口)、[项目现状](../project-status.md#2026-11-21-k5-全书知识运行时绑定)和[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，没有服务端可部署或访问地址。
+
+## 2026-11-21 K5 结构门禁完成后的当前续接点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。既有未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 保持不读、不改、不暂存。
+- 当前计划的 88 话映射、来源 lineage、AI/人读版字节及 profile 结构审阅均为 88 项通过、0 issue，且已有与计划和 review 摘要绑定的 schema v2 审批回执。旧 `.human-review.json` 的 264 个 pending 项不是当前结构门禁；不要要求用户重复完成人工结构清单。回执不证明语义正确、格式的实际阅读观感或审核者身份。
+- 尚未完成：与当前 AI bundle 绑定的 reviewed 全书知识、正式 run、译文及真实 Provider 质量/费用验收。
+- 建议续接顺序：1) 生成当前 bundle 的全书知识候选并运行已有审核流程，确认来源绑定和未解决项；2) 在不输出密钥的前提下，只读核验 JOJO Code 主渠道、JYQF AI 备用渠道的当前配置、路由、授权、模型和预算；3) 条件齐备后受控执行第 1 话的翻译、AI 审核/返工/发布试点，记录质量、成本、失败恢复和产物哈希。端点或凭据不满足时停止真实调用，可继续独立的合成验证。
+- 本次仅整理文档；未重新运行代码测试、未调用真实 Provider、未修改部署或书籍数据。证据细节见[项目现状](../project-status.md#2026-11-21-k5-门禁复核)、[开发记录](../development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)和[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。
+
 ## 2026-11-20 K4 AI workflow CLI 验证续接
 
 - 当前基线仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；工作树已有混合未提交改动，本轮只新增 `tests/test_ai_translation_workflow_cli.py` 和同步验证文档，未暂存、提交、重置或清理。未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据。

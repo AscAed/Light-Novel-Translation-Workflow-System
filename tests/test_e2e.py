@@ -694,6 +694,26 @@ class E2ETestSuite(unittest.TestCase):
                     },
                     "reviewed_at_utc": "2026-11-20T00:00:00Z",
                     "source_files": source_files,
+                    "input_coverage": {
+                        "scope": "all_configured_chapters",
+                        "complete_for_configured_chapters": True,
+                        "configured_chapter_count": len(source_files),
+                        "included_chapter_count": len(source_files),
+                        "input_characters": input_characters,
+                        "input_character_limit": max(1, input_characters),
+                    },
+                    "book_bundle": {
+                        field: bundle_report["book_bundles"][field]
+                        for field in (
+                            "source_snapshot_id",
+                            "ai_bundle_id",
+                            "bundle_set_relative_path",
+                            "bundle_set_sha256",
+                            "ai_bundle_relative_path",
+                            "ai_bundle_sha256",
+                            "episode_count",
+                        )
+                    },
                     "decisions": [
                         {
                             "src": "東京",
