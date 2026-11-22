@@ -2,6 +2,14 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-22 提交 e1e3a72 与 PR 复核
+
+- `已验证` 本轮相关代码、测试和文档已提交为 `e1e3a72`（`Harden review routing and metadata EPUB inputs`），并推送到 `codex/translation-workflow-audit-20261117`。
+- `已验证` 提交前本地 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 862 项运行、5 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 为 loopback mock E2E 7 项通过。`pip check`、相关源码 `py_compile`、活动 Markdown 本地文件链接目标检查和 `git diff --check` 均通过。
+- `已验证` GitHub Actions run `44975447891` 对该提交的 Ubuntu/Windows Python 3.14 jobs 均成功；CI 仍只覆盖依赖、单元测试和 loopback mock E2E，不证明真实 Provider、翻译语义、EPUB 阅读器兼容性或部署。
+- `已验证` PR #71 当前为 `OPEN`、`MERGEABLE`、`mergeStateStatus=CLEAN`，没有正式 review approval，因此未自动合并。CodeRabbit 检查为 `SKIPPED`。
+- 唯一未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 是既有受保护用户数据，本轮未读取、修改、暂存或提交。
+
 ## 2026-11-22 提交后验证与 PR 状态
 
 - `已验证` `183c3fe` 提交 M0–M4 元数据翻译实现、测试和主体文档；`18e8387` 修正 Windows hosted runner 短路径与长路径的测试断言；`f35817c` 补记提交后验证与 PR 状态。三个提交均已推送到 `codex/translation-workflow-audit-20261117` 与 PR #71。

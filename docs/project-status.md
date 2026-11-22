@@ -22,8 +22,8 @@
 
 ## 2026-11-22 提交与 PR 状态
 
-- `已验证` `183c3fe`（M0–M4 实现）、`18e8387`（Windows 路径断言修复）和 `f35817c`（交付记录）已推送到 `codex/translation-workflow-audit-20261117` 与 PR #71；提交及验证时间线见[开发与验证](development.md#2026-11-22-提交后验证与-pr-状态)。
-- `已验证` 截至 hosted run `44971559503` 完成时，PR #71 为 `OPEN` 且 `MERGEABLE`，Ubuntu/Windows Python 3.14 jobs 通过；没有正式 review approval，因此未合并。
+- `已验证` `e1e3a72`（审核路由、章节知识与 metadata-aware EPUB 输入修复）以及此前的 M0–M4、Windows 路径和交付记录提交已推送到 `codex/translation-workflow-audit-20261117` 与 PR #71；提交及验证时间线见[开发与验证](development.md#2026-11-22-提交-e1e3a72-与-pr-复核)。
+- `已验证` hosted run `44975447891` 对 `e1e3a72` 的 Ubuntu/Windows Python 3.14 jobs 均通过；PR #71 当前为 `OPEN`、`MERGEABLE`、`CLEAN`，但没有正式 review approval，因此未合并。
 - 唯一未跟踪文件是受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，保持未读、未改、未暂存和未提交。
 
 ## 2026-11-21 当前工作树综合自检
