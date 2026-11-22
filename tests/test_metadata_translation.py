@@ -1467,7 +1467,7 @@ class MetadataTranslationTests(unittest.TestCase):
                         artifact_name="approved.json",
                     )
                 )
-            self.assertEqual(artifact_path, metadata_root / "approved.json")
+            self.assertEqual(artifact_path, metadata_root.resolve() / "approved.json")
             self.assertFalse(reused)
             input_root = project / "EPUBInputs"
             input_root.mkdir()
@@ -1674,7 +1674,10 @@ class MetadataTranslationTests(unittest.TestCase):
                 second_path, second, second_reused = (
                     publish_metadata_translation_artifact(**arguments)
                 )
-            self.assertEqual(first_path, metadata_root / "metadata-approved.json")
+            self.assertEqual(
+                first_path,
+                metadata_root.resolve() / "metadata-approved.json",
+            )
             self.assertEqual(second_path, first_path)
             self.assertFalse(first_reused)
             self.assertTrue(second_reused)
