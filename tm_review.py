@@ -201,12 +201,17 @@ def _require_verified_sources(
     source_root: str,
     translation_root: str,
     manifest_relative_path: str,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> None:
     findings = audit_translation_memory(
         selected,
         source_root,
         translation_root,
         manifest_relative_path,
+        source_input_root=source_input_root,
+        source_input_map=source_input_map,
     )
     if (
         not findings
@@ -518,6 +523,9 @@ def load_reviewed_tm_snapshot(
     source_root: str | None,
     translation_root: str | None,
     source_manifest_path: str | None,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> dict:
     """Load only a complete, integrity-consistent, currently source-backed bundle."""
     _, bundle = _read_json(path)
@@ -632,6 +640,8 @@ def load_reviewed_tm_snapshot(
         source_root,
         translation_root,
         source_manifest_path,
+        source_input_root=source_input_root,
+        source_input_map=source_input_map,
     )
     return {
         "chapters": chapters,

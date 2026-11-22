@@ -76,6 +76,7 @@ _CHAPTER_FIELDS = frozenset(
     }
 )
 DEFAULT_MAX_CATALOG_FILE_BYTES = 16 * 1024 * 1024
+_PROJECTS_ROOT = Path(__file__).resolve().parent.parent / "projects"
 
 
 def _reject_duplicate_keys(pairs):
@@ -422,6 +423,466 @@ def _validate_output_paths(
         raise ValueError("Source outputs must not overwrite the catalog.")
 
 
+def _resolve_project_ingestion_context(
+    project: str,
+    source_root: str,
+    output_root: str,
+) -> dict:
+    if (
+        not isinstance(project, str)
+        or not project
+        or project.strip() != project
+        or project in {".", ".."}
+        or "/" in project
+        or "\\" in project
+    ):
+        raise ValueError("Invalid project name.")
+    projects_root = _PROJECTS_ROOT.resolve(strict=True)
+    project_path = projects_root / project
+    if project_path.is_symlink():
+        raise ValueError("Project directory must not be a symbolic link.")
+    project_path = project_path.resolve(strict=True)
+    try:
+        common = Path(os.path.commonpath((projects_root, project_path)))
+    except ValueError as exc:
+        raise ValueError("Invalid project name.") from exc
+    if common != projects_root or project_path == projects_root:
+        raise ValueError("Invalid project name.")
+
+    source_path = (project_path / "SourceArchive").resolve(strict=True)
+    if (
+        not source_path.is_dir()
+        or (project_path / "SourceArchive").is_symlink()
+        or Path(source_root).resolve(strict=True) != source_path
+        or Path(output_root).resolve(strict=True) != source_path
+    ):
+        raise ValueError(
+            "--project requires --source-root and --output-root to be "
+            "that project's SourceArchive directory."
+        )
+
+    from pipeline import _resolve_project_content_dir, _resolve_project_output_override
+
+    translation_root = _resolve_project_output_override(
+        str(project_path)
+    ) or _resolve_project_content_dir(
+        str(project_path),
+        "熟肉",
+        "OUTPUT_DIR",
+    )
+    return {
+        "project_root": project_path,
+        "source_root": source_path,
+        "translation_root": Path(translation_root),
+        "runs_root": project_path / "Workflow" / "Runs",
+        "ai_root": project_path / "RAWs_AI",
+        "tm_path": project_path / "Knowledge" / "translation_memory.json",
+        "knowledge_path": (
+            project_path / "Knowledge" / "KNOWLEDGE_PROVENANCE_draft.json"
+        ),
+        "story_summary_path": (
+            project_path / "Knowledge" / "STORY_SUMMARY_reviewed.json"
+        ),
+    }
+
+
+def _load_json_regular(path: Path, label: str):
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symbolic link.")
+    with open_regular_file(path) as stream:
+        return json.load(stream, object_pairs_hook=_reject_duplicate_keys)
+
+
+def _sha256_regular_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open_regular_file(path, binary=True) as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _ai_edition_index_freshness(
+    *,
+    source_root: Path,
+    ai_root: Path,
+    catalog_relative_path: str,
+    manifest_relative_path: str,
+    edition_manifest_relative_path: str,
+) -> tuple[dict[str, str], list[dict[str, str]] | None]:
+    index_path = ai_root / "catalog.json"
+    if not ai_root.is_dir() or not index_path.exists():
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "unverified",
+                "detail": "No AI edition index is available for this project.",
+            },
+            None,
+        )
+    try:
+        index = _load_json_regular(index_path, "AI edition index")
+        current_catalog = _load_catalog_snapshot(
+            str(source_root),
+            catalog_relative_path,
+        )
+        source_manifest_path = resolve_relative_path(
+            str(source_root),
+            manifest_relative_path,
+        )
+        edition_manifest_path = resolve_relative_path(
+            str(source_root),
+            edition_manifest_relative_path,
+        )
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "invalid",
+                "detail": "AI edition index or current catalog could not be verified.",
+            },
+            None,
+        )
+
+    if (
+        not isinstance(index, dict)
+        or index.get("schema_version") != 2
+        or index.get("edition") != "ai"
+        or not isinstance(index.get("work_id"), str)
+        or not isinstance(index.get("episodes"), list)
+    ):
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "invalid",
+                "detail": "AI edition index has an unsupported schema.",
+            },
+            None,
+        )
+
+    expected_sources = []
+    valid_episode_records = True
+    for episode in index["episodes"]:
+        if (
+            not isinstance(episode, dict)
+            or not isinstance(episode.get("episode_id"), str)
+            or not episode.get("episode_id")
+            or isinstance(episode.get("position"), bool)
+            or not isinstance(episode.get("position"), int)
+            or episode["position"] < 1
+            or not isinstance(episode.get("ai_archive_relative_path"), str)
+            or not isinstance(episode.get("ai_edition_version_id"), str)
+            or not isinstance(episode.get("ai_relative_path"), str)
+            or not isinstance(episode.get("output_sha256"), str)
+            or len(episode["output_sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in episode["output_sha256"]
+            )
+        ):
+            valid_episode_records = False
+            break
+        expected_sources.append(
+            {
+                "filename": episode["ai_archive_relative_path"],
+                "source_version_id": episode["ai_edition_version_id"],
+                "source_input_file": episode["ai_relative_path"],
+                "source_sha256": episode["output_sha256"],
+                "episode_id": episode["episode_id"],
+                "translation_file": (
+                    f"episode-{episode['position']:04d}-"
+                    f"{episode['episode_id']}.md"
+                ),
+                "tm_key": (
+                    f"source-edition:{index['work_id']}:{episode['episode_id']}"
+                ),
+            }
+        )
+    if not valid_episode_records:
+        expected_sources = None
+
+    source_record = index.get("source_manifest")
+    edition_record = index.get("edition_manifest")
+    catalog_record = index.get("catalog")
+    if not all(
+        isinstance(record, dict)
+        and isinstance(record.get("relative_path"), str)
+        and isinstance(record.get("sha256"), str)
+        for record in (source_record, edition_record, catalog_record)
+    ):
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "invalid",
+                "detail": "AI edition index is missing lineage identities.",
+            },
+            expected_sources,
+        )
+
+    references_match = (
+        source_record["relative_path"].replace("\\", "/")
+        == manifest_relative_path.replace("\\", "/")
+        and source_record["sha256"] == _sha256_regular_file(source_manifest_path)
+        and edition_record["relative_path"].replace("\\", "/")
+        == edition_manifest_relative_path.replace("\\", "/")
+        and edition_record["sha256"] == _sha256_regular_file(edition_manifest_path)
+        and catalog_record["relative_path"].replace("\\", "/")
+        == catalog_relative_path.replace("\\", "/")
+        and catalog_record["sha256"] == current_catalog["sha256"]
+    )
+    catalog_episode_map = {
+        episode.metadata.episode_id: (
+            episode.metadata.position,
+            episode.metadata.title,
+        )
+        for episode in current_catalog["episodes"]
+    }
+    index_episode_map = {}
+    for episode in index["episodes"]:
+        if not isinstance(episode, dict):
+            index_episode_map = {}
+            break
+        episode_id = episode.get("episode_id")
+        position = episode.get("position")
+        title = episode.get("title")
+        if (
+            not isinstance(episode_id, str)
+            or isinstance(position, bool)
+            or not isinstance(position, int)
+            or not isinstance(title, str)
+            or episode_id in index_episode_map
+        ):
+            index_episode_map = {}
+            break
+        index_episode_map[episode_id] = (position, title)
+    if index.get("work_id") != current_catalog["work_id"] or (
+        index_episode_map != catalog_episode_map
+    ):
+        references_match = False
+
+    if not references_match:
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "stale",
+                "detail": (
+                    "AI edition index does not match the current source, "
+                    "edition manifest, or catalog."
+                ),
+            },
+            expected_sources,
+        )
+
+    try:
+        from source_editions import verify_ai_edition_index
+
+        verify_ai_edition_index(
+            source_root=str(source_root),
+            ai_root=str(ai_root),
+            source_manifest_relative_path=manifest_relative_path,
+            edition_manifest_relative_path=edition_manifest_relative_path,
+        )
+    except (OSError, UnicodeError, ValueError):
+        return (
+            {
+                "identity": "ai_edition_index",
+                "status": "invalid",
+                "detail": "AI edition files or source lineage failed verification.",
+            },
+            expected_sources,
+        )
+    return (
+        {
+            "identity": "ai_edition_index",
+            "status": "verified",
+            "detail": "AI edition index matches the current source and catalog.",
+        },
+        expected_sources,
+    )
+
+
+def _record_project_ingestion_freshness(
+    *,
+    context: dict,
+    catalog_relative_path: str,
+    manifest_relative_path: str,
+) -> dict:
+    from scripts.snapshot_downstream_freshness import (
+        FRESHNESS_STATUSES,
+        build_downstream_freshness_snapshot,
+        persist_downstream_freshness_snapshot,
+    )
+    from source_editions import synchronize_edition_manifest_with_source_history
+
+    edition_manifest_relative_path = "source_editions_manifest.json"
+    edition_manifest = synchronize_edition_manifest_with_source_history(
+        source_root=str(context["source_root"]),
+        source_manifest_relative_path=manifest_relative_path,
+        edition_manifest_relative_path=edition_manifest_relative_path,
+    )
+    ai_finding, expected_sources = _ai_edition_index_freshness(
+        source_root=context["source_root"],
+        ai_root=context["ai_root"],
+        catalog_relative_path=catalog_relative_path,
+        manifest_relative_path=manifest_relative_path,
+        edition_manifest_relative_path=edition_manifest_relative_path,
+    )
+
+    tm_path = context["tm_path"]
+    knowledge_path = context["knowledge_path"]
+    summary_path = context["story_summary_path"]
+    runs_root = context.get("runs_root")
+    translation_root = Path(context["translation_root"])
+    has_run_history = False
+    if isinstance(runs_root, Path):
+        if runs_root.is_symlink() or (
+            runs_root.exists() and not runs_root.is_dir()
+        ):
+            has_run_history = True
+        elif runs_root.is_dir():
+            has_run_history = any(runs_root.iterdir())
+    if translation_root.is_symlink() or (
+        translation_root.exists() and not translation_root.is_dir()
+    ):
+        has_published_outputs = True
+    elif translation_root.is_dir():
+        has_published_outputs = any(
+            not item.is_symlink() and item.is_file()
+            for item in translation_root.iterdir()
+        )
+    else:
+        has_published_outputs = False
+    tm_data = (
+        _load_json_regular(tm_path, "Translation memory")
+        if tm_path.exists() or tm_path.is_symlink()
+        else None
+    )
+    knowledge = (
+        _load_json_regular(knowledge_path, "Knowledge provenance")
+        if knowledge_path.exists() or knowledge_path.is_symlink()
+        else None
+    )
+    summary_present = summary_path.exists() or summary_path.is_symlink()
+    can_audit_summary = summary_present and expected_sources is not None
+    source_input_map = {
+        item["filename"]: {
+            "source_version_id": item["source_version_id"],
+            "source_input_file": item["source_input_file"],
+            "source_sha256": item["source_sha256"],
+        }
+        for item in expected_sources or []
+    }
+    expected_translations = (
+        [
+            {
+                "translation_file": item["translation_file"],
+                "tm_key": item["tm_key"],
+                "source_version_id": item["source_version_id"],
+                "source_sha256": item["source_sha256"],
+            }
+            for item in expected_sources
+            if isinstance(item.get("translation_file"), str)
+            and isinstance(item.get("tm_key"), str)
+            and isinstance(item.get("source_version_id"), str)
+            and isinstance(item.get("source_sha256"), str)
+        ]
+        if expected_sources
+        else None
+    )
+    if expected_translations is not None and len(expected_translations) != len(
+        expected_sources
+    ):
+        expected_translations = None
+    ai_status = ai_finding["status"]
+    should_audit_publications = (
+        expected_translations is not None
+        or has_run_history
+        or has_published_outputs
+    )
+    snapshot = build_downstream_freshness_snapshot(
+        tm_data=tm_data,
+        source_root=str(context["source_root"]),
+        translation_root=str(translation_root),
+        manifest_relative_path=edition_manifest_relative_path,
+        tm_label=tm_path.name if tm_data is not None else None,
+        knowledge_provenance=knowledge,
+        knowledge_label=knowledge_path.name if knowledge is not None else None,
+        story_summary_path=(
+            str(summary_path) if can_audit_summary else None
+        ),
+        expected_sources=expected_sources,
+        translation_runs_root=(
+            str(runs_root)
+            if isinstance(runs_root, Path) and should_audit_publications
+            else None
+        ),
+        expected_translations=expected_translations,
+        published_source_status=(
+            ai_status if should_audit_publications else None
+        ),
+        source_input_root=str(context["ai_root"]),
+        source_input_map=source_input_map,
+    )
+    snapshot["consumers"]["ai_edition_index"] = {
+        "input": "RAWs_AI/catalog.json",
+        "summary": {
+            status: int(status == ai_status)
+            for status in FRESHNESS_STATUSES
+        },
+        "findings": [ai_finding],
+    }
+    if summary_present and not can_audit_summary:
+        summary_finding = {
+            "identity": "reviewed_story_summary",
+            "status": "unverified",
+            "detail": (
+                "The current AI edition chapter map is unavailable for "
+                "full-book summary verification."
+            ),
+        }
+        snapshot["consumers"]["reviewed_story_summary"] = {
+            "input": summary_path.name,
+            "summary": {
+                status: int(status == "unverified")
+                for status in FRESHNESS_STATUSES
+            },
+            "findings": [summary_finding],
+        }
+    elif (
+        ai_status != "verified"
+        and "reviewed_story_summary" in snapshot["consumers"]
+    ):
+        summary_consumer = snapshot["consumers"]["reviewed_story_summary"]
+        summary_consumer["summary"] = {
+            status: int(status == "stale")
+            for status in FRESHNESS_STATUSES
+        }
+        summary_consumer["findings"] = [
+            {
+                "identity": "reviewed_story_summary",
+                "status": "stale",
+                "detail": (
+                    "AI edition index is stale for the current source catalog; "
+                    "the full-book summary must be reviewed against the refreshed edition."
+                ),
+            }
+        ]
+    persisted = persist_downstream_freshness_snapshot(
+        snapshot,
+        str(context["source_root"]),
+    )
+    return {
+        "status": "persisted",
+        "path": persisted["path"],
+        "snapshot_id": persisted["snapshot_id"],
+        "created": persisted["created"],
+        "edition_manifest": edition_manifest,
+        "consumers": {
+            name: consumer["summary"]
+            for name, consumer in snapshot["consumers"].items()
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -430,6 +891,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("--source-root", required=True)
+    parser.add_argument(
+        "--project",
+        help=(
+            "Optional project name. Requires --source-root and --output-root "
+            "to be that project's SourceArchive and records downstream freshness."
+        ),
+    )
     parser.add_argument(
         "--catalog",
         help="Existing catalog path relative to --source-root.",
@@ -511,6 +979,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if (args.catalog is None) == (args.work_url is None):
             parser.error("Specify exactly one of --catalog or --work-url.")
+        project_context = None
+        if args.project is not None:
+            if args.manifest != "source_manifest.json":
+                raise ValueError(
+                    "--project requires the default source_manifest.json."
+                )
+            project_context = _resolve_project_ingestion_context(
+                args.project,
+                args.source_root,
+                args.output_root,
+            )
         incremental_requested = (
             args.incremental_from_catalog is not None
             or args.incremental_from_checkpoint is not None
@@ -776,6 +1255,29 @@ def main(argv: list[str] | None = None) -> int:
                 catalog_path.relative_to(Path(args.source_root).resolve(strict=True))
             )
             report["discovery_fingerprint"] = discovery.source_fingerprint
+        if project_context is not None:
+            catalog_relative_path = catalog_path.relative_to(
+                project_context["source_root"]
+            ).as_posix()
+            try:
+                report["project_freshness_snapshot"] = (
+                    _record_project_ingestion_freshness(
+                        context=project_context,
+                        catalog_relative_path=catalog_relative_path,
+                        manifest_relative_path=args.manifest,
+                    )
+                )
+            except (
+                OSError,
+                UnicodeError,
+                ValueError,
+                RuntimeError,
+                json.JSONDecodeError,
+            ) as exc:
+                report["project_freshness_snapshot"] = {
+                    "status": "unavailable",
+                    "error_type": type(exc).__name__,
+                }
     except (
         OSError,
         UnicodeError,

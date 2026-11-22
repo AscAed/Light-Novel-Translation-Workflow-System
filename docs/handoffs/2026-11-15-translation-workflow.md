@@ -1,6 +1,344 @@
 # 翻译工作流续接交接
 
-> 状态基准：2026-11-16。较早的续接与审查章节均为历史快照；当前分支、验证、合并结果和下一步见下方最新状态。项目路线图仍有后续阶段，额度信息不可见。
+## 2026-11-22 K5 输入复核与当前阻塞
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；保留当前混合未提交工作树和受保护 freshness JSON，未暂存、提交、重置或清理。未读取受保护 JSON、根 `.env` 内容、API pool profile/Key、Credential Manager、试点知识值或章节正文。
+- `已验证` 当前来源验证命令与摘要见[开发记录](../development.md#2026-11-22-k5-输入复核与当前阻塞)：source manifest 356/356、edition manifest 532/532、AI/人读 edition `verified` 88/88；`run_kakuyomu_workflow.py --plan-only` 为 `ready_for_review`、0 issue/network/provider/write，plan SHA `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。
+- `已验证` `load_verified_ai_book_bundle` 以实际绑定的完整 checkpoint `source_checkpoint.raw-html-refresh-2026-11-17.json` 重新通过，覆盖 88 话；bundle-set SHA `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`，AI bundle SHA `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`。不要省略 checkpoint 参数并误用 `source_checkpoint.json`，否则会将不匹配的 checkpoint 当作 bundle 失效。
+- `已验证` 试点 `Knowledge/` 根目录没有 `Glossary_reviewed.json`、`STORY_SUMMARY_reviewed.json` 或完整书知识候选三件套；`Workflow/Runs/` 不存在。现有结构审阅回执不替代知识审核/发布。
+- `已验证` K5 定向验证共 131 项通过：`tests.test_knowledge_extraction_plan tests.test_knowledge_extraction_unit tests.test_knowledge_ai_review tests.test_story_summary_review` 84 项；`tests.test_knowledge_review tests.test_knowledge_provenance_audit tests.test_kakuyomu_workflow` 47 项。均为本地/合成输入，未调用试点 Provider。
+- `已验证` 当前 checkout 全量单测 856 项运行、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（退出码 0）。完整命令/运行时间及质量边界见[开发记录](../development.md#2026-11-22-k5-输入复核与当前阻塞)。
+- `未验证` 项目、`D:\OWN\Programming\AI\TranslatorAI` 父目录及常见用户级 Hugging Face 缓存位置未发现 tokenizer JSON；已检查的 Provider allowlist、目标模型、JOJO/JYQF endpoint/key、API pool 与 fallback 环境变量在 Process/User/Machine 均不存在。根 `.env` 存在且会由 `Config.load_config()` 读取，但本轮未读取其内容。`api_pool_store.default_profile_path()` 使用 `%LOCALAPPDATA%\TranslatorAI\api-pool.json`；截至本轮该路径存在，但未读取其内容；`%APPDATA%\TranslatorAI\api-pool.json` 不存在。Credential Manager 未检查，故活动 route 仍未知。未调用真实 Provider。配置所有者需要给出目标模型 ID、匹配 tokenizer 路径/来源、context/output/message/safety/call 上限、费用预算，并本机确认 route/allowlist；授权历史不代表当前配置已激活。
+- 配置诊断边界：源码中的 `pipeline.validate_provider_configuration()` 会对远程 route 调用 `get_api_key()` 检查凭据；本仓库没有独立的脱敏 Provider readiness CLI。本轮未运行它，避免触及本地凭据。
+- 下一步严格按 K5.2–K5.5：先运行 `scripts/plan_knowledge_extraction.py` 无网络预算预检；通过后才生成、审核并发布 bundle-bound 全书知识，随后用第 1 话执行受控真实试译与质量/成本/恢复验收。需要的输入模板见[开发记录](../development.md#2026-11-21-k5-全书知识抽取预检)及[知识治理](../knowledge-governance.md)。
+
+## 2026-11-22 M4 字段 freshness 与 EPUB metadata 消费断点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留混合未提交工作树和受保护 freshness JSON；未暂存、提交、重置或清理。未读取受保护 JSON、`.env`、Provider profile/key、真实试点 metadata/译文或 `Metadata/` 内容；未调用真实 Provider。
+- `metadata_translation_freshness.py` 默认严格模式维持 M1/M2/M3 全 field inventory/freshness 门禁；`allow_field_drift=True` 为 EPUB 消费者返回每个 field ID 的 `current`/`stale`/`source_removed`/`unplanned` 状态和不含原值的当前 version ID/SHA。字段值保持完全一致时，可跨无关 catalog/manifest 更新复用批准译文；sidecar 记录批准时 snapshot、消费时 snapshot 和实际采用字段的当前 version/hash。改变或移除的选中字段仍在 Pandoc 启动前阻断。
+- 新增 `metadata_translation_epub.py`、`scripts/build_epub_candidate_with_metadata.py`。metadata-aware EPUB 入口要求计划、候选、M2 回执与 `Metadata/` approved artifact 的原批准 lineage 完整匹配，并重验当前 source catalog/manifest freshness。它只覆盖 `work.title` 与 EPUB catalog 已选 episode 的已批准标题；要求 work ID/target locale 匹配，作者、identifier 和原输入不动。临时 catalog 在原输入根内创建并于构建结束清理；EPUB `build.json` 绑定 artifact/plan/candidate/review/rubric/批准与当前 source snapshot/实际字段 lineage。
+- 调用形式：`.venv\\Scripts\\python.exe scripts\\build_epub_candidate_with_metadata.py --input-root <translation-root> --epub-catalog <catalog.json> --source-root <SourceArchive> --source-manifest source_manifest.json --metadata-source-catalog <raw-catalog.json> --metadata-plan <Workflow\\Plans\\plan.json> --metadata-candidate <candidate.json> --metadata-review <review.json> --metadata-artifact <approved.json> --output-root <EPUB> --max-chapter-bytes 16777216 --max-total-bytes 1073741824 --max-output-bytes 1073741824`。输入仍须符合既有 EPUB catalog/Markdown/manifest/Pandoc 契约；artifact/candidate/review 文件名须位于项目约定目录且为简单 JSON 文件名。
+- `已验证` `.venv\\Scripts\\python.exe -m unittest tests.test_metadata_translation tests.test_epub_builder -q`：65 项通过；`.venv\\Scripts\\python.exe scripts\\run_unit_tests.py`：856 项运行、5 项 Windows 能力跳过、0 失败（108.827 秒）；`.venv\\Scripts\\python.exe tests\\run_tests.py`：loopback mock E2E 7 项通过（233.623 秒，退出码 0）。相关 `py_compile`、新 CLI `--help`、`git diff --check`、8 份改动 Markdown 的相对链接目标检查通过。具体边界见[开发记录](../development.md#2026-11-22-元数据翻译阶段最终验证)。
+- 边界：M1/M2/M3 的候选生成、审核与发布仍要求完整计划 freshness；来源变化后需要新计划/候选/回执，只有 EPUB consumer 支持复用仍未变化字段。未用真实试点 artifact/译文构建；无 EPUBCheck/阅读器验收。Notion/UI 仍未接线。下一步先处理 K5 reviewed 全书知识和受控单话试译前置条件：配置所有者需核验模型匹配的 tokenizer/context/template、活动 route/allowlist 与预算；Notion 首次同步另需 OAuth/页面权限和用户启用。
+
+## 2026-11-22 M3 本地批准 metadata artifact 断点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留混合未提交工作树和受保护 freshness JSON；未暂存、提交、重置或清理。未读取受保护 JSON、`.env`、Provider profile/key、试点 metadata 值、章节正文或 `Metadata/` 内容；只确认试点 `Metadata/` 目录存在。未调用真实 Provider。
+- 路径纠偏：较早 M3 文档把正式目录记为未知；复核[`来源发布方案`](../source-ingestion-and-publication-plan.md#目标目录与版本约束)发现它早已将 `<project>/Metadata/` 记录为默认元数据目录。依据该当前项目布局实现本地 artifact；M4 的缺源显示方式及 EPUB/Notion/UI consumers 仍未确定。
+- 新增 `metadata_translation_publication.py` 和 `scripts/publish_metadata_translation.py`。发布必须验证 plan/candidate、M2 schema v2 全字段 approved receipt、receipt 所绑定 catalog/manifest 摘要与当前来源 freshness；artifact 将全 plan 字段按原顺序写入，并分别标为 `approved` 或 `missing_source`，绑定 plan/candidate/review/rubric/source SHA。输出在项目已有 `Metadata/` 下 create-only；同内容重跑复用、不同内容拒绝覆盖。模块函数提供读入后对照当前 plan/candidate/review/source snapshot 的验证入口。catalog 中非语言结构字段仍以被 hash 绑定的 catalog 为权威，不被修改。
+- `已验证` 定向 `.venv\\Scripts\\python.exe -m unittest tests.test_metadata_translation -v`：36 项通过；覆盖缺源字段保留、未批准审核阻断、source snapshot 不匹配拒绝、artifact 篡改拒绝、默认目录发布、相同内容复用和冲突不覆盖。全量及最终静态验证以最新[开发记录](../development.md#2026-11-22-元数据翻译-m3-本地批准-artifact)为准。
+- 本阶段未读取/改写真实 `Metadata/` 数据，没有生成真实试点译文或批准 artifact；artifact schema 合成通过不代表实际人类/EPUB/Notion 展示正确。M4 尚无 consumer 接线，缺源显示和字段级失效策略仍待实现。真实 M1 Provider 试验仍依赖安全核验当前 route、allowlist、模型匹配 tokenizer/template 和预算。
+- 下一步：先完成本阶段全量测试、`py_compile`、CLI `--help`、差异及文档目标检查并回填结果；之后从现有 EPUB/catalog 输入契约设计 M4 只读 consumer preview，保持默认 fail-closed，对缺失和过期值只显示显式状态，不改写 catalog。Notion 尚无实现，只有首次启用前所需的 OAuth/页面权限/同步用户授权验证通过后才接线。
+
+## 2026-11-22 M2 结构化语义审核断点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留既有混合未提交改动和受保护 freshness JSON；本增量未暂存、提交、重置或清理。未读取 freshness JSON、`.env`、Provider profile/key、试点 metadata 值或章节正文；未调用真实 Provider。
+- 本增量将 `metadata_translation_review.py` 的模板与回执升级为 schema v2，并绑定固定规则 `metadata-translation-semantic-v1`。五项检查及说明随模板生成，均需状态和理由；字段 `decision` 由检查结果派生，不能手动将失败/不确定项覆盖为 approved。明确忠实/完整/自然度失败或术语冲突会拒绝；不确定或需要独立注释（当前候选 schema 无注释字段）会升级；报告仅在所有字段均获批时为 `approved`。
+- 旧 schema v1 模板未迁移/覆盖，当前 finalize 入口拒绝旧模板；需要重新审核时使用新文件名创建 schema v2 模板。没有读取或修改本地试点计划/候选/审核数据，也没有生成正式 artifact。
+- `已验证` `.venv\\Scripts\\python.exe -m unittest tests.test_metadata_translation -q`：33 项通过。新增覆盖 rubric 说明锁定、结构化状态和理由、结果派生、语义状态映射及篡改后回执拒绝；本次全量回归尚未重跑。
+- 局限：这是人工声明，不认证 reviewer；术语判断没有绑定 reviewed knowledge snapshot；没有 AI reviewer 或获准样本验收；无法承载独立本地化注释的字段会升级。其后续 M3 实现见本文件顶部；缺源显示和消费者契约仍属 M4。
+- 当时下一步（已由本文件顶部后续记录推进）：完成全量 unit tests、Markdown 链接与 diff 检查，之后从已存在的默认 `Metadata/` 路径推进批准 artifact。真实 Provider 试验仍依赖安全核验 model/tokenizer/endpoint/授权/预算。
+
+## 2026-11-22 M1 显式 Provider 执行器断点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。工作树保留混合未提交改动与受保护未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未暂存、提交、重置或清理。未读取该 JSON、`.env` 内容、API profile/key、试点 metadata 值或章节正文。只检查存在性：根 `.env` 存在；所查 Process 环境的 policy/model/endpoint/key/API pool/fallback 变量不存在；User/Machine 环境状态未知，不能据此断言当前 route 不可用。
+- 续接路线：三个引用会话此前已在本任务中重读；按 M0 来源 inventory → M1 candidate → M2 质量审核 → M3 正式 artifact → M4 freshness/consumer 继续。当前 M0 已验证；M1 离线导入、预算预检和合成验证的显式执行器部分实现；M2 人工模板/回执已实现离线子项，语义规则未完成。
+- 新增 `metadata_translation_executor.py` 与 `scripts/generate_metadata_translation_candidate.py`；预算器现在向执行层复用同一份内存 batches。默认只读预检；只有显式 `--execute --candidate-name <filename>` 才加载 runtime 配置、要求本次 `--model-id`，经 `get_primary_provider_route` 和现有 `source_text` allowlist 创建 `max_retries=0` client。它没有建立长期 metadata Translator role，也不默认读取 `INITIAL_MODEL`。没有读取当前秘密配置或发起 Provider 请求。
+- 每批发送前重验 source snapshot；请求前 create-only 保存无内容 intent；响应严格校验 JSON、字段 ID、唯一性和完整覆盖；成功后保存本地 create-only checkpoint。相同 run 锁互斥，checkpoint 可复用；最终来源仍新鲜且全部批次完整时才生成 `review_pending` candidate 和不含文本值的 receipt。provider run 产物及 checkpoint 译文保存在本地 `Workflow/Plans/`，不得当作正式发布数据。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -q`：31 项通过；最终 `.venv\Scripts\python.exe scripts\run_unit_tests.py`：847 项运行、5 项跳过、0 失败（103.462 秒）。新模块和 CLI `py_compile`、`scripts/generate_metadata_translation_candidate.py --help`、改动文档本地链接目标检查及 `git diff --check` 均通过。测试使用合成 provider stub；未运行 loopback E2E，也未访问外部服务。
+- 故障界限：每个 batch 的 `max_tokens` 有上限且 SDK retry 关闭；按 tokenizer/调用方单价估算的 `max_estimated_cost` 不是服务商硬性成本 cap。intent 有而 checkpoint 无表示请求可能已送达/计费，重复执行会停下；当前没有自动消歧命令，保留 intent 和现场，先人工核对 Provider 记录，再设计显式恢复处置。不能直接删除 intent 重试。
+- 当时下一步：核验当前非秘密 route/allowlist 状态及目标模型对应 tokenizer/context/template 与预算，条件满足后再进行小批真实试验并人工验收。M2 语义规则后由本文件顶部的更新断点继续；M3 正式 metadata 目标路径/consumer contract、M4 字段级 freshness 和 EPUB/Notion 消费仍待办。由于这些目标和服务条件未经核实，不要用合成测试结果声称真实翻译或发布已完成。
+
+## 2026-11-22 M1 离线生成预算预检记录
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。工作树保留既有混合文档/代码改动和受保护未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未暂存、提交、重置或清理。没有读取该 JSON、`.env`、API profile/key、书籍正文或译文。
+- 续接依据：本任务已重新读取引用会话 `01a1d41d-9f87-74b1-9589-421496c452ed`、`01a1d5a2-a18a-7381-b24a-82fc4d5d4894`、旧实施会话 `01a1d61a-aea8-7e22-9fec-57ae32f0fc21`，并核对 M0–M2 源码、测试与[元数据实施工作包](../end-to-end-workflow-target.md#元数据实施工作包m0m4)。路线仍按 M0 来源盘点 → M1 候选 → M2 审核 → M3 正式 artifact → M4 freshness/消费者推进；不把旧文档中“Provider 尚未可配”当作当前环境检查，也不据旧记录猜测本轮配置。
+- 本次新增/补全 `metadata_translation_generation.py` 和 `scripts/plan_metadata_translation_generation.py` 的离线分批/预算预检，并在 `tests/test_metadata_translation.py` 覆盖来源过期、批次数/调用上限、费用预算、不可表示数值、报告脱敏及零调用/零写入。预检复核当前 catalog、manifest 和计划字段，使用既有 tokenizer/batching 实现；model ID、tokenizer/context/template 与单价均是未认证的调用方声明。它没有执行翻译、写候选或绑定 Provider route。
+- `已验证` 当前 M1 聚焦测试 `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -q` 为 26 项通过；完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 842 项运行、5 项跳过、0 失败（109.852 秒）。相关 `py_compile`、`scripts/plan_metadata_translation_generation.py --help`、六份改动 Markdown 的本地链接目标检查与 `git diff --check` 通过。未运行 mock E2E（无翻译流水线集成改动），未请求真实 Provider。
+- M1 预检只对合成来源/tokenizer 执行测试。若要针对真实试点运行，需从非秘密输入确认目标 model、与其匹配的 tokenizer/context/template、单价/调用上限和当前授权 route；`ready_for_operator_review` 不等于 Provider 调用批准。估算不是服务商的硬性费用上限。当前执行器见本文件顶部最新断点。
+- 本检查点后已新增显式受控执行器；此处记录不再代表当前实现状态。M2 的语义标准/升级规则仍待实现；M3 正式双语 artifact 路径与 consumer 展示规则需先取得产品决定。后续 agent 继续前先查看 `git status --short --branch` 并保留全部现有改动。
+
+## 2026-11-22 M2 人工逐字段审核断点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；工作树保留本任务及先前混合文档修改，以及受保护未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`。未暂存、提交、重置或清理；没有读取受保护 JSON、`.env`、API profile/key 或书籍正文。
+- M0 source-bound inventory 与 M1 离线候选导入已实现；本轮新增 `metadata_translation_review.py`、`scripts/review_metadata_translation_candidate.py` 和审核测试。M2 可从 M1 candidate 生成逐字段 pending 模板，再校验填写结果并 create-only 输出结构回执；决策必须覆盖所有来源字段且有理由。全 `approved` 得 `approved`，任一拒绝/升级得 `needs_resolution`，不会触发正式发布。
+- 使用方式和本轮实际测试结果见[开发记录](../development.md#2026-11-22-元数据翻译-m2-人工逐字段审核基线)。freshness gate 复核当前 schema v3 catalog、manifest 最新 work/episode metadata 字节/版本和目录标题；回执保存 catalog/manifest 摘要。reviewer ID/时间仍是未认证声明；`approved` 不代表独立或语义质量通过，source snapshot 也不是签名证明。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v` 22 项通过，覆盖作品、章节或话目来源变化拒绝；完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 838 项运行、5 项 Windows 能力跳过、0 失败（103.204 秒）。相关 `py_compile`、review CLI `--help`、Markdown 本地链接、`git diff --check` 通过。未重跑 E2E，既有 loopback E2E 不覆盖 metadata review。
+- `已验证` 真实本地试点 M0 plan freshness 状态为 `current`、103 字段；plan SHA `b7b614920eb50cdbbe12697b531b7700d64c5a54605e1b8b86d79e1891a8d665`，catalog SHA `b6d6102ba44a41a7ee58b867380d2d226f8557d37c8d7be67d64f592ef293e38`，manifest SHA `a8e8355895e6ae6315a2fefd9e044b0e690bd5bbcda8f47576da10d79e5d810a`。校验未输出或保存字段值，未创建候选或审核模板。
+- 当前下一步：先完成全量回归和当前试点计划的只摘要 freshness 复核；再基于已确认用户授权核实 metadata Translator role、活动 route/allowlist、匹配 tokenizer/context 和调用/费用预算，决定 M1 受控生成。M2 的语义规则/升级处置仍待制定；M3 前需确认正式双语 artifact 的目标位置、字段展示缺失策略和实际消费者。以上未确认前不创建正式 metadata、Notion/EPUB 消费或真实 Provider 调用。
+
+## 2026-11-22 M1 离线候选导入断点
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。工作树有本任务及先前保留的混合文档修改，以及受保护的未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未暂存、提交、重置或清理。本增量未读取 freshness JSON、`.env`、API profile/key 或项目正文。
+- 新增 M1 离线契约：`metadata_translation.py` 现在可从完整计划和逐字段译文映射创建/验证双语候选，绑定 plan/source version/source digest/translation digest，状态为 `review_pending`。新增 `scripts/import_metadata_translation_candidate.py`，从外部准备的 JSON 导入到同一个 `Workflow/Plans/`；输出 create-only，同字节重跑复用，不同内容拒绝覆盖。该 CLI 不加载项目配置、不调用 Provider，provider provenance 只是声明。
+- 导入 JSON 顶层字段必须为 `schema_version`、`plan_sha256`、`translations`、`translation_provenance`；`translations` 是完整 `field_id -> non-empty string` map。provenance 固定包含 `declared_origin`、`provider_id`、`model_id`、`prompt_sha256`、`recorded_at_utc`；`manual` 要求 Provider 字段为 null，`provider_export` 要求 Provider/model 和 64 位 prompt SHA，时间须为 UTC。候选名限简单 JSON 文件名。运行方式：`.venv\Scripts\python.exe scripts\import_metadata_translation_candidate.py --plan <Workflow\\Plans\\metadata-translation-plan.json> --translations <translations.json> --candidate-name <candidate.json>`。stdout 仅输出路径与摘要计数，不输出字段值。
+- 本轮 M1 定向验证：最终 `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v` 14 项通过；最终代码 `py_compile`、CLI `--help`、`git diff --check` 及 7 份当前文档本地链接目标通过。最终全量 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 830 项、5 项 Windows 能力跳过、0 失败（111.570 秒）。此前 `.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（922.426 秒），不覆盖 metadata importer。全量首次暴露的三个子进程启动时序点已窄幅提高测试 timeout，3 项定向复验和最终全量均通过；详见[开发与验证](../development.md#2026-11-22-元数据翻译-m1-候选导入契约)。
+- 下一步：实现 M2 人工逐字段审核模板/回执，审核决定须绑定 candidate/source 摘要并在任何拒绝/升级项存在时阻断批准。在线模型生成暂不启用：metadata 专属 role、当前 runtime route/allowlist、匹配 tokenizer、费用/调用预算尚无核实证据；M3 前还需从现有 consumers 中确认正式双语 artifact 合同。不得把导入候选称为真实试译或通过审核。
+
+## 2026-11-22 元数据翻译 M0 断点
+
+- 当前代码基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留原有混合工作树及受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未暂存、提交或清理。
+- 本轮新增源码/测试：`metadata_translation.py`、`scripts/prepare_metadata_translation.py`、`tests/test_metadata_translation.py`。本地忽略数据中已 create-only 写入 `projects/祝福のネトラレラ/Workflow/Plans/metadata-translation-plan-2026-11-22.json`；103 字段，SHA `b7b614920eb50cdbbe12697b531b7700d64c5a54605e1b8b86d79e1891a8d665`。源值只存本地文件，勿在日志/终端打印。
+- M0 仅做当前 bundle 来源核验及字段盘点，不做机器翻译、审核或发布。前记/后记/作者的话未被 catalog/bundle 独立表达；当前 Provider config、metadata role 映射、allowlist/费用、最终双语 artifact 路径都未验证或决定。
+- 续接验证：`.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v`；生成命令必须使用 bundle-set 相对路径的正斜杠，且使用新 plan filename；CLI 对已有文件拒绝覆盖。真实项目参数：`--source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --checkpoint source_checkpoint.raw-html-refresh-2026-11-17.json --bundle-set collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI`。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v` 7 项通过；完整非 E2E runner 823 项运行、5 项 Windows 能力跳过、0 失败；loopback mock E2E 7 项通过（223.223 秒）。
+- 下一步（当时记录）：实现 M1 候选契约/导入并继续 M2–M4；当前进度以本文件顶部的 M1 断点为准。
+
+## 2026-11-21 综合自检收尾
+
+- 当前工作树自检与证据索引见[项目自检](../audits/2026-11-21-project-self-audit.md)和[开发与验证](../development.md#2026-11-21-当前工作树综合自检)：816 项非 E2E 测试运行、5 项 Windows 能力跳过、0 失败；本地 loopback mock E2E 7 项通过；依赖、编译、CI YAML、文档链接和只读安全扫描均按记录范围检查。
+- 这些结果不验证真实 Provider/模型路由/费用、试点译文语义、人工验收或生产部署；应用仍为本地 CLI。
+- 未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 为受保护对象，本轮保持不读、不改、不暂存、不提交。所有其他纳入变更的范围应以本次最终 staged diff 为准。
+
+## 2026-11-21 K5 真实输入复核与当前断点
+
+- `已验证` 较早的本轮观察只看到仓库外旧式试点目录；该观察范围不完整，不能作为当前项目根判断。当前版本化工作区是仓库内 `projects/祝福のネトラレラ/`，包含 `SourceArchive/`、`RAWs_AI/`、`Knowledge/`、`Workflow/`、`生肉/` 和 `熟肉/`。仓库内 `生肉/`、`熟肉/` 为空；计划绑定的人读版根和译文目标根仍指向仓库外 `祝福のネトラレラ(祝福的寝取系女主)/生肉`、`熟肉`。外部熟肉根当前为空。路径已由当前计划与文件清单核对；没有迁移或改写这两个根。
+- `已验证` `scripts/validate_source_manifest.py` 对当前 `SourceArchive/source_manifest.json` 报告 356/356 文件通过，对 `source_editions_manifest.json` 报告 532/532 文件通过。`scripts/validate_source_editions.py` 使用计划所指向的外部人读版根和仓库内 AI 版根，结果为 `verified`、88 话；AI/人读索引摘要分别匹配计划记录。没有把旧式外部 `SOURCE_MAP.json` 当作版本化索引。
+- `已验证` 当前计划 `translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 自带摘要有效，状态 `ready_for_review`、88/88 来源有效、0 issue、0 网络请求、0 Provider 调用、`source_text_included=false`；其独立 schema v2 审批回执由 `verify_approval_receipt` 对当前计划复核通过，绑定 plan SHA `63b286ca...` 与 review SHA `92a37df0...`。回执是本地未签名记录，不证明审核者身份或语义正确。
+- `已验证` `load_verified_ai_book_bundle` 以当前 source root、catalog、checkpoint、外部人读版根及仓库内 AI 版根检查了两个 bundle-set：`SourceArchive/collections/1eeeb07b599ea6f676e1bd5ec7b9d03a1af9134f47d7ea1c0a08299403d5437d/bundle-set.4b051e6b8f0ece9dee951b1c00f0a64db4f31582746bd94f88b5d9b82ba36f38.json` 验证通过、覆盖 88 话；同目录 `bundle-set.69d4e658ddbb8110b9b222992a5dce08945e5619166bd888c6dc803130ccff83.json` 未通过当前 bundle 校验，不能用于抽取。校验只输出摘要，未输出书籍正文。
+- `已验证` 当前 `Knowledge/` 有旧式 `Glossary.json` 与 `STORY_SUMMARY.md`，但没有 `Glossary_draft.json`、`STORY_SUMMARY_draft.md`、`KNOWLEDGE_PROVENANCE_draft.json`、`Glossary_reviewed.json` 或 `STORY_SUMMARY_reviewed.json`；`Workflow/Runs/` 尚不存在。旧格式文件不等同于当前 bundle 绑定的 reviewed 知识，K5 仍没有正式知识快照、翻译 run 或译文。
+- `未验证` 在仓库、当前试点、外部旧式目录和本轮检查的用户配置目录范围内，文件名搜索没有找到 `tokenizer.json`。预算预检和候选审核 CLI 均要求 tokenizer JSON；当前与运行模型匹配的 tokenizer、model ID、context/template、输入/输出上限、预算以及活动 Provider route 不能确认。没有读取 `.env`、加载 `Config`、查看 API profile/key 或调用真实 Provider。历史记录中的职责授权不证明当前端点、allowlist 和费用配置已生效。
+- 当前实施路线继续采用[端到端工作流目标](../end-to-end-workflow-target.md#实施工作包)的 K0–K5 依赖，不启动独立的 CLI/TUI 规划。K5 子阶段与门槛如下：
+
+| 子阶段 | 状态与依赖 | 交付物及验收 | 风险与回退 |
+| --- | --- | --- | --- |
+| K5.1 输入身份复验 | `已验证`；依赖当前版本化 workspace 与三类 88 话 bundle | manifest、双版本、计划回执及匹配 AI bundle 均通过只读校验；本轮已完成 | 任一来源摘要或 bundle identity 不匹配即停止，不切换到旧目录/旧 bundle |
+| K5.2 抽取预算预检 | `计划`；阻塞于可证明与目标 model 匹配的 tokenizer JSON 及调用方确认的 model/context/output/safety/message/call 参数 | 运行 `scripts/plan_knowledge_extraction.py` 得到不含正文的 88 话覆盖、token/call 与预算计划；需满足显式预算并无输入/来源 issue | 不用通用或猜测 tokenizer 代替；预检只读，不创建候选 |
+| K5.3 候选生成与语义审核 | `计划`；依赖 K5.2、有效 Provider route/授权 allowlist 和获准费用预算 | 用当前 AI bundle 生成带 provenance 的候选；审核报告逐项绑定证据并处置冲突/不确定项，无遗漏决定；拒绝或升级项解决前不发布 | 按 checkpoint 恢复，不覆盖候选；调用前展示 Provider、数据类别和预算，服务失败保留已完成检查点 |
+| K5.4 发布 reviewed 知识 | `计划`；依赖审核报告以及现有 glossary/summary 发布器各自的批准回执 | 分别产出当前 bundle 绑定且覆盖完整的 `Glossary_reviewed.json` 与 `STORY_SUMMARY_reviewed.json`，并通过正式入口的来源/coverage 校验 | create-only 保留旧文件；任一输出已存在或来源过期即停止，使用新候选/新版本修复 |
+| K5.5 第 1 话受控试译 | `计划`；依赖 K5.4、已核验 Provider/费用、当前计划和既有终审策略 | 单话 run 从 AI 版与 reviewed 知识启动，记录各阶段质量/返工/费用/失败恢复；仅全门禁通过才写入计划指定译文根 | 失败留在 run 草稿区，不放宽发布门禁、不覆盖既有译文；外发调用成本不可回滚 |
+
+- 真实试点下一步：由工作区/Provider 配置所有者提供或定位经过核实、与目标 model 匹配的本地 tokenizer JSON，并确认不含密钥的 model ID、context/output/safety/message/call 预算参数与活动 route 状态；随后运行 K5.2 试点预检。参数模板和候选流程见[知识治理](../knowledge-governance.md)与[开发与验证](../development.md#2026-11-21-k5-全书知识抽取预检)。本 K5 实施检查点未运行全量应用测试；本次工作树的完整验证见[综合自检](../development.md#2026-11-21-当前工作树综合自检)。应用仍是本地 CLI，无服务地址。
+
+## 2026-11-21 K5 全书知识候选语义审核续接
+
+- 新增 `knowledge_ai_review.py` 与 `scripts/review_knowledge_candidates.py`。入口重新加载当前 verified AI bundle 和候选 provenance；候选逐项绑定 glossary/claim evidence，审核决定严格为 `approved`/`rejected`/`escalated`，越界引用、遗漏决定及经归一化后匹配原文的长片段理由失败关闭。文本检查不能识别语义改写泄漏。
+- 默认执行是只读预检；`--execute` 才加载 `Config`、`PROOFREAD_MODEL` 和 `source_text`/`book_knowledge` 授权。每批排他保存 checkpoint，最终写入不复制引用段落正文的审核报告；已有 checkpoint 可复用。报告不自动发布 reviewed 知识，也不证明候选完整性、独立审核者身份或语义质量。
+- 复用最终报告现在要求重新加载全部匹配 checkpoint，并逐项比对报告决定、候选/bundle/provider/tokenizer/预算身份、批次输入摘要与 token 计数；报告被改写、检查点缺失或计数/状态失配时失败关闭。回归覆盖篡改报告理由后拒绝复用且不重调 Provider。
+- 验证：审核入口及知识发布相关定向回归 73 项通过，含格式变化/长片段原文引文拒绝及改写报告后拒绝复用；较新的完整非 E2E/mock E2E 结果见[综合自检](../development.md#2026-11-21-当前工作树综合自检)，本次历史检查点的单独完整回归未再执行。`py_compile`、CLI `--help`、`git diff --check` 通过。尚未执行真实 Provider 或试点候选审核。
+- 下一步：先完成全量非 E2E 回归；在有匹配 tokenizer/context、已核验路由/授权/预算后，对当前 bundle 生成候选并运行审核。审核报告通过后，仍需分别填写并运行现有 glossary/summary reviewed 发布器；任何 `rejected`/`escalated` 项先解决或升级，不得自动批准。满足 reviewed 知识门禁后才进入第 1 话受控试译。
+- 细节见[开发与验证](../development.md#2026-11-21-k5-全书知识候选语义审核)、[知识治理](../knowledge-governance.md)、[项目现状](../project-status.md#2026-11-21-k5-全书知识候选语义审核)与[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，无部署地址。
+
+## 2026-11-21 K5 全书知识抽取预算预检续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。保留混合未提交工作树，不暂存、提交、重置或清理；未读取受保护 freshness JSON、书籍正文/译文、`.env`、API profile 或凭据。
+- 已实现 `scripts/plan_knowledge_extraction.py`：不加载配置、不访问 key、不创建 Provider client、不联网或写文件；以当前 bundle loader 检查 AI/人读版本，再以抽取器相同的段落 ID、prompt renderer、tokenizer 和 batching 生成内容无关计划。调用方声明的 model ID 与 tokenizer 兼容性仍未验证，价格未知；多批综合调用只报告最低调用数/剩余预算。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_plan tests.test_knowledge_batching tests.test_book_bundles -q`：27 项通过；`tests.test_knowledge_extraction_unit`：41 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py`：807 项运行、5 项因 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过（214.004 秒，退出码 0）。E2E 中的 content-filter/段落数异常是负向 fixture 预期日志。`py_compile` 与 CLI `--help` 通过；没有调用真实 Provider。
+- 未对试点书运行预检：当前没有确认与目标 Provider/model 匹配的本地 tokenizer、context/template 或费用预算。本工具运行时会在本机读取完整 AI bundle 来计算实际批次，但不会把正文放进报告或发送远端。
+- 下一步：若能从本地既有参数确认 tokenizer/model/context 匹配，可运行上面的预检命令并只记录摘要计数，不记录正文。之后仍须在实际模型路由/授权/预算明确后生成候选；真实候选的证据化语义审核、冲突/不确定项处置、reviewed 知识发布和单话试译仍未完成。
+- 细节见[知识治理](../knowledge-governance.md)、[开发与验证](../development.md#2026-11-21-k5-全书知识抽取预检)、[项目现状](../project-status.md#2026-11-21-k5-全书知识抽取预检)与[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，没有部署地址。
+
+## 2026-11-21 K5 全书知识 bundle 绑定实现续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、起始 HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。工作树包含多项既有及本任务未提交修改；全部保留，未暂存、提交、重置或清理。未读取、修改或暂存受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，也未读取书籍正文、译文、本机凭据或 Provider profile。
+- 已完成：AI 镜像原始字节与 archive normalized 来源哈希分离核验；全书 glossary 发布及正式 RAG 要求当前 AI map、完整 coverage 和匹配 bundle identity；审核 CLI 从已验证 book bundle loader 派生 map/identity。缺 map、错误 coverage、bundle 不匹配或不安全相对路径均失败关闭。该实现是来源/范围门禁，不生成候选，不执行语义审核，也不认证 reviewer。
+- 当前试点基线未变化：88 话结构映射、来源 lineage、AI/人读版字节与 profile 审阅已有匹配回执，88 项通过、0 issue；旧 `.human-review.json` 的 264 个 pending 项不再是结构审查阻塞。尚无 reviewed 全书知识、正式翻译 run、译文或本轮真实 Provider 请求。
+- 验证：定向回归 240 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 798 项运行、5 项 Windows 能力跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 loopback mock E2E 为 7 项通过（219.369 秒）。相关 Python 编译、`scripts\apply_knowledge_review.py --help` 与 `git diff --check` 已通过。mock E2E 不连接真实 Provider。
+- 续接：先运行 `git status --short --branch` 并保留混合工作树。若继续生成全书知识候选，使用当前 verified bundle 和 tokenizer/context 配置；真实模型调用前须在不显示密钥的前提下确认 Provider 路由、数据范围、费用预算与可用性。候选生成后由 AI 基于来源证据审核语义覆盖、冲突和未知项，无法判定时再升级；发布使用 `scripts/apply_knowledge_review.py` 的 verified bundle 参数，命令与参数边界见[知识库治理](../knowledge-governance.md)。只有 reviewed 知识和 Provider/预算条件齐备后，才进入受控单话试译及质量验收。条件不满足时停在本地 mock/合成验证，不声称真实流程通过。
+- 详细实现和测试证据见[开发与验证](../development.md#2026-11-21-k5-全书知识-bundle-绑定与审核入口)、[项目现状](../project-status.md#2026-11-21-k5-全书知识运行时绑定)和[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。应用仍为本地 CLI，没有服务端可部署或访问地址。
+
+## 2026-11-21 K5 结构门禁完成后的当前续接点
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。既有未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 保持不读、不改、不暂存。
+- 当前计划的 88 话映射、来源 lineage、AI/人读版字节及 profile 结构审阅均为 88 项通过、0 issue，且已有与计划和 review 摘要绑定的 schema v2 审批回执。旧 `.human-review.json` 的 264 个 pending 项不是当前结构门禁；不要要求用户重复完成人工结构清单。回执不证明语义正确、格式的实际阅读观感或审核者身份。
+- 尚未完成：与当前 AI bundle 绑定的 reviewed 全书知识、正式 run、译文及真实 Provider 质量/费用验收。
+- 建议续接顺序：1) 生成当前 bundle 的全书知识候选并运行已有审核流程，确认来源绑定和未解决项；2) 在不输出密钥的前提下，只读核验 JOJO Code 主渠道、JYQF AI 备用渠道的当前配置、路由、授权、模型和预算；3) 条件齐备后受控执行第 1 话的翻译、AI 审核/返工/发布试点，记录质量、成本、失败恢复和产物哈希。端点或凭据不满足时停止真实调用，可继续独立的合成验证。
+- 本次仅整理文档；未重新运行代码测试、未调用真实 Provider、未修改部署或书籍数据。证据细节见[项目现状](../project-status.md#2026-11-21-k5-门禁复核)、[开发记录](../development.md#2026-11-21-k5-codex-ai-结构审阅与计划审批)和[路线图](../roadmap.md#2026-11-21-k5-结构审阅后续状态)。
+
+## 2026-11-20 K4 AI workflow CLI 验证续接
+
+- 当前基线仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；工作树已有混合未提交改动，本轮只新增 `tests/test_ai_translation_workflow_cli.py` 和同步验证文档，未暂存、提交、重置或清理。未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据。
+- 新增 3 项 CLI 测试，验证配置加载、终审/返工静态预检、参数转发和 JSON 成功输出；预检拒绝时确保工作流不启动且错误详情不泄漏。另新增 CLI 到真实工作流编排函数的合成集成测试，完成双评估失败、finding 定向返工、复审通过及正式发布。CLI/I4/集成定向回归 40 项通过；完整非 E2E 动态发现 764 项运行、760 项通过、4 项 Windows symlink/FIFO 能力跳过。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本轮 loopback mock E2E 7 项通过（212.461 秒，退出码 0）。content-filter 与段落数错配 trace 来自预期负向夹具。未调用真实 Provider、未验收翻译质量、未部署。
+- 继续点仍是 K5 人审：由有权限的人完成当前 88 话映射与双版本决定并生成绑定计划摘要的回执，再审核 bundle 绑定的全书知识；之后由凭据所有者核验端点授权/路由/预算，执行获准单话试译及人工质量验收。K4 仍是单话显式 CLI，不会自动批量调用或发布。
+- 定向复验命令：`.venv\Scripts\python.exe -m unittest tests.test_ai_translation_workflow_cli tests.test_source_pipeline_linkage tests.test_tm_provenance_unit tests.test_downstream_freshness_snapshot tests.test_translation_review.TranslationReviewTests.test_workflow_cli_runs_review_rework_and_publication_end_to_end -q`。全量非 E2E PowerShell 命令：
+
+```powershell
+$modules = Get-ChildItem -LiteralPath tests -Filter 'test_*.py' -File |
+  Where-Object { $_.Name -ne 'test_e2e.py' } |
+  ForEach-Object { 'tests.' + $_.BaseName }
+.\.venv\Scripts\python.exe -m unittest -q @modules
+```
+
+mock E2E 使用仓库 runner。当前应用仍为 CLI，无部署地址。
+
+## 2026-11-20 I4 TM 版本审计续接
+
+- 基线仍为 `codex/translation-workflow-audit-20261117` / `9374fa79376c13f72f06f1e7764d732012b1436a`。新增规则：配置 manifest 的 TM 审计若缺少 `source_version_id` 返回 `unverified`；无 manifest 的 hash-only 兼容路径不变；审计只追加快照，不写回 TM/译文。
+- 验证：TM provenance/freshness 36 项、Kakuyomu 编排/采集/source ingestion 93 项、完整非 E2E 760 项（756 通过、4 项 Windows 能力跳过）、mock E2E 7 项（206.248 秒，退出码 0）。未调用真实 Provider或运行试点正文。
+- I4 消费者 stale 写回与自动重建仍未实现；后续如继续该项，应先定义不可变 consumer/status 记录如何被入口读取及过期状态如何解除，避免与内容版本/审核回执形成双重权威。K5 仍需有权限的人完成计划映射/双版本决定及回执，再进行 reviewed 全书知识和获准单话试点。细节见[开发记录](../development.md#2026-11-20-i4-manifest-bound-tm-lineage)。
+
+## 2026-11-20 当前工作树回归复核
+
+- 基线仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；工作树包含混合未提交实现/文档修改。本次只运行验证并追加文档，未暂存、提交、重置或清理。
+- 验证结果：四模块定向回归 269 项通过；动态发现并排除 runner 专用 `test_e2e.py` 后，758 项运行、754 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py` 本地 mock E2E 7 项通过（208.149 秒，退出码 0）。E2E 的 content-filter/段落错配错误为预期负向 fixture。未调用真实 Provider、未运行试点正文。
+- K5 状态没有变化：计划 88/88 来源有效，但 mapping/AI edition/human edition 三类人审各 88 项仍 pending；计划回执与 reviewed 全书概要仍缺失。下一步由有权限的人完成审阅并生成匹配回执，再审核 bundle 绑定知识；之后由凭据所有者核验 Provider 配置/授权/预算，执行获准首话并人工验收质量。
+- 续接前先检查 `git status --short --branch`；保留混合工作树。不得读取受保护 freshness JSON、API profile/凭据或不必要的书籍正文；不得提交、重置或清理。应用仍为本地 CLI，无部署地址。完整验证命令见[开发与验证](../development.md#2026-11-20-当前工作树回归复核)。
+
+## 2026-11-20 K5 试点门禁复核续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。当前工作树已有混合代码/文档修改；本次只读检查并更新文档，未暂存、提交、重置或清理。受保护 freshness JSON、本机 API profile/凭据及书籍正文未读取或修改。
+- 当前计划 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 为 `ready_for_review`，88/88 来源有效、0 issue，摘要 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。该计划绑定 `source_catalog.raw-html-2026-11-17.json`；不得用不同摘要的 `source_catalog.discovered.json` 替代。一次错误 catalog 的 plan-only 诊断返回 88 个 `stale_ai_edition_catalog`，换回计划绑定的 catalog 后为 88/88 verified、0 issue/冲突。
+- 使用正确 catalog 的 `scripts/run_kakuyomu_workflow.py --plan-only` 只读返回相同摘要、0 网络请求/Provider 调用/文件写入，且 `source_text_included=false`。`scripts/validate_source_editions.py` 返回 88 话 `verified`，AI/人读重算输出为 774,253/799,293 bytes。以上不证明语义质量。
+- 人审模板的计划摘要与 AI/人读索引绑定均匹配；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 88 项仍 `pending`。`Workflow/Approvals/` 与 `Knowledge/STORY_SUMMARY_reviewed.json` 不存在；没有生成审批、知识或译文。完整证据见[开发与验证](../development.md#2026-11-20-k5-试点门禁复核)。
+- 下一步由有权限的人审阅 88 话映射和双版本，完成模板并通过 `scripts/approve_translation_plan.py` 生成与当前计划匹配的回执；再审核当前 AI bundle 绑定的全书概要/术语。之后由凭据所有者安全核验 Provider 端点、授权、路由和预算，再显式执行获准单话工作流并人工验收候选、审核结论与发布产物。用户已确认作品授权和职责所需数据类别，不要重复请求该确认。
+- 不运行真实 Provider、不创建计划回执/知识/译文，不读取 API profile/凭据或 freshness JSON。当前应用是 CLI，没有服务地址；此前 K4 全量非 E2E/mock E2E 结果记录在下方，未在本次文档续接中重跑。
+
+## 2026-11-20 K4 自动返工续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树有既有知识/RAG、embedding/API pool、K4 及文档混合改动，均保留；受保护 freshness JSON、项目原文、本机 API profile/凭据未读取，未暂存、提交、重置或清理。
+- 当前状态：`scripts/run_ai_translation_workflow.py` 显式运行/恢复一话有限审核、自动定向返工、复审与通过后发布。调用 `FINAL_REVIEW_MODEL` 做双次审核，`PROOFREAD_MODEL` 只修改 blocking findings 指定的段落，二者路由静态要求 endpoint/model 不同。没有接到翻译 pipeline 自动触发。
+- 并发边界：单话 reviewer、rework 与完整 workflow 共用 run 内 `AIWorkflowLocks/<sha256(episode_id)>.lock` 异步锁，同事件循环及跨进程重复调用都串行化并复用已存决策/报告/候选；进程终止后系统锁可重新获取，decision append lock 仍独立保护链式写入。若在报告或候选持久化前进程退出，重试仍可能重新调用 Provider 并产生费用。
+- 数据契约：终审和修订均发送完整原文及译文，单次各自默认合计不超过 64,000 字符；返工额外发送 blocking findings 和策略定义，不发送 book knowledge，类别为 `source_text`/`translation_text`。候选写入 run 的 `ReviewCandidates/<episode_id>/revision-NNNN.md`，摘要 sidecar 在 `AIReworks/<episode_id>/revision-NNNN.json`。候选和报告 create-only；重跑先核验并恢复已持久化候选。
+- 人工边界：初始预算默认 2。`rework_limit_reached` 必须先用 `scripts/resolve_translation_review.py --action increase_budget` 增加预算；`approve_current` 仍需绑定候选的人工八项 checklist，不会由 AI 工作流代替。格式/哈希测试不证明模型真正修复语义问题；`none/low` 仍为定性收敛代理，reviewer 未认证。
+- 本轮验证：10 项新增自动返工、恢复与并发集成测试通过；合并终审/状态/Provider/API-pool 定向回归 264 项通过；API pool 单测 23 项通过；完整非 E2E 753 项运行、749 项通过、4 项 Windows symlink/FIFO 能力跳过；mock E2E 7 项通过（213.512 秒）；CLI help/编译通过。未调用真实 Provider，无部署服务。
+- 下一步：本地合成验证已完成。真实试点前仍需人工完成 88 话映射/双版审批及计划回执、reviewed 全书知识；之后由凭据所有者检查当前 profile、端点、授权、预算和模型路由，再显式运行单话工作流并人工验收质量与发布产物。
+- 初次启动命令：`.\.venv\Scripts\python.exe scripts\run_ai_translation_workflow.py --project <项目目录名> --run-directory <Workflow\Runs\run_id> --episode-id <话目ID> --review-policy-file <review-policy.json> --max-rework-attempts 2`。同一预算下可重跑续接；增加预算后，续接时省略 `--max-rework-attempts` 以读取决策链预算，或传入预算回执 `new_max_rework_attempts` 的值。无 Web 服务/部署地址。
+
+## 2026-11-20 K4 AI 终审执行器续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树包含本轮之前的 API/embedding、知识/RAG、K4 与文档未提交/未跟踪变更；本轮仅增量修改，未暂存、提交、重置或清理。受保护 freshness JSON、试点正文、本机 API profile/凭据均未读取或改写。
+- 历史阶段快照：当时只实现 K4 双次终审，`scripts/review_translation_candidate.py` 的失败返回 `rework`/`needs_human`，还没有自动候选生成；当前自动续接状态见本文件顶部。
+- 涉及核心文件：`ai_translation_review.py`、`translation_review_state.py`、`translation_review.py`、`scripts/review_translation_candidate.py`、`tests/test_translation_review.py`、`tests/test_translation_review_state.py`；状态/路线图/架构/决策/模型方案/README 同步更新。审阅结果绑定 policy/source/candidate/route 摘要；schema v4 只追加 run 内记录，旧决定和候选不改写。
+- 验证：`.venv\\Scripts\\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state -q`：91 项通过；完整非 E2E 740 项运行、736 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\\Scripts\\python.exe tests\\run_tests.py`：mock E2E 7 项通过，212.673 秒，退出码 0；相关 `py_compile`、CLI `--help`、本地文档链接目标、`git diff --check` 通过。mock 使用合成数据/loopback，没有真实 Provider、Kakuyomu、试点正文或部署验证。
+- 必须保留的风险：两次评估走同一 reviewer route；none/low 只是模型自报的定性收敛代理；八项检查也是模型输出，不证明语义质量；reviewer 未认证。完整 source/candidate 会发送到 reviewer，不能直接在未检查授权和端点状态时对真实项目 run 调用。
+- 下一步：先定义自动返工候选生成契约（候选路径 create-only、模型输入/输出、提示词/策略来源、失败和重复执行、预算耗尽展示/人工恢复），再实现修订 Agent 并用合成故障测试；不要将模型 finding code 升格为默认 taxonomy。正式试点还需人工完成 88 话双版/计划审批、reviewed 全书知识，再由操作者安全核对本机配置并显式进行真实单话 Provider/质量验收。
+- 试运行入口（仅在上述门槛完成后）：`.\.venv\\Scripts\\python.exe scripts\\review_translation_candidate.py --project <项目目录名> --run-directory <Workflow\\Runs\\run_id> --episode-id <话目ID> --review-policy-file <策略JSON> --max-rework-attempts 2`。返工续审另加 `--candidate-file ReviewCandidates/<episode_id>/revision-0001.md` 并沿用链上预算。当前无 Web 服务/部署地址。
+
+## 2026-11-20 K4 决策 CLI 输入校验续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。保留工作树既有混合修改和未跟踪文件；未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据；未暂存、提交、重置或清理。
+- 已实现：`scripts/record_translation_review_decision.py` 对 `--stage-verdicts` 与 `--stage-issue-codes` 使用严格 JSON 解码，拒绝任意层级重复字段以及 `NaN`/`Infinity`，保证在调用决策写入器前不接受有歧义输入。新增测试覆盖重复 verdict 字段、重复 issue-code 字段和非有限值。
+- 验证：定向审核模块 81 项通过；完整非 E2E 727 项运行、723 项通过、4 项因 Windows symlink/FIFO 能力跳过、0 失败；mock E2E 7 项通过（209.005 秒，runner 退出码 0）；相关文件 `py_compile` 通过。
+- 文档同步：README、开发记录、路线图、项目现状与端到端目标均记载严格解析行为和当前验证计数；6 份活动 Markdown 的 218 个本地链接目标均存在，`git diff --check` 通过，工作树既有修改和受保护未跟踪文件保持不变。
+- 下一步：自动 AI reviewer 仍需要有来源和版本的质量 taxonomy、冲突/不确定处置及跨话目作用范围；不能从操作者自定义 issue code 推导这些规则。试点仍需人工完成 88 话映射/双版验收、计划审批和 reviewed 全书知识；真实 Provider、生产终审与产物验收未完成。
+
+## 2026-11-20 K4 策略文件绑定续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树已有 API/embedding、K4 和受保护文件的混合修改，全部保留；未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据；未暂存、提交、重置或清理。
+- 已实现：`translation_review_state.py` 接受可选策略 schema v1（`policy_id`、正整数 `revision`、code/阶段/定义列表）。`--review-policy-file` 让 CLI 按原始文件字节计算摘要并将文件 create-only 保存为 `ReviewPolicies/<sha256>.json`；新记录为 schema v3，摘要、路径与 `issue_codes_by_stage` 均绑定。读链、续接、发布会重新校验登记表摘要和 code 阶段归属。schema v1/v2 读取兼容；既有 v2 链可以进入 v3，但必须由同一策略登记表覆盖已有 codes。进入 v3 后续写必须继续提供匹配策略文件。
+- 兼容边界：不提供策略文件时仍生成 schema v2，既有 `policy_sha256` 继续是 opaque digest、不验证语义。登记表没有预置业务质量标准，不包含严重度或自动处置，不实现跨话目豁免。策略文件为操作者自定义输入，不构成项目统一 taxonomy 或身份认证。
+- 验证：定向 `.venv\\Scripts\\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：80 项通过。全量非 E2E 动态发现运行 726 项、722 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\\Scripts\\python.exe tests\\run_tests.py` mock E2E 7 项通过、205.893 秒、退出码 0。相关 Python `py_compile`、CLI `--help` 策略选项、6 份修改文档本地链接和 `git diff --check` 通过。负向 fixture 的 content filter/paragraph mismatch 日志为预期；没有真实 Provider 请求。
+- 涉及文件：`translation_review_state.py`、`translation_review.py`、`scripts/record_translation_review_decision.py`、`tests/test_translation_review_state.py`、`tests/test_translation_review.py`，及本交接对应的开发/路线图/状态/目标/决策文档。
+- 下一步：完成全量非 E2E 与仓库 mock E2E，核对其余相关发布/状态链回归；更新本记录实际结果。之后继续 K4 的已授权工作：在不臆造业务标准的前提下，等待/使用人类确认的 taxonomy 与跨话目作用范围，再接独立 reviewer。总体工作流仍未完成：88 话映射/双版与 reviewed 知识验收、AI reviewer/终审质量与身份、受控真实 Provider 试译、真实产物验收均未关闭。
+
+## 2026-11-20 K4 结构化审核记录续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。保留本工作树全部既有修改和未跟踪文件；未读受保护 freshness JSON、试点正文、本机 API profile 或密钥；未暂存、提交、重置或清理。
+- 已实现：`translation_review_state.py` 新写 schema v2 决策，按 stage 存 reviewer 显式提供的 `issue_codes_by_stage` 并纳入 `decision_sha256`；旧 v1 继续可读，v1 决策链可由 v2 候选续接。fail 阶段缺少 code、code 格式错误/重复、pass 阶段含 code 时拒绝。`scripts/record_translation_review_decision.py` 接受可选 `--stage-issue-codes <JSON>`；fail 时必须提供。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：72 项通过；全量非 E2E 718 项运行、714 项通过、4 项 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py`：mock E2E 7 项通过，227.490 秒、退出码 0。相关 `py_compile`、CLI `--help`、`git diff --check` 通过。真实 Provider、API 池配置、reviewer 身份与语义质量均未验证。
+- 关键边界：issue code 只是与 `policy_sha256` 并存的受格式约束标识。当前不读取/校验策略文件或共享 taxonomy，不推断其业务含义，不基于重复 code 跨话目跳过返工/人工暂停；API 池 schema 与授权未变更。
+- 最终核验：7 份当前/交接文档扫描 250 个本地链接目标，缺失 0；新开发记录标题锚点存在；`git diff --check` 通过。没有触碰 API 池 schema/授权或受保护试点文件，也未启动服务。
+- 下一步：定义有版本、来源和作用范围的共享 issue taxonomy；跨话目例外必须另有显式策略和测试，不能从当前 `approve_current` 或重复 code 推导。之后实现 AI reviewer 与收敛/质量策略，并完成 88 话人工验收、reviewed 知识审批及操作者确认后的受控 Provider 试译。
+
+## 2026-11-20 K4 仲裁与完整回归续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。工作树含既有 API/embedding 实施及本次 K4 实施的未提交修改，全部保留；未读取受保护 freshness JSON、试点正文、本机 API profile 或凭据；未暂存、提交、重置或清理。
+- K4 新增：决策链默认最多返工 2 次，可通过 `--max-rework-attempts` 配置；`scripts/resolve_translation_review.py` 支持 `approve_current` 人工放行当前候选和 `increase_budget` 严格增量续跑。仲裁事件在 `ReviewResolutions/<episode_id>/` create-only 保存，绑定当前 run/source/candidate/失败阶段/decision 摘要及理由；人工放行不改写失败 verdict，只能生成 schema v3 checklist，仍须八项检查全部通过才能发布。预算扩展可续接到新候选修订，历史候选与决定不改写。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q` 64 项通过；完整非 E2E 动态发现 710 项运行、706 项通过、4 项因 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py` mock E2E 7 项通过，244.256 秒、退出码 0。相关 `py_compile`、CLI `--help`、`git diff --check` 通过。E2E 负例堆栈为预期内容过滤/格式 fixture，没有真实 Provider 请求。
+- 未完成边界：自动 AI reviewer、终审 Provider/model、语义阈值和“连续两次无明显收益”的自适应规则仍未实现/验证。当前只有 fidelity/fluency/style 三类 verdict，跨话目“同类问题不重复暂停”尚无细粒度 issue taxonomy，不扩散一次人工放行。reviewer 身份仍是本地声明、不受认证。试点 88 话映射/双版本审批、reviewed 全书知识、真实 API profile/TM 操作及首话真实 Provider 试译未完成。
+- 继续点：先为可审计的细粒度 issue taxonomy 与跨话目豁免范围建立测试契约，再实现 AI reviewer 与策略；之后核验 88 话计划模板、人工映射/清洗审批及 reviewed 知识，操作者安全确认 API pool/profile 和数据授权后才开展受控首话试译。TM 重建仍建议使用 `.\.venv\Scripts\python.exe scripts\configure_api_pool.py --rebuild-tm-embeddings -- --project <项目> [--chapter <TM键>]`，人工审核候选后再切换 `TM_REVIEWED_PATH`。当前无可部署服务或 Web 地址。
+
+## 2026-11-20 API 池 v2 与 embedding Provider 续接
+
+- 当前基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`；本轮修改仍未提交。保留所有既有工作树修改；未读取受保护 freshness JSON、试点正文、本机 API profile 或任何 Key；未暂存、提交、重置或清理。
+- 已实现：`api_pool_store.py` 生成 schema v2，支持可选独立 Gemini/OpenAI-compatible embedding 配置、Credential Manager 凭据引用和 profile 摘要绑定。v1 可继续加载；`scripts/configure_api_pool.py` 仅在操作者确认后做 v1 备份及原子迁移，旧 credential refs 不删除。迁移失败保留 v1 profile；孤儿新 refs 仅在异常返回路径尽力清理，进程硬中断仍可能留下不被引用的 Credential Manager 项。
+- 已实现：统一 `embedding_provider.py` 为 Gemini/OpenAI-compatible embedding 发送调用；校验来源授权、超时、响应数量/顺序/有限向量/维度。Gemini 默认向量身份保持 schema 1；OpenAI-compatible schema 2 增加 endpoint SHA-256，阻止同维度的不同模型/provider/端点混用。RAG、TM 写入、章节对齐调用同一适配器；旧向量保留但不自动重建。
+- 已实现：`scripts/rebuild_tm_embeddings.py` 通过现有逐对 TM 审核流程生成来源绑定候选并接受人工回执，不改写源 TM 或旧 reviewed snapshot。API 池向导增加 `--rebuild-tm-embeddings` 模式；Provider 失败、来源漂移或输出冲突时不创建候选。仍未在本机 TM 上执行。
+- 验证：定向 235 项通过；完整非 E2E 704 项运行、700 项通过、4 项 Windows symlink/FIFO 能力跳过；本地 mock E2E 7 项通过、239.655 秒、退出码 0；`py_compile` 与 `git diff --check` 通过。迁移和候选重建使用合成 profile/TM/凭据；OpenAI SDK 对本机 loopback `/v1/embeddings` fixture 验证请求和解析，不代表真实服务兼容。详细证据见[开发与验证](../development.md#2026-11-20-api-池-v2-与可配置-embedding)。
+- 尚未完成：本机 profile 版本和迁移状态未知；真实 endpoint/model/账单/语义质量未验证；本机 TM 候选未生成、人工审批未完成、`TM_REVIEWED_PATH` 未切换；真实试点仍待 88 话计划/双版本人工审阅、审批回执及 reviewed 全书知识。K4 人工仲裁/预算续接现已实现合成版本；AI reviewer、终审 Provider/model、语义阈值及跨话目同类失败策略仍未实现或验证。项目是本地 CLI，没有部署目标或 Web 地址。
+- 下一步：由操作者在 `source_text` 授权明确后运行 `.\.venv\Scripts\python.exe scripts\configure_api_pool.py --rebuild-tm-embeddings -- --project <项目> [--chapter <TM键>]`；确认是否加载/迁移本机 profile。使用独立候选文件，通过 `scripts/apply_tm_review.py` 创建并完成逐对人工回执，再发布 reviewed snapshot；核验后才显式将 `TM_REVIEWED_PATH` 指向新快照，保留旧 TM/快照以便回退。之后才在获准条件下做真实小样本诊断。人工审批和 K4 决策不可由 mock 测试替代。
+
+## 2026-11-20 Gemini embedding 续接
+
+- 当前断点：RAG 与章节对齐已共用 Gemini embedding 适配器，TM 新向量保存明确身份；检索忽略没有身份或不匹配的旧向量，但现存旧向量尚未重建。HEAD 仍为 `9374fa79376c13f72f06f1e7764d732012b1436a`，新增实现和相关文档均未提交。
+- 实现位置：`embedding_provider.py` 负责 Provider 请求、授权、超时、批量响应校验和身份 schema；`rag_engine.py` 的 TM 查询、章节语义回退和 TM 写入按身份过滤/登记；`scripts/align_chapters.py` 复用相同适配器并记录身份。身份为 schema 1、provider `gemini`、protocol `google-genai`、model `gemini-embedding-2`、task type `default` 和向量维度。
+- 验证：RAG/对齐/TM 审核定向 64 项通过；完整非 E2E 682 项运行、678 通过、4 项因普通 Windows symlink/FIFO 能力跳过；loopback mock E2E 7 项通过，235.372 秒，退出码 0。未调用真实 Provider、网络服务、部署或读取项目原文；详细命令和边界见[开发与验证](../development.md#2026-11-20-gemini-embedding-与-tm-向量身份)。
+- 恢复与风险：TM 更新 embedding 失败不会部分写入；章节事务日志保留，可在相同 run/事务条件下重试。旧向量被保留而非删除；由于身份未知，依赖旧向量的 reviewed TM 当前可能无检索命中。对齐器只会在操作者显式运行并通过来源校验后重建对应映射，不应自动批量触碰试点 TM。
+- 指南语义回退的既有降级仍在：embedding 失败或没有身份兼容向量时，改按章节距离选最近指导。这不是语义命中，也没有变成硬错误；后续应明确是否继续允许及如何向 run 报告降级。
+- 下一步：先设计 API 池 v1 到新版本的原子迁移和凭据恢复，再把独立 Gemini/OpenAI-compatible embedding 配置接入适配器，固定 endpoint/model revision/参数身份契约；随后增加显式旧 TM 重建、摘要核验和切换步骤。最后才能进行合成端点兼容性与由操作者显式触发的获准样本验收。
+- 其他未完成条件保持不变：88 话人工映射与双版本验收、匹配计划审批回执、reviewed 全书知识、K4 终审/返工/仲裁政策、真实 Provider 单话试译均未完成。当前项目交付仍为本地 CLI，没有可部署 Web 服务。
+
+## 2026-11-20 API 池配置续接（R4 前快照）
+
+- 当前断点：阶段 0–3 已有分散的局部实现，但整条工作流仍未通过阶段验收；阶段 4–5 及真实试点质量验收仍未完成。当前分支 `codex/translation-workflow-audit-20261117`，HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`，修改均未提交。
+- 现有 API 池是当前工作树上的 OpenAI-compatible 生成端点入口：初译绑定 `INITIAL_MODEL`；上下文标注、校对、知识抽取绑定 `PROOFREAD_MODEL`；润色绑定 `STYLE_MODEL`。主/备用只在 UnifiedAgent 生成调用中有限回退，知识抽取不使用备用。Key 可临时进入进程环境，或由当前 Windows 用户 Credential Manager 保存；不支持独立审核 Agent、embedding Provider 配置或真实服务诊断。
+- 本轮边界修订：职责文字与实际调用一致；只向实际分配的主/备用端点索取 Key，未使用端点不取 Key；激活新池时移除陈旧 `TRANSLATORAI_POOL_KEY_*` 环境变量；配置写入失败时只回滚本次已创建的新凭据，保留旧 profile/凭据；测试验证 `Config.load_config` 和启动预检使用对应模型 alias。相关入口、实现和测试见[向导](../../scripts/configure_api_pool.py)、[API 池](../../api_pool.py)、[存储](../../api_pool_store.py)、[凭据适配器](../../windows_credentials.py)、[测试](../../tests/test_api_pool.py)。
+- 验证：`tests.test_api_pool` 11 项通过；`tests.test_api_pool tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q` 164 项通过；全量非 E2E 677 项运行、673 项通过、4 项 Windows 能力跳过；本地 mock E2E 7 项通过，238.966 秒；`py_compile` 与 `git diff --check` 通过。所有接口测试为合成/本地 mock，没有真实 Provider 请求。
+- 当前工作树另有既有未提交和未跟踪文件，必须全部保留；受保护 freshness JSON 未读写。没有暂存、提交、推送、重置或清理。README、开发记录和模型方案的本轮补充只记录当前证据，不将历史测试计数冒充当前结果。
+- 不可声称已完成：API 端点适配/质量、API 池 embedding 配置、版本化配置迁移、旧 TM 重建、回滚清理本身失败后的人工恢复、全流程自动终审、真实试译或部署。RAG 与章节对齐的 Gemini 调用和新向量身份已在上方最新续接中统一，但 Gemini 仍单独授权/配置。
+- 后续先实施并验证版本化配置迁移/失败回滚，再把 embedding Provider 配置接入共享适配器，扩展身份契约并制定旧 TM 显式重建/核验流程；随后才进行合成服务兼容性测试。真实试点仍须人工批准 88 话计划及相关知识、明确终审/返工/仲裁政策，并由操作者显式选择端点和获准样本。
+
+## 2026-11-19 K5 mock E2E 续接复验
+
+- 当前 checkout：`codex/translation-workflow-audit-20261117` / `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`。保留已有 tracked 与 untracked 修改；未读取或改动受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，没有提交、重置或清理。
+- `.venv\Scripts\python.exe tests\run_tests.py`：本地 mock E2E 7 项通过，337.441 秒，退出码 0。`PIPELINE RUN FAILED` 日志对应内容过滤与段落对齐负向夹具，属于预期行为；真实 Provider 未调用。
+- 当前试点仍无计划审批回执、reviewed 全书知识、正式 run 或译文。88 话审阅模板的 264 个决定仍为 `pending`；`needs_human` 没有同 run 仲裁/恢复机制，不能自行增加失败覆盖发布策略。无托管服务可部署。
+- 继续点：先由人类完成 88 话映射和 AI/人读版审阅并生成匹配回执；审核全书概要/术语；另需确定终审质量规则、Provider/model、返工上限、仲裁权限和失败恢复政策。获准这些条件后再做受控单话真实试点。
+
+## 2026-11-19 K4 发布门禁续接
+
+- 当前 checkout：`codex/translation-workflow-audit-20261117` / `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`。本任务开始时已存在多处 tracked 修改及未跟踪实现；均予以保留。受保护未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取或改动；没有提交、重置或清理。
+- 当前代码完成了 K4 决策链与发布器的连接。`ReviewDecisions/<episode_id>/` 保存 hash-only create-only 链；初版必须绑定原始 `Drafts/<translation_file>`，返工候选须在 `ReviewCandidates/<episode_id>/`，且决策摘要固定候选相对路径。写下一版前会重验上一候选文件。
+- 链尾 `passed` 后生成 schema v2 人工 checklist，绑定候选修订、路径、候选 SHA-256 和决策 SHA-256；八项人工检查仍需全部通过。发布回执 v2 同样绑定候选，run 完成核验比较发布文件与最终候选字节。没有决策链的旧 schema v1 人工审核保留。决策状态失败/需人工、链路篡改、候选变动和不同内容输出冲突均不能发布新文件。`needs_human` 当前硬停止，尚无人类仲裁回执或同 run 恢复入口。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`，47 项通过。全量非 E2E 动态回归 630 项运行、626 通过、4 项因 Windows FIFO/符号链接能力跳过、0 失败（94.331 秒）；`.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 7 项通过（418.613 秒，退出码 0）。`py_compile`、脚本 `--help` 与 `git diff --check` 通过。详细边界见[开发与验证](../development.md#2026-11-19-k4-决策链接入审核发布门禁)。
+- 本地试点仍未形成 run 或译文。计划 `translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 的 88 话映射仍需人工确认；其 human review 模板 264 项仍为 pending，尚无审批回执。reviewed 全书概要/术语、终审语义阈值、Provider/model、生产返工上限及人工升级责任未确认；未调用 Provider，也没有可部署的服务端/Web 应用。
+- 当前续接重新运行模板验证：计划与人读索引/88 话章节摘要仍匹配，验证因 264 个待审决定拒绝审批；随机临时回执探测路径未创建文件。验证没有显示章节正文或产生书籍数据写入。
+- 下一步是人工审阅当前 88 话映射/双版本并完成计划回执和 reviewed 全书知识；生产终审还需明确维度判定政策、Provider/model、返工上限、失败/耗尽后的仲裁权限与恢复流程、预算及人工责任。随后才可在获准渠道上开展受控单话试点。不得把显式 `pass` fixture 或本地 mock 写成真实质量验收。
+
+## 2026-11-19 K4 合成状态转移续接
+
+- 新增 `translation_review_state.py::decide_review_transition`。`fidelity`、`fluency`、`style` 三阶段全部明确通过才标为可发布；失败在调用方显式预算内进入返工，缺失/不确定/冲突或次数耗尽转 `needs_human`。
+- `create_review_decision_record` 绑定源/候选版本、父摘要、策略摘要、审核者声明及状态转移；`verify_review_decision_record` 可拒绝字段或转移篡改。摘要不认证真实审核、策略或父记录；决策链已能在 run 内持久化，但尚未成为正式发布门禁。
+- `record_translation_review_decision` 已接入 `review_pending` run 的 `ReviewDecisions/<episode_id>/` create-only 链；初版绑定 Drafts，返工候选必须位于 run 内，并要求上一版明确为 `rework`。定向验证 `.venv\Scripts\python.exe -m unittest tests.test_translation_review_state tests.test_translation_review -q`：42 项通过；`py_compile`、脚本 `--help` 与 `git diff --check` 通过。没有 Provider；现有发布器仍未强制消费该链。
+- 跨模块回归 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state tests.test_kakuyomu_workflow tests.test_pipeline_contracts -q`：190 项通过；`.venv\Scripts\python.exe tests\run_tests.py`：7 项本地 mock E2E 通过，425.782 秒，退出码 0。E2E 的负向 Provider/格式/TM 夹具为预期日志，未访问真实外部服务。
+- 当前完整非 E2E 动态回归运行 620 项，616 项通过、4 项跳过、0 项失败（Windows FIFO 1 项、符号链接 3 项能力限制）；mock E2E 仍为 7 项通过。
+- 后续需先取得终审 Provider/model、维度阈值、返工次数与人工升级责任，再将该转移核接入版本化审核与发布流程；在此之前它不能批准或发布译文。
+
+## 2026-11-19 K5 试点计划映射续接
+
+- 当前 checkout 仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`；既有工作区修改和未跟踪文件继续保留。
+- 对项目配置的译文根运行本地 `scripts/run_kakuyomu_workflow.py --plan-only`，当前 `source_catalog.raw-html-2026-11-17.json` 返回 `ready_for_review`、88/88 来源有效、0 问题、0 网络、0 Provider、0 写入。预览不输出章节正文。
+- 对照旧计划 `translation_plan_review_ai_raw_html_schema2_2026-11-17.json`，来源版本、AI 输入路径/哈希、AI 索引/manifest 和其余映射字段一致；88 个 `tm_key` 从旧 `kakuyomu:` 前缀变为当前 `source-edition:`，所以旧审批摘要不能代表当前计划。
+- 用 preview CLI 的 `--plan-output` create-only 新建 `projects/祝福のネトラレラ/Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.json`，摘要 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。新计划经 `translation_plan_approval.load_translation_plan` 校验：`ready_for_review`、88 话、88 个来源有效、0 问题。旧计划保留；该操作写入 1 个新 JSON，没有网络或 Provider 调用。
+- 续接时重跑 `scripts/validate_source_editions.py`：当前 raw、AI、人读三方 `verified`，88 话；raw/AI/human 读取量分别为 793,183/774,253/799,293 bytes。计划记录的 AI index SHA-256 与双版本验证输出相同；校验器只在本机重算字节和映射，不输出正文、不写文件。
+- 当前 `Workflow/Approvals/` 没有回执，`Knowledge/` 没有 reviewed 全书概要/术语产物。此次未创建审批回执或读取密钥；预览校验器在本机读取 `RAWs_AI` 字节以复算哈希，但没有显示、另存或外传正文。计划预览只证明当前版本映射和哈希契约，不是人工映射/清洗验收。
+- 下一步需人工审阅新计划的 88 话映射与两种清洗版本，再为该新摘要生成匹配审批回执；还需审核 full-book summary/glossary。K4 终审 Provider/model、通过规则、返工上限和耗尽/冲突的人工升级责任未确认；在这些前置齐备前不做真实单话调用。
+
+## 2026-11-19 K5 结构化审阅模板续接
+
+- 新增 `scripts/prepare_translation_plan_review.py` 和审批模块的 `create_plan_review_template`/`verify_plan_review_template`。模板只绑定当前计划、人读 `SOURCE_MAP.json` 摘要及逐话映射/输出哈希；创建和审批都会复核索引指向的实际 Markdown 字节，三项决定初始均为 `pending`，输出必须在 `SourceArchive/` 外排他新建。
+- 人工填写全部话目的 `mapping_decision`、`ai_edition_decision`、`human_edition_decision` 为 `pass` 且 `issues=[]` 后，使用 `scripts/approve_translation_plan.py --review <review.json> --human-index <SOURCE_MAP.json>` 校验当前索引并生成 schema v2 回执；回执新增 `review_sha256`，旧 schema v1 仍兼容读取。
+- 验证：`tests.test_translation_plan_approval` 15 项、`tests.test_kakuyomu_workflow` 14 项通过；完整非 E2E 回归 625 项运行，621 项通过、4 项因 Windows 能力跳过、0 项失败（96.068 秒）。相关 `py_compile`、CLI `--help`、`git diff --check` 通过。模板构造器复核真实试点 88 个章节文件及人读索引，然后在 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-19.human-review.json` create-only 生成 88 行模板；验证器确认 264 个决定均 pending 并拒绝审批。未显示正文或调用 Provider；`Workflow/Approvals/` 不存在，未生成回执。K5 增量后的 E2E 未重跑；最近一次 K4 增量后的 mock E2E 为 7 项通过、425.782 秒。
+- 断点：当前仍停在人工审阅前；下一步是人工检查 88 话计划与双版本，再在模板中填写决定。随后需生成匹配回执、审核 reviewed 全书概要/术语，并在 K4 决策（终审 Provider/model、阈值、返工上限、升级责任）明确后做受控单话试点。
+
+## 2026-11-19 K3 分项轨迹续接
+
+- 当前基线仍为 `codex/translation-workflow-audit-20261117` / `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`；续接前的未提交修改和未跟踪文件全部保留。
+- `pipeline.py` 正式 run 的 `StageReports` 现在分别追加 `proofreading`、每次 `reflection` 和 `polishing` 哈希尝试；失败报告使用当前失败子阶段名。尝试不包含原文、译文、批注或提示词；K3 未因此变成独立“信、达、雅”审核。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_kakuyomu_workflow -q`，180 项通过；全量非 E2E 动态发现测试 596 项运行、592 项通过、4 项因 Windows 无法创建 FIFO/符号链接跳过、0 失败，47.287 秒；`.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 7 项通过、205.636 秒、退出码 0；`py_compile` 和 `git diff --check` 通过。详细命令见[开发与验证](../development.md#2026-11-19-正式项目校对反思润色分项轨迹)。
+- 本阶段未请求真实 Provider、未读取试点正文，且没有托管服务可部署。K4 终审 Provider/model、通过规则、返工上限、冲突/耗尽后的人工升级责任仍待用户决定；K5 仍需映射与清洗人工验收及获准 Provider 的受控真实试点。
+- 下一步仍是用户决定 K4 的终审 Provider/model、终审通过规则、返工上限和耗尽/冲突时的人工升级责任；依决定实现终审与版本化返工。K5 仍需人工验收映射/清洗和合格的真实单话试点。
+
+## 2026-11-18 K4 发布状态一致性续接
+
+- 当前 checkout：`codex/translation-workflow-audit-20261117`，代码 HEAD `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`；保留已有全部未提交/未跟踪文件，没有暂存、提交或清理。受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取或修改。
+- 本次修改 `translation_review.py` 的 run 完成核验：`published` 状态先原子退回 `review_pending`，然后逐话核验发布回执 schema/UTC 时间、已批准审核快照及其 `review_sha256`、当前来源与草稿哈希、正式译文与草稿字节一致。缺少产物保持待审核；篡改/冲突报错，不改动用户文件。重试可重建缺失译文或快照，再重新完成核验。
+- 新增 `tests/test_translation_review.py` 覆盖：已发布译文缺失后降级并由批量发布恢复、审核快照更改拒绝并降级状态、已发布译文被改动时保留现场且拒绝确认。定向命令 `.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_kakuyomu_workflow -q`：32 项通过。
+- 最终验证：全量非 E2E 动态发现测试 594 项运行、590 项通过、4 项因 Windows symlink/FIFO 能力跳过、0 失败，44.369 秒；`.venv\Scripts\python.exe tests\run_tests.py` 7 项本地 mock E2E 全部通过，211.406 秒，退出码 0；`py_compile`、`pip check` 与 `git diff --check` 通过。未调用真实 Provider、Kakuyomu、Notion 或部署服务。
+- 下一步：继续 K4 终审报告和版本化返工链的实现前，需确定终审维度/严重问题阈值、返工次数上限、耗尽后的人工升级责任，以及终审模型/Provider。现有方案将初始“两次”仅记作待确认建议，不应把它写成默认生产规则。上述本地状态核验不替代这些决策。
+
+> 状态基准：2026-11-17。较早的续接与审查章节均为历史快照；当前工作树状态和下一步见“2026-11-17 工作树续接”。项目路线图仍有后续阶段，额度信息不可见。
+
+## 2026-11-17 工作树续接
+
+- 当前 checkout 为 `main`，HEAD `e2fe611258532c9f0bab3672eda52cf928102b1a`；工作区有大量未提交/未跟踪改动。它们来自此前持续实施，全部保留；本次仅在其上修改 Pandoc 路径解析、对应合成测试及本交接/开发记录，没有暂存或提交。
+- 复核旧 PR #58 审查快照中的两个问题：当前工作树已将 HTTP `IncompleteRead` 转为可恢复的来源暂停，checkpoint 重跑能够继续；Pandoc 可执行文件在版本探测前解析为绝对路径，覆盖带目录的相对路径以及经 `PATH` 查找的裸命令名，转换时切换 `cwd` 不会改变 executable 解析结果。
+- 本次新增的 Pandoc 行为测试验证裸命令名经 `shutil.which` 解析为绝对路径；既有测试验证带目录相对路径在版本探测与转换阶段保持相同 executable。HTTP 合成测试验证不完整响应导致 `paused/unavailable`，修复响应后可从 checkpoint 完成。
+- 验证：完整非 E2E 回归 513 项运行、0 失败、4 项因 Windows 符号链接/FIFO 能力跳过；受影响聚焦集合 45 项通过；`tests.test_epub_builder` 25 项通过。命令见[开发与验证](../development.md#2026-11-17-历史代码审阅项复核)。
+- 2026-11-17 用户再次强调 AI 版与归档职责：翻译直接从 `projects/祝福のネトラレラ/RAWs_AI/` 读取，`SourceArchive/` 只保存归档及其清单/采集与审计快照，不存计划或审批回执。当前现场 88 个 AI 单话 Markdown；两份归档 manifest 分别 356/356、532/532 校验通过；三项定向回归确认 pipeline 从 RAWs_AI 读正文而非归档副本。细节见[开发与验证](../development.md#2026-11-17-raws-ai-作为默认翻译输入)。
+- 下一步继续 I0–I6 的未完工作：人工审阅 88 话 AI/人读版与映射计划，生成并审核绑定当前 AI 版本的全书概要/术语表，批准当前计划摘要后创建审批回执，再进行受控真实 Provider 单话翻译。Notion、EPUBCheck/阅读器和来源变化后的下游处理仍按路线图执行；作品授权已确认，不是阻塞。
+- 本轮额度状态不可见，未声称达到额度阈值。
 
 ## 2026-11-16 Kakuyomu 正文全量刷新续接
 
@@ -331,3 +669,201 @@ I5 补充：合成输入可以验证 builder 和 Pandoc 调用；用户原文目
 - 合成夹具已补全 raw→normalized lineage；新增 EPUB raw-parent stale 回归。统一验证命令及限制见[开发与验证](../development.md#2026-11-16-i4-消费端新鲜度门禁扩展)：14 个相关模块退出码 0。最初知识抽取专测因旧 fixture 缺少 raw parent 失败；补齐有效 lineage 后统一回归通过。
 - 门禁只识别并拒绝 stale 输入；没有自动重建 normalized/TM/知识/概要、持久化或传播 stale 状态，也未覆盖未绑定 `source_version_id` 的旧映射。验证使用 synthetic source 和 mock，没有调用 Provider、Notion、站点或真实 EPUB 阅读器。
 - 下一步可直接执行：先按[路线图](../roadmap.md)继续规划 stale 状态持久化和显式重建/复核流程；并完成 88 话映射与来源格式人工验收。真实 Provider/Notion/EPUB 阅读器验收仍待后续。额度状态无法通过当前接口核实。
+
+## 2026-11-17 全书知识翻译前门禁续接
+
+- 当前 checkout 为 `main`，HEAD `e2fe611`；工作区含多份已修改的代码、测试和文档，所有改动均须保留。没有暂存、提交、重置或清理数据。
+- 用户决策：指定书籍已获明确授权；用户是普通读者，要求从作品主页发现完整公开目录 URL，再通过普通 episode URL 获取全部公开话目；用户明确不需要官方澄清。用户补充 Kakuyomu 初始 HTML/Apollo 目录、正文节点与 ruby/旁点/空白结构的采集观察。此决定作为项目操作边界，不表述为平台背书、法律结论或公开分发许可。已有采集器沿用普通 URL、主页目录计数核验、robots 检查、1.5–3 秒串行间隔（默认 2 秒）及失败关闭行为。
+- 来源实施已具有 `__NEXT_DATA__.__APOLLO_STATE__.Work.tableOfContentsV2` 完整公开 episode 发现、与 `publicEpisodeCount` 对账、episode URL 生成、续传、显式纯追加和正文刷新。历史 source-only 采集及 2026-11-16 刷新均覆盖各自主页声明的 88/88 话；最近刷新正文哈希 88 未变，manifest 268/268 文件通过校验。以上数据只覆盖公开主页声明范围；旧基线 catalog v1 不含章节分组，刷新不能证明新旧分组相同。具体来源证据见[开发与验证](../development.md#2026-11-16-kakuyomu-显式正文全量刷新)和[专题计划](../source-ingestion-and-publication-plan.md)。
+- 本阶段实现显式全书抽取预算与来源 coverage、概要/术语审核器的 1000 来源支持，以及 Kakuyomu 正式编排入口的全书概要门禁。入口在创建 `TranslationPipeline` 前校验 approved summary 的全书覆盖和有序来源文件名/版本必须与本次完整 `CHAPTER_MAP` 一致；不满足时返回 `full_book_knowledge_required`。普通 `TranslationPipeline` 直接调用尚不受此门禁约束。
+- E2E 初次运行捕获到 Kakuyomu 合成成功夹具缺少 approved whole-book summary；夹具已改为从该次合成归档版本生成 provenance，并通过现有 summary reviewer 发布 approved bundle。修复后 `.venv\Scripts\python.exe tests\run_tests.py` 运行 7 项全部通过，219.088 秒。定向 `.venv\Scripts\python.exe -m unittest tests.test_story_summary_review tests.test_kakuyomu_workflow -q` 运行 27 项全部通过；22 模块回归运行 423 项、419 项通过、4 项因当前 Windows symlink/FIFO 能力跳过。编译、两个相关 CLI `--help` 与 `git diff --check` 通过。验证只使用 synthetic fixture 和本地 mock；本轮没有访问 Kakuyomu、Notion、真实 Provider 或真实书籍正文。
+- 已同步[全书知识预读输入模式](../development.md#2026-11-16-全书知识预读输入模式)、[项目现状](../project-status.md)、[路线图](../roadmap.md)、[知识治理](../knowledge-governance.md)、[决策索引](../decisions/README.md)和[原文采集与成果归档计划](../source-ingestion-and-publication-plan.md)。
+- 下一步直接执行：先在 `docs/roadmap.md` 阶段 2 与 `docs/source-ingestion-and-publication-plan.md` I4 中拆出 tokenizer/context-aware 预算、分批抽取/跨章合并和结论级来源证据的可验证设计；确认 Kakuyomu 入口是否也要强制已审核全书 glossary bundle，以及通用流水线是否应采用相同门禁。然后补这些契约的 synthetic tests，再接入实际批准的 Provider/数据范围。其他优先待办仍有 88 话映射/正文格式人工验收、变化后下游 stale 持久化与传播、原始 HTML/等效表示、AI/人类双版本、EPUB 阅读器验收和 Notion 范围/恢复验证。
+- 真实 Provider、Notion 及真实章节翻译未验证。当前运行 allowlist 默认空；JOJO/JYQF 授权仅覆盖各自职责内最小数据类别。五小时额度状态当前不可见，因此不声称达到任何阈值；按阶段记录续接，不将额度不可见写成阻塞。
+
+## 2026-11-17 全书知识 token 分批续接
+
+- 本阶段承接上节“全书知识翻译前门禁续接”，不重复调查 Kakuyomu 来源采集。用户确认试点书籍已获授权，要求普通读者路径：从作品主页发现全部公开 episode URL，再访问普通 episode URL；用户明确不需要官方澄清。该决策已落实于 D-13 和专题计划。当前采集器已实现主页 Apollo 目录、`publicEpisodeCount` 对账、ruby/旁点/空白保留及 1.5–3 秒串行请求；历史 live source-only 证据仍为主页声明的 88/88，不含未公开章节。页面结构与服务规则观察不是平台背书或法律结论。
+- 已实现 `knowledge_batching.py` 与 `scripts/auto_extract_knowledge.py --full-book` 的本地 tokenizer 预算路径：需明确给出 tokenizer JSON、context/output/safety/message 参数和总字符上限；段落分批最多 500 段、100 次顺序 Provider 调用。批次响应校验严格 JSON、批内段落证据、术语来源命中和冲突译名；全批成功前不写最终三份草稿。provenance 记录 tokenizer 哈希、每批预算/消息/响应哈希、段落 coverage 和候选引用。汇总只是按源顺序收集分批候选，不是跨章模型综合；本地段落 ID 不是 HTML DOM `p` ID。
+- Kakuyomu 编排原有 approved 全书概要门禁保持生效；批次概要引用和 token metadata 会经过 `story_summary_review.py` 校验和发布。没有扩展为术语 bundle 的强制门禁，也没有给直接调用通用 `TranslationPipeline` 增加新门禁。
+- 本阶段验证：定向 75 项通过；23 个模块完整回归 431 项运行、427 项通过、4 项 Windows symlink/FIFO 能力跳过、0 项失败；`.venv\Scripts\python.exe tests\run_tests.py` 的 7 项本地 mock E2E 全部通过（220.525 秒）。修改文件 `py_compile`、知识抽取/概要审核 CLI `--help`、`pip check` 和 `git diff --check` 通过。E2E 输出中的 content-filter、段落契约和 Provider 错误堆栈是负向 fixture 预期；测试未请求真实 Kakuyomu、Provider 或 Notion。
+- 最终记录：`py_compile`、知识抽取/概要审核 CLI `--help`、`pip check`、`git diff --check` 均通过；9 份改动 Markdown 的本地链接目标存在，检查未核对锚点。完整回归为 431 项运行、427 项通过、4 项 Windows symlink/FIFO 能力跳过；mock E2E 为 7 项通过（220.525 秒）。当前分支仍为 `main`、基线 HEAD `e2fe611`，本任务和先前阶段增量均保持未提交；不得清理或回滚。保留的实现/文档/test 修改以 `git status --short --branch` 为准。
+- Provider 元数据检查已完成：当前本机没有 `.env` 或 JOJO/JYQF endpoint/key、allowlist、`PROOFREAD_MODEL` 配置，因此下一步不执行真实 Provider 请求。真实运行前按已确认的最小数据类别，在本机安全设置配置并核对模型对应 tokenizer/context 参数；届时记录实际模型、费用和人工候选审核，不把合成结果写成真实运行。独立可推进的代码工作仍包括来源变化后的 stale 状态持久化/传播；试点前还须人工核对 88 话映射及 ruby/旁点/空白格式。原始 HTML/等效表示、AI/人类双版本、EPUB 阅读器验收及 Notion 范围/恢复验证继续待办。
+
+## 2026-11-17 试点输入复核续接
+
+- 本节记录双版本路径确认前的输入检查。用户随后明确：归档应放项目 `SourceArchive`，AI 版放项目 `RAWs_AI`，外部 `生肉` 专用于人读版，外部 `熟肉` 是译文目录。迁移前曾以外部 `生肉` 作为来源根的命令不代表当前归档位置。
+- 迁移前 `.venv\Scripts\python.exe scripts\validate_source_manifest.py --root <当时来源根> --manifest source_manifest.json` 返回 `schema_version=1 artifacts=268 files_verified=268`；相关 plan-only 为 `ready_for_review`、88 episodes、88 verified sources、0 issues。当前归档与路径验证见下方最新续接。
+- 本地凭据检查只验证存在性：根 `.env` 不存在，Provider policy、JOJO/JYQF URL/key 和 `PROOFREAD_MODEL` 的 Process/User/Machine 环境变量均未设置；未读取密钥。真实 Provider/tokenizer 匹配试运行当前没有配置条件，不请求模型。后续可执行工作仍包括人工目录/格式验收、知识治理风险分层、更改后 stale 状态持久传播、原始 HTML/等效表示、EPUB 阅读器验证及 Notion 范围/恢复设计。
+- 该历史检查点曾把第二处 `熟肉` 路径作为译文根记录；用户之后已确认该目录角色。本交接中不再将其列为待更正事项。
+
+## 2026-11-17 AI/人类原文双版本与归档续接
+
+- 用户确认 AI 版和人读版均以采集系统产生的同一份完整原文为输入；原文只采集一次，之后按识别效率与人类阅读体验分别选择清洗转换。AI profile `ai-efficient-v1` 将每段一个 U+3000 排版缩进移除、ruby 转为紧凑 `基字《读音》`、旁点转 Markdown 强调；human profile `human-reading-v1` 保留缩进，以 HTML Ruby/CSS `text-emphasis` 呈现振假名和旁点。两版各自记录共同 raw input version、normalized source version、输入 SHA-256、profile ID、输出 SHA-256。
+- 版本归档位于 `projects\祝福のネトラレラ\SourceArchive`。AI 文件位于 `projects\祝福のネトラレラ\RAWs_AI`；人读文件位于 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉\<章节名>\<话名>.md`；译文目标是同书外部 `熟肉`。人读根有 88 个 Markdown + `SOURCE_MAP.json`；AI 根有 88 个 Markdown + `catalog.json`。人读文件名没有位置数字前缀，只有同章重名时才为消歧添加位置/ID。
+- 导出命令：`.venv\Scripts\python.exe scripts\export_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.refresh-2026-11-16.json --manifest source_manifest.json --human-root <用户指定外部生肉目录> --ai-root projects\祝福のネトラレラ\RAWs_AI`；生成 88 话、3 组、178 个文件。输入 793,183 bytes；AI 输出 774,253 bytes；人读版输出 799,293 bytes。
+- `.venv\Scripts\python.exe -m unittest tests.test_source_editions -v`：8 项合成测试通过。manifest 268/268 与 refresh catalog `--plan-only` 的 88/88 来源核验通过；88 对索引共同 raw input/version/hash、normalized source lineage 和 176 个输出 SHA-256 均核对通过，两版每话的输出 hash 不同。重复导出创建 0 个文件并复用 178 个一致文件。初次重跑因两个旧索引缺少新增 raw-input provenance 字段而按冲突规则停止；先验证 176 个章节 Markdown 与当前代码生成字节完全一致，再只刷新 `SOURCE_MAP.json` 与 `catalog.json`，来源归档和正文文件未改写。
+- `py_compile`、导出器 CLI `--help`、`git diff --check`、manifest validator 与只读 plan-only 均通过；plan-only 为 `ready_for_review`、88 个已验证来源、0 问题且不含原文，网络/Provider/文件写入计数为 0。全量 README/`docs/` 本地 Markdown 链接与锚点检查覆盖 14 份文档、185 个链接，0 个缺失目标。人类逐段保真、章节/话名、Ruby/旁点/缩进在用户目标阅读器中的实际观感仍待人工验收。不得将书籍正文复制到日志或文档。当前额度不可核实，不作阈值判断。
+
+## 2026-11-17 AI 清洗版翻译入口续接
+
+- 当前工作树仍以 `main` / `e2fe611` 为基线，续接开始时已有多份代码、测试和文档未提交修改；全部保留，没有暂存、提交、清理或覆盖。项目原文路径职责：`projects\祝福のネトラレラ\SourceArchive` 是采集版本归档；项目 `RAWs_AI` 是 AI 清洗镜像；用户指定外部 `生肉` 是人类阅读版；同书外部 `熟肉` 是译文根。
+- 已完成版本化导出：collector `source_manifest.json` 未改动，仍为 268/268；新增 `source_editions_manifest.json`，保留全部采集来源历史并追加 176 个 AI/人读 artifact，共 444/444 文件 hash 通过。首次增加 176 个不可变版本文件和清洗清单；已有 176 个镜像 Markdown 字节相同，只刷新两份索引。幂等重跑 `created_files=0`、`updated_files=0`、`reused_files=355`。
+- 已完成 AI 翻译输入接入：`scripts/run_kakuyomu_workflow.py` 的 plan-only 和正式入口默认从 `--source-root` 同级 `RAWs_AI` 选择并读取 AI 正文；`--ai-edition-root` 仅覆盖该目录，`--edition-manifest` 指定归档中的清洗来源清单。AI 模式核验 AI 索引覆盖完整 catalog、catalog/source/edition 清单摘要、RAWs_AI 镜像与归档输出 hash、raw 父版本和 profile；plan 的逐话来源路径/版本用于归档 lineage 与校验，不能据此把归档目录当成翻译正文源。正式入口将 `CHAPTER_MAP` 与 `SOURCE_MANIFEST_PATH` 交给 pipeline 再验证。审批 plan 摘要绑定 profile、AI 索引根/路径/hash 与清洗清单路径/hash。采集器 `normalized_source` 仅通过显式 `--source-edition normalized_source` 选择。
+- 本机只读 AI plan-only：`ready_for_review`，88/88 话均从 `RAWs_AI` 读取正文，且其对应 `ai-efficient-v1` 归档 provenance 有效；0 问题、0 网络/Provider/文件写入，JSON 不含正文。人读版镜像/归档 hash 88/88 匹配。未生成译文，也未调用 Provider。
+- 默认 AI 输入回归后，以未指定 `--source-edition` 的 CLI 参数生成历史审阅计划：`projects\祝福のネトラレラ\SourceArchive\translation_plan_review_ai_default_2026-11-17.json`，摘要 `8a5679563c376f3ed9dcfdcd5115db77149cf77189c46c5e544eb215c4dcd4d7`。计划为 `ready_for_review`、88/88 `RAWs_AI` 正文及其归档 provenance 有效、0 问题，位置/episode ID/译文目标/TM key 唯一，目标均不存在；摘要重算一致，正文未包含，网络/Provider 调用均为 0。此历史计划后来因 catalog 追加及 AI 索引刷新而过期，并已迁出归档目录至 `Workflow/Plans/`；当前计划见本交接末尾的刷新记录。
+- 默认 AI 选源增量后的当前定向验证：`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`，166 项通过，覆盖 AI 版默认输入、显式兼容覆盖、审批摘要、pipeline 来源版本及全书概要门禁。
+- 之后进一步发现通用流水线在没有可选项目时会退回仓库根目录 `生肉/`；现已改为失败关闭，只有显式 JSON 配置能继续指定旧来源。`TestTestWorkspaceConfiguration` 23 项通过。修复后的当前 23 模块完整非 E2E 回归为 449 项运行、445 项通过、4 项 Windows 符号链接/FIFO 能力跳过、0 项失败，详见[开发与验证](../development.md#2026-11-17-默认-ai-清洗版翻译输入)。
+- 仓库规定的 E2E runner：`.venv\Scripts\python.exe tests\run_tests.py`，7 项本地 mock E2E 通过，236.923 秒，退出码 0。请求只到 runner 启动的 loopback mock server；控制台内容拦截与段落契约错误来自预期负向 fixture，不表示真实 Provider 或本书翻译执行。
+- AI 默认选源增量后的历史 E2E：`.venv\Scripts\python.exe tests\run_tests.py`，7 项本地 mock E2E 通过，229.541 秒，退出码 0。Kakuyomu fixture 验证采集后清洗、默认 AI 计划、对应 AI 版概要/计划审核和 mock 翻译；当时的断言仅比较相同字节，不能单独证明读取根目录。当前直接从 `RAWs_AI` 读取的路径契约由后续回归覆盖。其余安全拦截/段落契约失败日志是负向 fixture 预期。
+- Python `py_compile`、编排器/导出器 CLI `--help`、`git diff --check` 及活动 Markdown 本地文件链接目标检查均通过；链接检查覆盖 README 和 `docs/` 共 14 份文档、184 个本地链接，不校验标题锚点。
+- 下一步可直接执行：先按[当前计划审阅交接](2026-11-16-pilot-plan-review.md)人工核对上述默认 AI 版计划；用目标阅读器验收人读 Ruby、旁点、U+3000 和段落视觉效果；将 reviewed 全书概要绑定到 AI 版本清单内的版本 ID，并创建匹配此计划摘要的审批回执，再按已授权类别配置本地 Provider 并做受控单话翻译。以上均未由本续接完成。用户已明确作品授权与无需官方澄清，不能再把二者列为阻塞；Provider 配置、计划人工审阅和全文概要审核是独立运行条件。
+- 本次续接已重新读取两条规划会话的近期页；项目资料仍以仓库和本交接为实施证据。无参数 `Config.load_config()` 在当前 checkout 选择试点项目的 `SourceArchive`/`source_editions_manifest.json`，构造 88 条 AI 归档映射；无项目且无显式 JSON 配置的路径已由合成回归确认停止。真实概要 bundle、计划人工审批和 Provider 配置仍未具备；没有生成译文或调用 Provider。
+- 当前额度信息不可见，无法核实 5 小时额度比例；自然阶段已记录。书籍正文不得复制到日志/文档，当前工作树未提交状态须保留。
+
+## 2026-11-17 采集后双版本自动清洗续接
+
+- 用户再次明确翻译系统默认输入就是清洗系统产出的 AI 识别优化版。当前 Kakuyomu 编排器默认从 `RAWs_AI` 读取正文，并从不可变归档核验 provenance；本次进一步把完整采集后的 `normalized_source` 物化与双版本清洗连接起来：采集不完整时不导出，完整时先调用 `prepare_source_editions`，再生成默认 AI 计划。TM E2E 回归确认落库原文对应 `RAWs_AI` 输入；归档副本用于内容寻址与来源校验。
+- `workflow_paths.json` schema v1 继续保留现有 `output_dir`，新增可选 `human_edition_root`；未设置时默认为项目 `生肉/`。试点本地忽略配置中的用户指定外部 `熟肉` 路径保留，并加入用户指定外部 `生肉` 人读根。实际项目只读解析得到 88 条带 AI 版本映射；人读根、译文根均匹配用户指定目录且互不重叠。该只读检查未写入书籍文件，也未调用 Provider。
+- 索引有限刷新允许发现 catalog 路径变化和目录末尾追加；要求旧话目 ID/位置/标题/来源版本不变、旧章节保持顺序且只能扩展末章或追加新章、公开话数等于索引话目数。其他元数据/章节变更或现有 Markdown 不同均停止并保留原文件。
+- 改动文件包括 `scripts/run_kakuyomu_workflow.py`、`source_editions.py`、`pipeline.py`、相关 workflow/source-edition/pipeline/E2E 测试和 README、架构、流程、路线图、开发记录及本交接；`projects/祝福のネトラレラ/workflow_paths.json` 为 gitignored 本地路径配置，已有译文根保留并新增人读根。其余在续接前已脏的 `.env.example`、知识模块、RAG、TM 和审批改动未回滚或清理。
+- 本轮最终验证：`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`，177 项通过；`.venv\Scripts\python.exe tests\run_tests.py tests.test_e2e.E2ETestSuite.test_kakuyomu_catalog_runs_archive_to_versioned_mock_translation`，1 项通过。E2E 使用合成页面和本地 mock Provider，并验证 TM 原文与 AI 版归档逐段一致；未访问 Kakuyomu 或真实 Provider。相关源码/测试 `py_compile`、8 份本轮主要文档的本地链接目标检查、`git diff --check` 均通过。未运行全仓完整回归；额度信息不可见。
+- 后续可直接执行：对完整来源完成一次受控的正式采集运行后，确认 `source_editions` 报告和默认 AI 计划中的 profile/版本；不要把既有试点目录作为写入验证目标，除非显式选择 catalog/hash 已核对且所有镜像文件字节一致的运行。再人工验收 88 话目录映射与人读 Ruby/旁点/缩进。真实 Provider 单话翻译仍要有符合当前授权类别的本地配置、当前 approved 全书概要和匹配计划审批回执；Provider/API 及人类阅读效果都未在本续接验证。
+
+## 2026-11-17 Kakuyomu 编排自动记录下游新鲜度续接
+
+- 本阶段从 I4 下游 stale 留档缺口继续。检查确认 AI 清洗归档版本也以 `normalized_source` kind 登记在合并清单中，并有独立 artifact ID 与当前 raw 父版本；TM、知识和概要审核器对该版本类型的判断与翻译输入契约相符，本阶段未修改这一契约。
+- `scripts/run_kakuyomu_workflow.py` 现于计划生成后审计已存在的 TM、知识来源 provenance 和已审核 JSON 概要，并将翻译前快照追加到 `SourceArchive/`；成功翻译后再次生成翻译后快照。无下游文件时报告 `not_needed`，无法安全完成审计时报告 `unavailable`。快照 schema v2 绑定 source manifest 与消费者输入 SHA-256，不含正文；按内容寻址，重跑相同状态复用既有文件，状态变化追加新文件。任何快照都不改写消费者文件，也不取代其运行时门禁。
+- 新增/更新实现：`scripts/snapshot_downstream_freshness.py`、`scripts/run_kakuyomu_workflow.py`、对应 freshness/workflow tests，以及开发记录、项目现状、路线图、翻译流程、I4 专题计划和本交接。所有工作树中其他未提交文件均保留；没有触碰真实书籍正文、译文或凭据，没有调用站点/Provider/Notion。
+- 最终验证：`.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot tests.test_kakuyomu_workflow tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_translation_plan_approval tests.test_pipeline_contracts tests.test_source_pipeline_linkage tests.test_story_summary_review -q`，186 项通过；`.venv\Scripts\python.exe tests\run_tests.py`，7 项本地 mock E2E 通过（226.138 秒）。持久化测试覆盖内容寻址、同状态重跑不覆盖、状态变化追加；工作流测试覆盖消费者配置发现和前/后快照调用边界。相关源码/测试 `py_compile`、`git diff --check` 和 8 份主要文档本地链接检查均通过；链接检查不校验锚点。没有访问站点/真实 Provider/Notion。
+- 范围限制：自动快照仅接在完整 `scripts/run_kakuyomu_workflow.py` 编排中；`scripts/ingest_kakuyomu_pages.py` 和本地导入 CLI 单独运行时不自动审计。快照是带版本的状态记录，不会把 stale 写回译文、TM、知识或概要，不会自动重建派生物；消费者运行时校验仍是实际阻断门禁。后续可继续将此审计接入直接采集入口，并设计明确消费新鲜度快照的跨工具状态登记/恢复契约。
+
+## 2026-11-17 AI 默认翻译输入复核
+
+- 用户再次明确：AI 版是清洗系统为 AI 识别效率生成的干净原文，也是翻译系统默认且实际使用的输入。此前“默认仍用 `normalized_source`”的说法与当前需求和代码不符，应以本节核验为准。
+- 本检查点记录的实现曾由流水线直接读取 `SourceArchive/editions/ai-efficient-v1/` 中的不可变 AI 清洗归档版本；该运行时路径已按用户后续更正废止。当前 `RAWs_AI` 提供实际正文，归档只保留版本和来源 provenance 并用于校验；`--ai-edition-root` 覆盖 AI 索引/镜像根，只有显式 `--source-edition normalized_source` 才改用采集器规范化文本。
+- 通用项目模式无参数时现仅在恰好一个非示例项目时自动发现；若有多个项目则在来源加载前失败，要求 `--project` 或 `TRANSLATOR_PROJECT`，避免按目录顺序把翻译输入接到错误书籍。回归同时验证 `example/` 不参与候选项目计数。
+- 本阶段历史验证：Kakuyomu 计划测试、工作流测试、pipeline 契约和来源映射测试共 137 项通过；指定本地 mock E2E 1 项通过，并验证 TM 实际写入原文与当时计划选中的 AI 归档字节相同。因两份字节相同，该断言不是实际读取根目录的路径证据。没有调用 Kakuyomu 或真实 Provider。
+- 仍需人工审核 88 话计划映射及 AI/人读清洗效果；试点缺少绑定完整 AI 映射的 `STORY_SUMMARY_reviewed.json` 和匹配审批回执，因此尚未执行真实 Provider 翻译。额度余量不可见，本次只记录实际验证结果，不推断额度阈值。
+
+## 2026-11-17 独立 Kakuyomu 采集项目快照续接
+
+- 背景：此前 `scripts/run_kakuyomu_workflow.py` 会在完整采集/清洗后自动追加翻译前与翻译后新鲜度快照；单独运行 `scripts/ingest_kakuyomu_pages.py` 仍没有项目级下游状态留档。用户已明确 AI 清洗版是默认翻译输入。两个原始规划会话已由本轮 `read_thread` 读取；更早分页和项目事实仍以当前仓库、历史记录和代码为证据。
+- 已实现：独立 Kakuyomu CLI 新增显式 `--project <项目名>`。它要求 `--source-root`、`--output-root` 都精确指向选定项目的 `SourceArchive/`，并使用默认 `source_manifest.json`；错误路径在 adapter/网络前拒绝。采集返回后同步当前来源历史到 `source_editions_manifest.json`，保留既有 AI/人读 artifact，并追加 schema v2 内容寻址快照。AI 索引的来源 manifest、edition manifest、catalog 路径/哈希或目录映射过期时记为 `stale`；缺少 AI 索引时记为 `unverified`；AI 索引过期时 reviewed full-book summary 也标记 `stale`。
+- 限制：独立采集项目模式不运行双版本清洗、不更新 `RAWs_AI/catalog.json`、不重建译文/知识/概要；默认翻译入口继续在 AI 索引过期时失败关闭。需要完整采集、AI/人读清洗与 AI 默认翻译计划时继续使用 `scripts/run_kakuyomu_workflow.py`。未传 `--project` 时采集 CLI 保持 source-only 行为。本阶段未访问真实站点、Provider、Notion 或真实书籍目录。
+- 变更文件：`scripts/ingest_kakuyomu_pages.py`、`source_editions.py`、`tests/test_kakuyomu_page_source.py`、`tests/test_source_editions.py`，以及 `README.md`、项目现状、路线图、翻译流程、I4 专题方案、开发验证和本交接。原有其他工作区改动均保留，无提交、重置或清理。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_source_editions -q`，14 项通过；`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source -q`，33 项通过。覆盖来源历史合并/幂等、AI 索引 stale 检测、首次项目采集无索引快照和根路径错配前置拒绝。相关源码/测试 `py_compile` 与 `git diff --check` 通过。未运行全仓回归或 mock E2E。
+- 续接时先运行快照/采集/清洗相关定向回归，检查 Markdown 链接与差异，再核对 `git status --short --branch`。当前工作区有大量本任务之前已存在的未提交改动；必须全部保留，不提交、不回滚、不清理。下一步可评估是否要在独立采集模式提供显式的后续清洗操作；若涉及旧话来源变化，先设计 index/AI edition 的版本刷新策略，不能覆盖旧 edition 或既有译文。
+
+## 2026-11-17 Provider 阶段配置续接
+
+- 完成配置入口：`Config.load_config` 支持 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 环境变量，优先于 JSON；单测验证覆盖关系。当前被忽略的根 `.env` 已写入 `TRANSLATOR_PROJECT`、三阶段 JOJO 主模型、JYQF 显式备用开关，以及两方仅接收 `source_text`、`translation_text`、`book_knowledge` 的 allowlist；未包含凭据或 `evaluation_samples`，也未授权 Gemini/Notion。
+- 只读运行核验：配置加载选择试点项目的 88 条 AI 归档映射，显示主/备模型、回退开关及类别策略正确。Process/User/Machine 未设置 JOJO/JYQF key 或 `BASE_URL` 覆盖；代码候选默认 URL 未做连通性/协议验收；未调用 Provider。真实单话翻译仍需安全配置可用凭据、人工确认 88 话映射、为完整 AI 映射生成并审核概要、并创建匹配计划摘要的审批回执。
+- 本阶段代码测试：`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts -q`，105 项通过。`git check-ignore .env` 确认本地运行配置被忽略；项目只读加载返回 88 条 AI 映射；无密钥 preflight 明确缺少 `JOJO_API_KEY`、`JYQF_API_KEY` 后停止，没有发出请求。测试尚未证明模型/端点真实兼容。
+- 后续顺序：无密钥 Provider 预检已明确报告缺少 `JOJO_API_KEY`、`JYQF_API_KEY`；等待本地凭据配置后，先对代码候选默认 URL 做安全的非书籍连通性检查，再按路线图的审批门禁运行单话并记录质量/用量。不要从代码默认 URL 推断中转端点已连通或协议兼容。
+- 终态只读复核：该历史检查点解析出 88 条 AI 版本映射，首条 archive provenance 位于 `SourceArchive/editions/ai-efficient-v1/` 并绑定 `source_version_id`；当时未分别核对实际正文根。当前 `RAWs_AI` 输入路径及本次独立验证记录见本交接更新内容。译文根解析为用户指定外部 `熟肉`。路线图当时已更正为“无 key/URL 环境覆盖，代码有候选默认 URL，连通性和协议未验收”。`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts -q`：121 项通过；预期故障注入日志不代表真实服务调用。历史 `git diff --check` 与 7 份活动文档链接目标检查通过；链接检查不校验锚点。工作区保留所有未提交更改、不暂存或提交；额度信息不可见，无法核实 5 小时额度比例。
+
+## 2026-11-17 Kakuyomu 追加无变化复查续接
+
+- 背景与决策：用户再次明确 AI 清洗版是翻译系统默认且实际使用的干净原文输入。当前 `scripts/run_kakuyomu_workflow.py` 默认 `source_edition="ai"`，通用项目 `pipeline.py` 从已校验的 `RAWs_AI` 索引建立版本绑定映射；只有 Kakuyomu CLI 显式传 `--source-edition normalized_source` 才改用采集器规范化文本。`--ai-edition-root` 仅覆盖 AI 索引根。两条原始规划会话此前已读取；当前实施状态以本仓库代码、测试和文档为准。
+- 本阶段完成：通过同一 PowerShell 调用注入 `http_proxy`、`https_proxy`、`all_proxy` 到 `127.0.0.1:7897` 后，以 `scripts/ingest_kakuyomu_pages.py --project 祝福のネトラレラ` 对作品主页执行真实追加复查。结果发现/完成 88 话、追加 0、复用 88、待处理 0；没有新话，因此未请求 episode 正文。该结果只证明真实无变化续跑，不证明新增话正文抓取。
+- 该运行快照报告 AI 索引尚未指向新 catalog。随后运行 `scripts/export_source_editions.py --refresh-indexes`：只更新 `RAWs_AI/catalog.json` 与人读 `SOURCE_MAP.json` 两个索引；0 章内容创建/更新，353 个一致文件复用，章节 Markdown 字节未改变。来源 `source_manifest.json` 为 268/268。刷新后默认参数 `--plan-only` 再核验 88/88 `RAWs_AI` 正文和对应归档 provenance，状态 `ready_for_review`、0 问题、0 网络/Provider 调用或文件写入；计划分别绑定 `RAWs_AI` 镜像输入路径和 `ai-efficient-v1` 归档 provenance。
+- 下游快照记录 TM 有 19 条 `unindexed`，`STORY_SUMMARY_reviewed.json` 缺失并标记 `unverified`。本续接末尾再次只读检查确认该概要仍不存在、SourceArchive 下没有计划或审批文件、外部译文根仍为空；计划和审批回执分别归入 `Workflow/Plans/` 与 `Workflow/Approvals/`。这些不会改变 AI 默认输入契约，但在概要获审、匹配计划回执与凭据配置前仍不能执行真实翻译。真实 Provider 尚未调用、译文尚未生成。作品授权与无需官方澄清均由用户确认，不得重新列为阻塞。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_source_editions tests.test_downstream_freshness_snapshot -q`，56 项通过；另运行 `.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_translation_plan tests.test_pipeline_contracts -q`，121 项通过。默认 AI `--plan-only` 真实项目复核为 88/88。最终 `git diff --check` 通过；README 与 6 份相关 Markdown 的本地链接目标检查通过，不校验锚点。
+- 下一步：新增话目出现后，再用 append-only live 路径验证新增 episode 正文请求、版本归档、双版增量清洗和默认 AI 计划；在此之前保留“新增话 fetch 仅有合成测试”的限制。人工审阅 88 话映射及清洗效果，生成并审核 AI 版本绑定的完整概要，创建计划匹配回执，安全配置本地 Provider 后再进行受控单话翻译。
+- 工作区与资产：checkout 仍为 `main` / HEAD `e2fe611258532c9f0bab3672eda52cf928102b1`，存在大量此前未提交改动，全部保留且未暂存、提交、回滚或清理。此次新增的忽略数据包括 `source_catalog.append-2026-11-17.json`、`source_checkpoint.append-2026-11-17.json` 和两份内容寻址 freshness snapshot。索引刷新只改变双版索引文件，不改章节 Markdown 或版本 archive。额度状态不可见，无法核实 5 小时额度阈值。
+
+## 2026-11-17 追加 catalog 后刷新人工审阅计划
+
+- 发现并处理：交接文档中的 `translation_plan_review_ai_default_2026-11-17.json` 摘要 `8a567956...` 仍绑定旧 `source_catalog.refresh-2026-11-16.json` 和旧 AI 索引，不能用于追加后的人工批准。旧文件保留为历史记录，没有覆盖或删除。
+- 当时新建的审阅计划：`projects\祝福のネトラレラ\Workflow\Plans\translation_plan_review_ai_append_2026-11-17.json`，绑定 `source_catalog.append-2026-11-17.json` 和 AI 索引摘要 `7d45a2e2b1a88ccf334c2fda9c5ae9f4890ac3bc1d4bcda7c82de3b8093ef636`。计划状态 `ready_for_review`，88/88 `RAWs_AI` 正文与来源 provenance 有效，profile `ai-efficient-v1`，0 问题；无正文、0 网络请求、0 Provider 调用。
+- 历史验证：`translation_plan_approval.load_translation_plan` 当时加载该计划并复算摘要成功，摘要 `1d7ae1cef2a318d79fccb9948b4e2de79799b9d087978922f08592a4b7a79283`。该计划曾被移入 `SourceArchive/`，后已迁至 `Workflow/Plans/`；未覆盖目标文件。`SourceArchive/` 不再保存计划或审批回执。
+- 当时同步：文档曾将此计划作为当前审阅对象；本交接后续的“归档与 AI 正文输入边界”已记录 schema v2 新计划，并将本计划保留为历史文件。此前摘要不可用于当前回执。
+- 当时下一步：人工检查该计划的 88 个 episode ID/位置/AI 来源版本/目标路径/TM key，并验收清洗结果。此待办已由顶部当前审阅计划更新；仍须取得新计划摘要的明确批准、审核全书概要并确认 Provider 配置，才可执行受控单话翻译。
+
+## 2026-11-17 归档与 AI 正文输入边界
+
+- 用户再次明确：翻译正文必须直接从项目 `RAWs_AI/` 读取；`SourceArchive/` 只保存来源及派生版本归档和来源校验材料。计划与审批是工作流记录，分别放入 `Workflow/Plans/` 与 `Workflow/Approvals/`。
+- 已将 5 份误放于 `SourceArchive/` 的 `translation_plan_review*.json` 移至 `Workflow/Plans/`。迁移当时核对为归档目录内同名计划数 0、计划目录中 5；随后新增 schema v2 当前计划，现目录共 6 份。没有覆盖目标文件。计划和审批 CLI 均拒绝把工作流文件写入 `SourceArchive/`。
+- 路径实现核查：`pipeline.py::_read_chapter_source_text` 和 Kakuyomu `_is_committed_translation` 使用 `read_verified_ai_edition_bytes` 从 AI 输入根读取正文；归档路径用于来源版本/hash/provenance 核验。定向合约回归通过。
+- 验证：`.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts -q`，162 项通过；`git diff --check` 通过。测试使用本地合成数据，无 Kakuyomu 或真实 Provider 请求。
+- 随后发现旧待审计划是 schema v1，现行校验器仅接受 schema v2；保留旧计划并生成 `Workflow/Plans/translation_plan_review_ai_raw_html_schema2_2026-11-17.json`。当前摘要 `331013b8fdaab3195d30e640bc737029cea0408adc6d7b42554ebbc8486b5d1f` 已由现行 loader 复核，状态 `ready_for_review`，88/88 `RAWs_AI` 正文及对应归档 provenance 有效；0 网络、0 Provider、1 次计划 JSON 写入。当前归档内计划/回执均为 0，计划目录共 6 份。
+- 当前未提交工作区的其他既有改动继续保留。下一步审阅当前 schema v2 计划中的 88 话映射并验收人读版显示；正式翻译仍需匹配审批回执、AI 版本绑定的 reviewed 全书概要和可用 Provider 配置。
+
+## 2026-11-18 输出模式契约续接
+
+- 断点基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `7ea8e1012878a7d9ea7ad8302b3666b5bf114115`。本次已重新读取“翻译工作流文档体系”“翻译工作流计划方案”“翻译工作流开发实施（旧）”三条引用会话；会话内容作为历史上下文，当前能力仍以此 checkout 的代码、测试及日期化验证为准。
+- K1 输出入口边界已实现：未审核 `TranslationPipeline` 必须显式设置 `compatibility_draft` 或隔离测试用 `test_draft`；项目/Kakuyomu 活动 run 使用内部 `reviewed_run_draft`。显式 JSON 缺少兼容草稿标记、模式冲突或输出落入已识别正式译文根时，在创建 pipeline 前失败。兼容草稿没有正式发布资格；发布仍走带审核快照与回执的 create-only 发布器。迁移方式、路径边界及回滚影响见[开发与验证](../development.md#2026-11-18-兼容入口正式目录保护)。
+- K2 增量已实现：正式项目 `TranslationPipeline` 在读取概要、术语或构造 `RAGEngine` 前拒绝 `ALLOW_UNREVIEWED_TM=true`，避免环境变量覆盖默认审核检索门禁；兼容 draft 仍可显式选择未审核 TM。对应测试确认拒绝发生在知识加载和 RAG 构造之前。该增量不实现审核者认证、风险分层、变更队列或语义质量证明。
+- 关键变更位于 `pipeline.py`、`scripts/run_kakuyomu_workflow.py`、`scripts/publish_reviewed_run.py`、`translation_review.py` 及对应 pipeline、workflow、review、E2E 测试；工作流和验收矩阵更新于 `docs/end-to-end-workflow-target.md`、`docs/development.md`、`docs/project-status.md`、`docs/architecture.md`、`docs/translation-workflow.md`、`README.md` 等文档。
+- 最新全量非 E2E 回归：589 项运行、585 项通过、4 项因 Windows 符号链接/FIFO 能力跳过、0 失败，42.855 秒；包含正式项目拒绝未审核 TM 检索、CLI 子进程拒绝未标记 JSON 和 hash-only 阶段报告持久化的测试。完整本地 mock E2E：7 项通过，214.208 秒，退出码 0。`git diff --check` 通过；本轮专用 `py_compile` 命令见续接记录。以上均不证明真实 Provider 可用或译文语义质量。
+- 仍未闭合：K2 的知识审核身份可信度、语义质量与风险分层；K3 的“信、达、雅”独立审核职责、版本化报告和质量阈值；K4 的独立终审、有限返工版本链及耗尽后的升级责任；K5 的 88 话映射/双版本清洗人工验收，以及本地 Provider/tokenizer/预算匹配和受控首话验收。真实 Provider 尚未调用、没有真实审核概要或译文；不得用本地回执或 mock 结果替代这些验收。
+- 下一步：先由有权限的审核者完成 88 话计划映射与 AI/人读清洗抽样/全量验收，并按当前来源版本生成、审核全书概要和术语表及匹配计划回执；实施者只读核验本地 Provider 配置是否完整（不输出密钥），再依既有授权和预算做单话试译。涉及质量阈值、自动返工上限、审核异常升级责任的部分需形成明确决策后再实现，不能猜定。
+- 工作区状态：以上 tracked 文件仍处于未提交修改；受保护的未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 保持原样，未读取或修改。本次未暂存、提交、推送、回滚或清理。
+
+## 2026-11-18 K3 阶段审计轨迹续接
+
+- 在 K1 输出模式和 K2 正式项目拒绝未审核 TM 检索的基础上，正式 `TranslationPipeline.run_chapter` 现在为每个实际进入模型处理的章节追加 `Workflow/Runs/<run_id>/StageReports/episode-<tm-key-sha256-prefix>.json`。报告只保存章节映射、来源/AI 输入哈希、阶段状态、输入/输出摘要、模型标识、失败类型和 attempts，不保存原文、译文、提示词或响应正文。
+- 轨迹覆盖 `context`、`annotation`、`translation`、`proofreading_polishing` 和 `commit`；当前校对/润色仍是组合阶段，不能宣称三阶段独立审核职责、评分阈值或“信、达、雅”达标。失败报告尽力保留原异常；成功提交后报告持久化失败会让正式运行返回错误并保留草稿/TM，便于同一 run 继续核对。
+- 续跑已提交但缺少报告的章节时，只追加一次 `recovered` 记录，不重新调用模型；已有报告必须匹配当前 run/章节，损坏、超大或错配文件会 fail closed 且不覆盖原文件。
+- 新增 `tests.test_pipeline_contracts.TestParagraphContracts.test_formal_stage_report_is_hash_only_and_attempts_are_append_only`，验证正式路径报告落点、失败/成功尝试追加及正文不落盘。变更涉及 `pipeline.py`、`tests/test_pipeline_contracts.py`、`docs/architecture.md`、`docs/development.md`、`docs/end-to-end-workflow-target.md`、`docs/project-status.md`、`docs/translation-workflow.md`、`README.md` 和本交接。
+- 验证命令：三个阶段报告契约测试（3 项通过）；`.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_rag_engine_unit tests.test_kakuyomu_workflow -q`（178 项通过）；全量非 E2E 591/587/4，42.100 秒；`.venv\Scripts\python.exe tests\run_tests.py`（7 项 mock E2E，209.081 秒，退出码 0）；受影响源码/测试逐文件 `py_compile`、`pip check` 和 `git diff --check` 通过。未调用真实 Provider、Kakuyomu、Notion 或部署服务。
+- K3 仍未闭合：独立“信/达/雅”审核输出、语义质量规则和责任人、终审报告、有限返工版本链与人工升级均未实现。K5 的 88 话映射/清洗人工验收、真实 Provider/tokenizer/预算匹配和受控首话仍是后续前置。
+- 当前增量单测已通过；续接时需重跑本节列出的定向、全量非 E2E 和 mock E2E 命令，并检查 `git diff --check`。不要读取或修改受保护的未跟踪 freshness JSON，不要提交、回滚或清理工作区。
+
+## 2026-11-20 API 池终审角色续接
+
+- 当前基线仍为 `codex/translation-workflow-audit-20261117` / `9374fa79376c13f72f06f1e7764d732012b1436a`，且工作树包含此前 API/embedding、K4 及文档工作。最新增量新增 API 池可选 `FINAL_REVIEW_MODEL`：含该角色新保存 profile 为 v3；无该角色仍为 v2；v1/v2 可读，v1 明确迁移仍落到 v2。终审与初译必须采用不同规范化 endpoint/model identity，并获准全部三类翻译数据。旧 profile、凭据、试点文件未读取或变更。
+- 当前实现只包含配置、运行时清理和静态 preflight；没有审核调用器、AI 决策记录或自动发布。不同模型路由不证明语义独立。K4 的 issue registry 仅登记 code 和阶段，不足以推导“信达雅”判定或“连续两轮低收益”的数值/判定合同。
+- 验证：API 池 22 项；API 池 + pipeline contracts + Kakuyomu workflow 176 项；非 E2E 总回归 730 项运行、726 通过、4 项 Windows symlink/FIFO 跳过；mock E2E 7 项通过、205.929 秒。相关 Python `py_compile`、9 份 Markdown 相对链接目标与 `git diff --check` 通过。均未调用真实 Provider。细节见[开发记录](../development.md#2026-11-20-api-池可选终审角色)。
+- 下一阶段从设计并实现审核执行器开始：将 reviewer 结构化结果绑定 run、episode、source/bundle、候选字节、阶段策略和修订链；保留原候选并失败关闭；重试限定默认 2 次且沿用现有 `resolve_translation_review.py` 预算仲裁；只有已有发布门禁接受的 `passed` 链可继续。先验证 mock 成功/失败/异常/重复执行和发布拒绝，再核对真实 endpoint/Key 的配置状态（不输出秘密）；获准样本与 Provider 的真实执行状态仍须独立记录。
+- 继续工作前执行 `git status --short --branch`、定向读取现有 `translation_review.py`、`translation_review_state.py`、`scripts/record_translation_review_decision.py`、`scripts/resolve_translation_review.py` 与相关测试；不要读取 `downstream_freshness_ai_index_refreshed_2026-11-17.json`、本机 API profile、凭据或不必要的书籍正文。保留全部既存修改，不提交、重置或清理。
+
+## 2026-11-20 K4 工作流与试点门禁复核
+
+- 当前基线仍为 `codex/translation-workflow-audit-20261117` / `9374fa79376c13f72f06f1e7764d732012b1436a`。本次开始时工作区已有 23 个 tracked 修改和 15 个 untracked 项；均为此前工作，未覆盖或清理。受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 未读取或修改。
+- 较早的“API 池终审角色续接”将终审执行器列作下一阶段，现已过时。当前源码已有 `ai_translation_review.py`、`ai_translation_rework.py`、`ai_translation_workflow.py` 及对应 CLI：终审双次结构化评估；失败时按 finding 对齐段落进行有限返工；预算耗尽由人工仲裁；通过后复用 create-only 发布器。终审、返工和总工作流共用单话异步锁，跨进程互斥及进程退出后的锁恢复有测试。
+- 当前代码验证证据见[项目现状](../project-status.md#2026-11-20-k4-自动返工与复审)：综合定向回归 264 项通过；完整非 E2E 动态发现 753 项运行、749 项通过、4 项 Windows symlink/FIFO 能力跳过；mock E2E 7 项通过（213.512 秒）。验证用合成 assessor/generator；未调用真实 Provider、未运行试点正文。本次只改文档，没有重跑测试；`git diff --check` 与本地 Markdown 链接检查在本次修改后复核。
+- 只读复核当前试点元数据：计划 `translation_plan_review_ai_raw_html_schema2_2026-11-19.json` 状态 `ready_for_review`、88 话；对应人审模板 88 话，`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 均为 pending 88。`Workflow/Approvals/` 目录不存在，`Knowledge/STORY_SUMMARY_reviewed.json` 不存在。读取仅统计状态与数量，未显示或复制话目标题、正文或摘要。
+- 审批目录疑点已从代码核实为非阻塞：`write_new_child_text` 会创建父目录，审批 CLI 只在完整计划 SHA-256 确认后调用 create-only 写入。错误摘要不写回执；本次未创建目录或回执。
+- 下一步是由有权限的审核者完成 88 话映射及 AI/人读版决定，并按[翻译流程](../translation-workflow.md)的审批 CLI 生成与当前计划匹配的回执；随后生成并审核绑定当前 AI bundle 的全书概要/术语，再只读核验 Provider 配置与模型/tokenizer/预算，最后按现有授权做单话受控试译。以上人审与真实服务前置未完成前，不启动真实 Provider 或声称端到端试点通过。
+- K4 的代码阶段已完成当前合成验证；K5 试点阶段仍未完成。项目是 CLI，没有需要启动的开发服务。续接时先运行 `git status --short --branch`，保护现有混合工作区；测试命令与文档检查入口见[开发与验证](../development.md)，不要读取受保护 freshness JSON、本机凭据或不必要的章节正文。
+
+## 2026-11-20 K4 发布快照前进程终止恢复续接
+
+- 基线仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。本轮只增补合成恢复测试和当前状态文档，没有修改生产代码；保留既有混合工作树及受保护 freshness JSON，未读取书籍正文、本机 API profile 或凭据。
+- 新增 `tests.test_translation_review.TranslationReviewTests.test_ai_pass_recovers_after_process_termination_before_publication_snapshot`。子进程先在发布快照写入边界持锁等待，并以 flush/fsync 后原子改名写检查点；父进程验证检查点 PID/边界、passed 决策链、报告摘要与 reviewer 身份、AI 发布审核记录、译文准确字节以及 run 仍为 running 且快照/回执不存在，随后才终止子进程。
+- 新调用经现有 episode 文件锁恢复，复用审核结果而不调用 assessor，创建审核快照/发布回执并将 run 置为 published；决策链仍只有一条。第二次重开后状态仍为 published，run 与译文根下全部文件字节保持不变。它证明此处的合成用户态进程终止窗口，不证明内核崩溃、断电、介质写入顺序或真实 Provider 响应丢失。
+- 验证：单项进程终止测试 1 项通过（2.704 秒）；四模块定向回归 266 项通过（32.791 秒）；完整非 E2E 动态发现 31 个模块、755 项运行、751 项通过、4 项因 Windows symlink/FIFO 能力跳过（75.385 秒）；`.venv\Scripts\python.exe -m py_compile tests\test_translation_review.py`、10 份活动 Markdown 的 285 个本地链接目标和 `git diff --check` 通过。本轮只改测试/文档，未重跑 mock E2E；最近同一生产代码的本地 mock E2E 为 7 项通过、203.287 秒，未调用真实 Provider。
+- K5 门槛没有变化：88 话 mapping/AI edition/human edition 审批各仍需人类完成；计划审批回执、reviewed 全书概要/术语、Provider endpoint/model/tokenizer/预算检查与监督单话试译仍未通过。继续前检查状态并保护本地数据；不要提交、重置、清理、调用真实 Provider 或读取受保护 freshness JSON。
+
+## 2026-11-20 K4 回执落盘后状态恢复续接
+
+- 基线仍为分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。本轮只增加合成测试及文档记录；未改生产代码，保留混合工作区和受保护 freshness JSON，未读取书籍正文、API profile 或凭据。
+- 新增 `tests.test_translation_review.TranslationReviewTests.test_ai_pass_recovers_after_process_termination_before_run_state_published`。子进程在审核快照、create-only 发布回执和译文都已持久化后、更新 `run_state.json` 前停住。父进程认证检查点 PID/边界、通过决策链、AI 报告摘要/审核身份、发布快照与回执绑定、译文精确字节、来源身份有效和 run 仍是 `running`，再终止子进程。
+- 恢复调用重新取得 episode 文件锁，复用已通过决策和审核记录；发布器确认译文、快照与回执已存在且一致，不重写它们，只把 run 状态推进至 `published`。决策链仍只有一项；第二次重开时 run、快照、回执及译文字节保持不变。该测试证明指定合成用户态进程终止窗口，不证明内核崩溃、断电、介质持久性或真实 Provider 响应丢失。
+- 验证：该边界单测 1 项通过（2.647 秒）；四模块定向回归 267 项通过（34.355 秒）；完整非 E2E 动态发现 31 个模块、756 项运行、752 项通过、4 项因 Windows symlink/FIFO 能力跳过（78.501 秒）。本轮未重跑 mock E2E；最近同一生产代码的本地 mock E2E 为 7 项通过（203.287 秒），未调用真实 Provider。`py_compile`、活动文档链接检查与 `git diff --check` 应在续接收尾复核。
+- K5 仍待有权限的人类完成 88 话映射/AI 版/人读版决策、匹配计划回执及 reviewed 全书概要/术语审核；之后由凭据所有者核验 Provider endpoint/model/tokenizer/预算并执行获准的单话试译。不要读取受保护 JSON、本机凭据或不必要的章节正文。
+
+## 2026-11-20 K4 发布快照异常恢复续接
+
+- 当前基线仍为 `codex/translation-workflow-audit-20261117` / `9374fa79376c13f72f06f1e7764d732012b1436a`。本轮保留所有原有混合修改；新增测试及文档差异未暂存或提交。受保护 freshness JSON、小说正文、本机 API profile 和凭据均未读取。
+- 新增 `tests.test_translation_review.TranslationReviewTests.test_ai_pass_recovers_after_publication_snapshot_write_failure`：模拟 AI 终审已持久化 `passed` 决策、正式译文已写入后，审核快照写入抛出 `OSError`。首次运行保留决定/译文但没有发布快照与回执；同一 run 重试不再次调用 reviewer，复用绑定的 AI 审核快照并补齐发布快照、回执和 `published` run 状态。该异常注入不等同于进程硬杀、内核崩溃或断电持久性证明。
+- 验证：单项故障恢复测试通过；`.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state tests.test_pipeline_contracts tests.test_api_pool -q` 为 265 项通过；完整非 E2E 动态发现 754 项运行、750 项通过、4 项 Windows symlink/FIFO 能力跳过；`.venv\Scripts\python.exe tests\run_tests.py` 的本地 mock E2E 7 项通过（203.287 秒）。未调用真实 Provider。
+- 当前只读试点复核：计划仍为 `ready_for_review`、88 话；`mapping_decision`、`ai_edition_decision`、`human_edition_decision` 各 88 项 pending；`Workflow/Approvals/` 和 `Knowledge/STORY_SUMMARY_reviewed.json` 仍不存在。只统计状态和数量，未输出话目、正文或哈希。
+- 下一步仍由有权限的审核者完成三类 88 话审阅与匹配计划批准，再审核当前 AI bundle 绑定的全书知识；此后由凭据所有者核验 endpoint/model/tokenizer/预算并执行获准单话试译。代码侧可继续补充进程中断窗口的故障注入，但不以异常注入替代真实试点验收。
+
+## 2026-11-20 K4 终审逐次评估持久化续接
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `9374fa79376c13f72f06f1e7764d732012b1436a`。继续在混合工作区增量修改；未读取或改动受保护 freshness JSON、书籍正文、本机 API profile/凭据；未暂存、提交、重置或清理。
+- 变更：`ai_translation_review.py` 为每个通过结构校验的评估写入原子、create-only、内容受限 sidecar，绑定 run/work/episode、source、candidate、policy、reviewer route 和评估序号。重试验证并复用已有评估，只请求缺失的一次；最终报告与决策 schema 保持不变。`tests/test_translation_review.py` 新增两个测试：单次评估已落盘后认证并终止子进程，验证恢复只调用评估 2 且发布后重开字节稳定；修改 sidecar 身份后验证 Provider 不会被调用且恢复失败关闭。
+- 验证：新增两项定向用例 2/2 通过（2.926 秒）；`.venv\Scripts\python.exe -m unittest tests.test_translation_review tests.test_translation_review_state -q`：106 项通过（33.855 秒）；动态发现全部非 E2E：758 项运行、754 项通过、4 项因 Windows symlink/FIFO 能力跳过（82.547 秒）；`.venv\Scripts\python.exe tests\run_tests.py`：本地 loopback mock E2E 7 项通过（216.520 秒，退出码 0）；`.venv\Scripts\python.exe -m py_compile ai_translation_review.py tests\test_translation_review.py` 及 `git diff --check` 通过。活动 Markdown 本地目标复核在本记录追加后执行。合成测试未调用真实 Provider；E2E 负向 fixture 的 content filter 和段落错配日志为预期结果。
+- 剩余风险：Provider 已返回、对应 sidecar 尚未原子落盘时仍可能重复该次调用并计费；本地代码无法代替 Provider 幂等键消除该窗口。测试覆盖指定用户态进程终止点，不证明内核崩溃或断电持久性。
+- 回滚与续接：不迁移数据库，不改候选、报告、决定、译文或 TM；若回滚代码，保留新建的 `AIReviews/<episode_id>/assessment-*.json` 证据。K4 本地合成恢复路径已通过；整体工作流仍停在 K5 人工前置：有权限的人审 88 话映射和双版本并创建计划回执，审核 reviewed 全书知识；随后由凭据所有者核验 Provider 授权/路由/预算并执行获准的一话试译及人工质量验收。项目是本地 CLI，无 Web 服务部署步骤。
+
+## 2026-11-21 K5、CI 与 PR 检查点
+
+- 提交本记录前核验的 PR 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `227cc4658f9067d41d35c1b5ffc3bd5ea5bea79a`。PR #71 当时为 `OPEN`；Ubuntu 与 Windows Python 3.14 检查均通过。GitHub `reviewDecision` 为空，自动审查评论不构成正式审批，因此未合并。
+- 用户报告的人类版与 AI 版部分单话及大合集抽样结果已记入[开发记录](../development.md#2026-11-21-用户报告的原文抽样核实)和[项目现状](../project-status.md)。这是局部抽样报告；实际检查日期、样本清单和标准未知，Codex 未独立读取书籍正文，不提升为 88 话验收。
+- K5 仍待有权限的人类完成 88 话映射、AI 版/人读版审核和匹配计划审批，审核当前 bundle 绑定的全书知识；其后由凭据所有者核验 Provider endpoint/model/tokenizer/预算，并按授权执行单话试译及质量验收。没有真实 Provider 或部署验收证据。
+- 工作区检查仅见受保护的未跟踪 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；未读取、暂存或修改。后续变更须继续避免纳入该文件，并以当前 checkout 重新验证，不沿用本交接中的旧测试计数。

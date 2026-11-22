@@ -9,7 +9,14 @@ import sys
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from book_bundles import load_verified_ai_book_bundle
 from scripts.validate_knowledge_provenance import audit_knowledge_provenance
+from source_manifest import (
+    load_manifest,
+    verify_current_normalized_source,
+    verify_current_normalized_source_metadata,
+)
+from source_editions import read_verified_ai_edition_bytes
 from utils import (
     open_regular_file,
     resolve_child_path,
@@ -17,13 +24,25 @@ from utils import (
     split_paragraphs,
     write_new_child_text,
 )
-from source_manifest import load_manifest, verify_current_normalized_source
 
 
 _MAX_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_SOURCE_BYTES = 16 * 1024 * 1024
+_MAX_SOURCE_COUNT = 1000
+_MAX_TOTAL_SOURCE_BYTES = 128 * 1024 * 1024
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _DECISIONS = frozenset({"approved", "rejected", "escalated"})
+_BOOK_BUNDLE_FIELDS = frozenset(
+    {
+        "source_snapshot_id",
+        "ai_bundle_id",
+        "bundle_set_relative_path",
+        "bundle_set_sha256",
+        "ai_bundle_relative_path",
+        "ai_bundle_sha256",
+        "episode_count",
+    }
+)
 
 
 def _reject_duplicate_keys(pairs):
@@ -100,7 +119,11 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
         raise ValueError("Knowledge provenance is not a complete schema v1 artifact.")
 
     source_files = provenance.get("source_files")
-    if not isinstance(source_files, list) or not source_files:
+    if (
+        not isinstance(source_files, list)
+        or not source_files
+        or len(source_files) > _MAX_SOURCE_COUNT
+    ):
         raise ValueError("Knowledge provenance has no source files.")
     paragraphs_by_filename = {}
     for source in source_files:
@@ -116,10 +139,10 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
             or filename in paragraphs_by_filename
             or isinstance(paragraph_count, bool)
             or not isinstance(paragraph_count, int)
-            or paragraph_count < 1
+            or paragraph_count < 0
             or isinstance(included_characters, bool)
             or not isinstance(included_characters, int)
-            or included_characters < 1
+            or included_characters < 0
             or not isinstance(included_digest, str)
             or not _SHA256_PATTERN.fullmatch(included_digest)
         ):
@@ -129,6 +152,35 @@ def _validate_evidence(provenance: dict, glossary: dict[str, str]) -> dict:
             "included_characters": included_characters,
             "included_sha256": included_digest,
         }
+
+    coverage = provenance.get("input_coverage")
+    if coverage is not None:
+        if not isinstance(coverage, dict):
+            raise ValueError("Knowledge provenance has malformed input coverage.")
+        if coverage.get("scope") == "all_configured_chapters":
+            configured_count = coverage.get("configured_chapter_count")
+            included_count = coverage.get("included_chapter_count")
+            input_characters = coverage.get("input_characters")
+            input_character_limit = coverage.get("input_character_limit")
+            if (
+                coverage.get("complete_for_configured_chapters") is not True
+                or isinstance(configured_count, bool)
+                or not isinstance(configured_count, int)
+                or configured_count != len(source_files)
+                or isinstance(included_count, bool)
+                or not isinstance(included_count, int)
+                or included_count != len(source_files)
+                or isinstance(input_characters, bool)
+                or not isinstance(input_characters, int)
+                or input_characters < 0
+                or isinstance(input_character_limit, bool)
+                or not isinstance(input_character_limit, int)
+                or input_character_limit < 1
+                or input_characters > input_character_limit
+            ):
+                raise ValueError(
+                    "Knowledge provenance has incomplete full-book coverage."
+                )
 
     evidence = provenance.get("glossary_evidence")
     if not isinstance(evidence, list):
@@ -186,26 +238,66 @@ def _verify_source_evidence(
     manifest: dict,
     provenance: dict,
     evidence_by_source: dict,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
 ) -> None:
     paragraphs_by_filename = {}
+    total_source_bytes = 0
     for source in provenance["source_files"]:
         filename = source["filename"]
-        version = verify_current_normalized_source(
-            source_root,
-            manifest,
-            source["source_version_id"],
+        source_input = (
+            (source_input_map or {}).get(filename)
+            if source_input_root is not None
+            else None
         )
+        if source_input_root is not None:
+            if (
+                not isinstance(source_input, dict)
+                or source_input.get("source_version_id")
+                != source["source_version_id"]
+                or source_input.get("source_input_file")
+                != source.get("source_input_file")
+            ):
+                raise ValueError(
+                    "Knowledge source does not match the current AI edition map."
+                )
+            source_bytes = read_verified_ai_edition_bytes(
+                source_input_root,
+                source_input["source_input_file"],
+                source_input["source_sha256"],
+                max_bytes=_MAX_SOURCE_BYTES,
+            )
+            version = verify_current_normalized_source_metadata(
+                manifest,
+                source["source_version_id"],
+            )
+        else:
+            if source.get("source_input_file") is not None:
+                raise ValueError(
+                    "AI edition knowledge sources require an AI input root and map."
+                )
+            version = verify_current_normalized_source(
+                source_root,
+                manifest,
+                source["source_version_id"],
+            )
+            source_path = resolve_relative_path(source_root, filename)
+            with open_regular_file(source_path, binary=True) as stream:
+                source_bytes = stream.read(_MAX_SOURCE_BYTES + 1)
+            if len(source_bytes) > _MAX_SOURCE_BYTES:
+                raise ValueError("Source chapter exceeds the review size limit.")
         if (
             version["kind"] != "normalized_source"
             or version["relative_path"] != filename
         ):
             raise ValueError("Knowledge source version does not match its path.")
-        source_path = resolve_relative_path(source_root, filename)
-        with open_regular_file(source_path, binary=True) as stream:
-            source_bytes = stream.read(_MAX_SOURCE_BYTES + 1)
-        if len(source_bytes) > _MAX_SOURCE_BYTES:
-            raise ValueError("Source chapter exceeds the review size limit.")
-        if hashlib.sha256(source_bytes).hexdigest() != version["content_sha256"]:
+        total_source_bytes += len(source_bytes)
+        if total_source_bytes > _MAX_TOTAL_SOURCE_BYTES:
+            raise ValueError("Knowledge review sources exceed the total size limit.")
+        if source_input_root is None and (
+            hashlib.sha256(source_bytes).hexdigest() != version["content_sha256"]
+        ):
             raise ValueError("Source chapter changed during review publication.")
         try:
             text = source_bytes.decode("utf-8")
@@ -386,8 +478,15 @@ def apply_knowledge_review(
     manifest_relative_path: str,
     review_filename: str,
     output_filename: str,
+    *,
+    source_input_root: str | None = None,
+    source_input_map: dict[str, dict] | None = None,
+    expected_book_bundle: dict | None = None,
+    require_full_book_coverage: bool = False,
 ) -> dict:
     """Create a new reviewed glossary bundle from fresh candidates and a receipt."""
+    if not isinstance(require_full_book_coverage, bool):
+        raise ValueError("require_full_book_coverage must be a boolean.")
     glossary_bytes, glossary = _read_json_child(
         knowledge_root, "Glossary_draft.json"
     )
@@ -397,11 +496,27 @@ def apply_knowledge_review(
     receipt_bytes, receipt = _read_json_child(knowledge_root, review_filename)
     glossary = _validate_glossary(glossary)
     evidence_by_source = _validate_evidence(provenance, glossary)
+    has_source_input_root = isinstance(source_input_root, str) and bool(
+        source_input_root
+    )
+    if has_source_input_root != (source_input_map is not None):
+        raise ValueError(
+            "AI edition knowledge sources require both an input root and map."
+        )
+    if not has_source_input_root and any(
+        source.get("source_input_file") is not None
+        for source in provenance["source_files"]
+    ):
+        raise ValueError(
+            "AI edition knowledge sources require an AI input root and map."
+        )
 
     findings = audit_knowledge_provenance(
         provenance,
         source_root,
         manifest_relative_path,
+        source_input_root=source_input_root,
+        source_input_map=source_input_map,
     )
     if not findings or any(item["status"] != "verified" for item in findings):
         raise ValueError("Candidate source provenance is not fully verified.")
@@ -413,7 +528,139 @@ def apply_knowledge_review(
         manifest,
         provenance,
         evidence_by_source,
+        source_input_root=source_input_root,
+        source_input_map=source_input_map,
     )
+
+    coverage = provenance.get("input_coverage")
+    book_bundle = provenance.get("book_bundle")
+    source_files = provenance["source_files"]
+    full_book_coverage = (
+        isinstance(coverage, dict)
+        and coverage.get("scope") == "all_configured_chapters"
+    )
+    if require_full_book_coverage and (
+        not full_book_coverage
+        or coverage.get("complete_for_configured_chapters") is not True
+        or book_bundle is None
+        or expected_book_bundle is None
+        or not isinstance(source_input_root, str)
+        or not source_input_root
+        or not isinstance(source_input_map, dict)
+    ):
+        raise ValueError(
+            "Full-book glossary publication requires current bundle coverage."
+        )
+    if full_book_coverage:
+        configured_count = coverage.get("configured_chapter_count")
+        included_count = coverage.get("included_chapter_count")
+        input_characters = coverage.get("input_characters")
+        input_character_limit = coverage.get("input_character_limit")
+        if (
+            coverage.get("complete_for_configured_chapters") is not True
+            or isinstance(configured_count, bool)
+            or not isinstance(configured_count, int)
+            or configured_count != len(source_files)
+            or isinstance(included_count, bool)
+            or not isinstance(included_count, int)
+            or included_count != len(source_files)
+            or isinstance(input_characters, bool)
+            or not isinstance(input_characters, int)
+            or input_characters < 0
+            or isinstance(input_character_limit, bool)
+            or not isinstance(input_character_limit, int)
+            or input_character_limit < 1
+            or input_characters > input_character_limit
+            or not isinstance(source_input_root, str)
+            or not source_input_root
+            or not isinstance(source_input_map, dict)
+            or set(source_input_map)
+            != {source["filename"] for source in source_files}
+        ):
+            raise ValueError(
+                "Full-book glossary does not cover the current AI chapter map."
+            )
+    if book_bundle is not None:
+        if (
+            not isinstance(book_bundle, dict)
+            or set(book_bundle) != _BOOK_BUNDLE_FIELDS
+            or not isinstance(book_bundle.get("source_snapshot_id"), str)
+            or not re.fullmatch(
+                r"source-v1-[0-9a-f]{64}",
+                book_bundle["source_snapshot_id"],
+            )
+            or not isinstance(book_bundle.get("ai_bundle_id"), str)
+            or not re.fullmatch(r"ai-v1-[0-9a-f]{64}", book_bundle["ai_bundle_id"])
+            or any(
+                not isinstance(book_bundle.get(field), str)
+                or len(book_bundle[field]) > 4096
+                or "\\" in book_bundle[field]
+                or book_bundle[field].startswith("/")
+                or any(
+                    part in {"", ".", ".."}
+                    for part in book_bundle[field].split("/")
+                )
+                for field in (
+                    "bundle_set_relative_path",
+                    "ai_bundle_relative_path",
+                )
+            )
+            or any(
+                not isinstance(book_bundle.get(field), str)
+                or not _SHA256_PATTERN.fullmatch(book_bundle[field])
+                for field in ("bundle_set_sha256", "ai_bundle_sha256")
+            )
+            or isinstance(book_bundle.get("episode_count"), bool)
+            or not isinstance(book_bundle.get("episode_count"), int)
+            or book_bundle["episode_count"] < len(source_files)
+            or (
+                full_book_coverage
+                and book_bundle["episode_count"] != len(source_files)
+            )
+        ):
+            raise ValueError("Knowledge provenance has malformed book bundle data.")
+    if expected_book_bundle is not None:
+        if (
+            not isinstance(expected_book_bundle, dict)
+            or set(expected_book_bundle) != _BOOK_BUNDLE_FIELDS
+            or not isinstance(expected_book_bundle.get("source_snapshot_id"), str)
+            or not re.fullmatch(
+                r"source-v1-[0-9a-f]{64}",
+                expected_book_bundle["source_snapshot_id"],
+            )
+            or not isinstance(expected_book_bundle.get("ai_bundle_id"), str)
+            or not re.fullmatch(
+                r"ai-v1-[0-9a-f]{64}",
+                expected_book_bundle["ai_bundle_id"],
+            )
+            or any(
+                not isinstance(expected_book_bundle.get(field), str)
+                or len(expected_book_bundle[field]) > 4096
+                or "\\" in expected_book_bundle[field]
+                or expected_book_bundle[field].startswith("/")
+                or any(
+                    part in {"", ".", ".."}
+                    for part in expected_book_bundle[field].split("/")
+                )
+                for field in (
+                    "bundle_set_relative_path",
+                    "ai_bundle_relative_path",
+                )
+            )
+            or any(
+                not isinstance(expected_book_bundle.get(field), str)
+                or not _SHA256_PATTERN.fullmatch(expected_book_bundle[field])
+                for field in ("bundle_set_sha256", "ai_bundle_sha256")
+            )
+            or isinstance(expected_book_bundle.get("episode_count"), bool)
+            or not isinstance(expected_book_bundle.get("episode_count"), int)
+            or expected_book_bundle["episode_count"] < len(source_files)
+        ):
+            raise ValueError("Expected AI book bundle identity is malformed.")
+        if book_bundle != expected_book_bundle:
+            raise ValueError(
+                "Knowledge candidate belongs to a different AI book bundle."
+            )
 
     glossary_digest = hashlib.sha256(glossary_bytes).hexdigest()
     provenance_digest = hashlib.sha256(provenance_bytes).hexdigest()
@@ -457,6 +704,12 @@ def apply_knowledge_review(
             "terms_sha256": _terms_sha256(published_terms),
             "source_files": provenance["source_files"],
             "decisions": reviewed_decisions,
+            **(
+                {"input_coverage": coverage}
+                if isinstance(coverage, dict)
+                else {}
+            ),
+            **({"book_bundle": book_bundle} if book_bundle is not None else {}),
         },
     }
     output_text = json.dumps(bundle, ensure_ascii=False, indent=2)
@@ -479,6 +732,13 @@ def main(argv=None) -> int:
     parser.add_argument("--knowledge-root", required=True)
     parser.add_argument("--source-root")
     parser.add_argument("--manifest")
+    parser.add_argument("--require-full-book-coverage", action="store_true")
+    parser.add_argument("--catalog")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--bundle-set")
+    parser.add_argument("--human-root")
+    parser.add_argument("--ai-root")
+    parser.add_argument("--edition-manifest")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--review")
     mode.add_argument("--create-template", metavar="FILENAME")
@@ -486,8 +746,23 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.create_template:
-            if args.output is not None:
-                parser.error("--output is only valid with --review.")
+            if any(
+                value is not None
+                for value in (
+                    args.output,
+                    args.source_root,
+                    args.manifest,
+                    args.catalog,
+                    args.bundle_set,
+                    args.human_root,
+                    args.ai_root,
+                    args.checkpoint,
+                    args.edition_manifest,
+                )
+            ) or args.require_full_book_coverage:
+                parser.error(
+                    "source and publication arguments are only valid with --review."
+                )
             result = create_knowledge_review_template(
                 args.knowledge_root,
                 args.create_template,
@@ -498,12 +773,86 @@ def main(argv=None) -> int:
                 parser.error(
                     "--source-root, --manifest, and --output are required with --review."
                 )
+            bundle_arguments = (
+                args.catalog,
+                args.bundle_set,
+                args.human_root,
+                args.ai_root,
+            )
+            has_bundle_arguments = any(bundle_arguments)
+            if has_bundle_arguments and not all(bundle_arguments):
+                parser.error(
+                    "--catalog, --bundle-set, --human-root, and --ai-root "
+                    "must be provided together."
+                )
+            if args.require_full_book_coverage and not has_bundle_arguments:
+                parser.error(
+                    "--require-full-book-coverage requires a verified AI book bundle."
+                )
+
+            source_input_root = None
+            source_input_map = None
+            expected_book_bundle = None
+            if has_bundle_arguments:
+                verified_bundle = load_verified_ai_book_bundle(
+                    source_root=args.source_root,
+                    catalog_relative_path=args.catalog,
+                    checkpoint_relative_path=(
+                        args.checkpoint or "source_checkpoint.json"
+                    ),
+                    bundle_set_relative_path=args.bundle_set,
+                    human_root=args.human_root,
+                    ai_root=args.ai_root,
+                    manifest_relative_path=args.manifest,
+                    edition_manifest_relative_path=(
+                        args.edition_manifest or "source_editions_manifest.json"
+                    ),
+                )
+                if verified_bundle.get("status") != "verified":
+                    raise ValueError("Current AI book bundle is not verified.")
+                episodes_by_input = verified_bundle.get(
+                    "episodes_by_source_input_file"
+                )
+                if not isinstance(episodes_by_input, dict):
+                    raise ValueError(
+                        "Verified AI book bundle has no source chapter map."
+                    )
+                source_input_root = args.ai_root
+                source_input_map = {}
+                for episode in episodes_by_input.values():
+                    if not isinstance(episode, dict):
+                        raise ValueError(
+                            "Verified AI book bundle has an invalid source record."
+                        )
+                    filename = episode.get("source_file")
+                    if not isinstance(filename, str) or filename in source_input_map:
+                        raise ValueError(
+                            "Verified AI book bundle has a duplicate source map."
+                        )
+                    source_input_map[filename] = {
+                        "source_version_id": episode.get("source_version_id"),
+                        "source_input_file": episode.get("source_input_file"),
+                        "source_sha256": episode.get("source_sha256"),
+                    }
+                if len(source_input_map) != verified_bundle.get("episode_count"):
+                    raise ValueError(
+                        "Verified AI book bundle has an incomplete source map."
+                    )
+                expected_book_bundle = {
+                    field: verified_bundle[field]
+                    for field in _BOOK_BUNDLE_FIELDS
+                }
+
             result = apply_knowledge_review(
                 args.knowledge_root,
                 args.source_root,
                 args.manifest,
                 args.review,
                 args.output,
+                source_input_root=source_input_root,
+                source_input_map=source_input_map,
+                expected_book_bundle=expected_book_bundle,
+                require_full_book_coverage=args.require_full_book_coverage,
             )
             label = "Reviewed glossary artifact created"
     except (OSError, UnicodeError, ValueError) as exc:

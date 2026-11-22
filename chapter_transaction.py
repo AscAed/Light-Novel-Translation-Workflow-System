@@ -282,6 +282,28 @@ def _tm_chapter_matches(rag, tm_key: str, pairs: list, provenance: dict) -> bool
     )
 
 
+def is_chapter_translation_committed(
+    output_root: str,
+    raw_text: str,
+    spec,
+    rag,
+) -> bool:
+    """Return whether an existing output and TM entry match the current source."""
+    output_path, _, _, _ = _journal_location(output_root, spec.translation_file)
+    try:
+        with open_regular_file(output_path) as stream:
+            translation_text = stream.read()
+        expected_bytes = translation_text.replace("\n", os.linesep).encode("utf-8")
+        with open_regular_file(output_path, binary=True) as stream:
+            translation_bytes = stream.read()
+        if translation_bytes != expected_bytes:
+            return False
+        pairs, provenance = _build_tm_update(raw_text, translation_text, spec)
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return False
+    return _tm_chapter_matches(rag, spec.tm_key, pairs, provenance)
+
+
 def _apply_record(
     record: dict,
     raw_text: str,

@@ -99,6 +99,9 @@ def _resolve_pandoc_executable(executable):
     executable = os.fspath(executable)
     if os.path.dirname(executable):
         return os.path.abspath(executable)
+    resolved = shutil.which(executable)
+    if resolved:
+        return os.path.abspath(resolved)
     return executable
 
 
@@ -199,7 +202,13 @@ def _validate_catalog(catalog):
     return metadata, normalized
 
 
-def _read_chapter(root, chapter, max_chapter_bytes):
+def _read_chapter(
+    root,
+    chapter,
+    max_chapter_bytes,
+    *,
+    expected_title=None,
+):
     path = resolve_relative_path(root, chapter["translation_path"])
     with open_regular_file(path, binary=True) as stream:
         content = stream.read(max_chapter_bytes + 1)
@@ -210,7 +219,8 @@ def _read_chapter(root, chapter, max_chapter_bytes):
     except UnicodeDecodeError as exc:
         raise ValueError("A translation chapter is not valid UTF-8.") from exc
     first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    if first_line != f"# {chapter['title']}":
+    title = chapter["title"] if expected_title is None else expected_title
+    if first_line != f"# {title}":
         raise ValueError("Each chapter must start with its catalog-matched H1 title.")
     if _IMAGE_MARKUP.search(text):
         raise ValueError("Image markup is not supported by this candidate builder.")
@@ -219,6 +229,26 @@ def _read_chapter(root, chapter, max_chapter_bytes):
             "Embedded media and resource references are not supported by this candidate builder."
         )
     return content
+
+
+def _replace_chapter_h1(content, title):
+    text = content.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        ending = (
+            "\r\n"
+            if line.endswith("\r\n")
+            else "\n"
+            if line.endswith("\n")
+            else "\r"
+            if line.endswith("\r")
+            else ""
+        )
+        lines[index] = f"# {title}{ending}"
+        return "".join(lines).encode("utf-8")
+    raise ValueError("A translation chapter has no title line.")
 
 
 def _link_destinations(text):
@@ -599,6 +629,81 @@ def _write_json_exclusive(path, value):
         os.fsync(stream.fileno())
 
 
+def _validate_metadata_translation_provenance(value):
+    if value is None:
+        return None
+    required = {
+        "artifact_sha256",
+        "plan_sha256",
+        "candidate_sha256",
+        "review_sha256",
+        "quality_rules_sha256",
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+        "field_lineage",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("Metadata translation provenance is invalid.")
+    for key in required - {
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+        "field_lineage",
+    }:
+        digest = value[key]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("Metadata translation provenance digest is invalid.")
+    for snapshot_name in (
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+    ):
+        snapshot = value[snapshot_name]
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+            "catalog_sha256",
+            "manifest_sha256",
+        }:
+            raise ValueError("Metadata translation source snapshot is invalid.")
+        for digest in snapshot.values():
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError("Metadata translation source digest is invalid.")
+    field_lineage = value["field_lineage"]
+    if not isinstance(field_lineage, dict) or not field_lineage:
+        raise ValueError("Metadata translation field lineage is invalid.")
+    for source in field_lineage.values():
+        if not isinstance(source, dict) or set(source) != {
+            "source_version_id",
+            "source_sha256",
+        }:
+            raise ValueError("Metadata translation field lineage is invalid.")
+        if not isinstance(source["source_version_id"], str) or not source[
+            "source_version_id"
+        ]:
+            raise ValueError("Metadata translation field source version is invalid.")
+        source_sha256 = source["source_sha256"]
+        if source_sha256 is not None and (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in source_sha256)
+        ):
+            raise ValueError("Metadata translation field source digest is invalid.")
+    return {
+        **value,
+        "artifact_source_snapshot": dict(value["artifact_source_snapshot"]),
+        "current_source_snapshot": dict(value["current_source_snapshot"]),
+        "field_lineage": {
+            field_id: dict(source)
+            for field_id, source in field_lineage.items()
+        },
+    }
+
+
 def build_epub_candidate(
     *,
     input_root,
@@ -611,6 +716,8 @@ def build_epub_candidate(
     max_output_bytes,
     pandoc_executable="pandoc",
     timeout_seconds=120,
+    metadata_translation_provenance=None,
+    chapter_source_titles=None,
 ):
     """Build a non-publishable candidate and a provenance sidecar manifest."""
     max_chapter_bytes = _positive_limit(
@@ -633,10 +740,27 @@ def build_epub_candidate(
         "timeout_seconds",
         maximum=86400,
     )
+    metadata_translation_provenance = _validate_metadata_translation_provenance(
+        metadata_translation_provenance
+    )
 
     root = Path(input_root).resolve(strict=True)
     catalog = _read_catalog(root, catalog_relative_path)
     metadata, chapters = _validate_catalog(catalog)
+    if chapter_source_titles is not None:
+        if (
+            metadata_translation_provenance is None
+            or not isinstance(chapter_source_titles, dict)
+            or set(chapter_source_titles)
+            != {chapter["episode_id"] for chapter in chapters}
+        ):
+            raise ValueError(
+                "Chapter source titles require complete metadata translation provenance."
+            )
+        chapter_source_titles = {
+            episode_id: _text(title, "chapter source title")
+            for episode_id, title in chapter_source_titles.items()
+        }
     (
         source_manifest_identity,
         source_manifest_sha256,
@@ -651,15 +775,33 @@ def build_epub_candidate(
     chapter_texts = {}
     total_bytes = 0
     for chapter in chapters:
-        content = _read_chapter(root, chapter, max_chapter_bytes)
+        source_title = (
+            chapter["title"]
+            if chapter_source_titles is None
+            else chapter_source_titles[chapter["episode_id"]]
+        )
+        source_content = _read_chapter(
+            root,
+            chapter,
+            max_chapter_bytes,
+            expected_title=source_title,
+        )
+        content = (
+            source_content
+            if source_title == chapter["title"]
+            else _replace_chapter_h1(source_content, chapter["title"])
+        )
         total_bytes += len(content)
         if total_bytes > max_total_bytes:
             raise ValueError("Selected translation chapters exceed their total byte limit.")
         chapter_data.append(
             {
                 **chapter,
-                "content_sha256": hashlib.sha256(content).hexdigest(),
-                "content_bytes": len(content),
+                "source_title": source_title,
+                "content_sha256": hashlib.sha256(source_content).hexdigest(),
+                "content_bytes": len(source_content),
+                "pandoc_content_sha256": hashlib.sha256(content).hexdigest(),
+                "pandoc_content_bytes": len(content),
             }
         )
         chapter_snapshots.append(content)
@@ -771,10 +913,12 @@ def build_epub_candidate(
             },
             "validation": validation,
         }
+        if metadata_translation_provenance is not None:
+            manifest["metadata_translation"] = metadata_translation_provenance
         _write_json_exclusive(staging_dir / "build.json", manifest)
         os.rename(staging_dir, target_dir)
         staging_dir = None
-        return {
+        result = {
             "status": "candidate",
             "relative_directory": f"{catalog['work_id']}/{catalog['build_id']}",
             "chapter_count": len(chapters),
@@ -782,6 +926,11 @@ def build_epub_candidate(
             "pandoc_version": pandoc_version,
             "validation": validation,
         }
+        if metadata_translation_provenance is not None:
+            result["metadata_translation_artifact_sha256"] = (
+                metadata_translation_provenance["artifact_sha256"]
+            )
+        return result
     finally:
         if staging_dir is not None:
             resolved_stage = staging_dir.resolve(strict=False)

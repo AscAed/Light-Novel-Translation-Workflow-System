@@ -1,6 +1,8 @@
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,13 +10,16 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pipeline as pipeline_module
+from api_pool import FALLBACK_ENV
 from openai import APIConnectionError, APIStatusError
 
+from chapter_transaction import commit_chapter_translation
 from pipeline import (
     ChapterSpec,
     Config,
     ContentBlockedError,
     ResponseContractError,
+    TranslationQualityGateError,
     TranslationPipeline,
     UnifiedAgent,
     get_api_key,
@@ -23,8 +28,13 @@ from pipeline import (
     get_openai_client,
     get_primary_provider_route,
     validate_provider_configuration,
+    validate_final_review_provider_configuration,
+    validate_translation_rework_provider_configuration,
     validate_provider_base_url,
+    _read_chapter_source_text,
+    _reject_unreviewed_project_publication,
     _resolve_project_content_dir,
+    _resolve_project_human_edition_root,
 )
 from source_manifest import append_artifact
 from utils import (
@@ -51,6 +61,247 @@ def make_api_status_error(status_code):
 
 
 class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
+    def test_translation_rework_requires_a_distinct_reviewer_route(self):
+        with (
+            patch("pipeline.validate_provider_configuration") as preflight,
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (None, None, ("https", "writer.example", 443, "/v1", "writer")),
+                    (None, None, ("https", "reviewer.example", 443, "/v1", "reviewer")),
+                ],
+            ),
+            patch.object(Config, "PROOFREAD_MODEL", "pool:writer"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+        ):
+            validate_translation_rework_provider_configuration()
+
+        preflight.assert_called_once_with()
+
+    def test_translation_rework_rejects_reviewer_route_reuse(self):
+        cases = (
+            (
+                ("https", "shared.example", 443, "/v1", "writer"),
+                ("https", "shared.example", 443, "/v1", "reviewer"),
+            ),
+            (
+                ("https", "writer.example", 443, "/v1", "shared-model"),
+                ("https", "reviewer.example", 443, "/v1", "shared-model"),
+            ),
+            (
+                ("https", "shared.example", 443, "/v1", "same-model"),
+                ("https", "shared.example", 443, "/v1", "same-model"),
+            ),
+        )
+        for rework_identity, reviewer_identity in cases:
+            with self.subTest(
+                rework_identity=rework_identity,
+                reviewer_identity=reviewer_identity,
+            ):
+                with (
+                    patch("pipeline.validate_provider_configuration"),
+                    patch(
+                        "pipeline._resolve_provider_route_identity",
+                        side_effect=[
+                            (None, None, rework_identity),
+                            (None, None, reviewer_identity),
+                        ],
+                    ),
+                    patch.object(Config, "PROOFREAD_MODEL", "pool:writer"),
+                    patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "different endpoint and model",
+                    ):
+                        validate_translation_rework_provider_configuration()
+
+    def test_final_review_rejects_shared_endpoint_or_model(self):
+        cases = (
+            (
+                ("https", "shared.example", 443, "/v1", "translator"),
+                ("https", "shared.example", 443, "/v1", "reviewer"),
+            ),
+            (
+                ("https", "translator.example", 443, "/v1", "shared-model"),
+                ("https", "reviewer.example", 443, "/v1", "shared-model"),
+            ),
+        )
+        for translator_identity, reviewer_identity in cases:
+            with self.subTest(
+                translator_identity=translator_identity,
+                reviewer_identity=reviewer_identity,
+            ):
+                with (
+                    patch(
+                        "pipeline._resolve_provider_route_identity",
+                        side_effect=[
+                            (None, None, reviewer_identity),
+                            (None, None, translator_identity),
+                        ],
+                    ),
+                    patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+                    patch.object(Config, "INITIAL_MODEL", "pool:translator"),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "different endpoint and model",
+                    ):
+                        validate_final_review_provider_configuration()
+
+    def test_final_review_model_override_is_checked_against_translator(self):
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "reviewer-override",
+        )
+        translator_identity = (
+            "https",
+            "translator.example",
+            443,
+            "/v1",
+            "translator",
+        )
+        reviewer_route = SimpleNamespace(
+            provider_id="reviewer",
+            api_key_env="REVIEWER_API_KEY",
+        )
+        translator_route = SimpleNamespace(
+            provider_id="translator",
+            api_key_env="TRANSLATOR_API_KEY",
+        )
+        with (
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (reviewer_route, "http://127.0.0.1:6006/v1", reviewer_identity),
+                    (
+                        translator_route,
+                        "http://127.0.0.1:6006/v1",
+                        translator_identity,
+                    ),
+                ],
+            ) as resolve_route,
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "INITIAL_MODEL", "pool:translator"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            validate_final_review_provider_configuration("pool:reviewer-override")
+
+        self.assertEqual(
+            [call.args[0] for call in resolve_route.call_args_list],
+            ["pool:reviewer-override", "pool:translator"],
+        )
+        authorize.assert_called_once()
+
+    def test_translation_rework_model_override_is_checked_against_reviewer(self):
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "shared-model",
+        )
+        rework_route = SimpleNamespace(
+            provider_id="reworker",
+            api_key_env="REWORKER_API_KEY",
+        )
+        with (
+            patch("pipeline.validate_provider_configuration"),
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (
+                        rework_route,
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                    (
+                        SimpleNamespace(provider_id="reviewer"),
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                ],
+            ),
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "PROOFREAD_MODEL", "pool:default-rework"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "different endpoint and model",
+            ):
+                validate_translation_rework_provider_configuration(
+                    "pool:rework-override"
+                )
+
+        authorize.assert_not_called()
+
+    def test_translation_rework_model_override_validates_only_the_selected_route(self):
+        rework_identity = (
+            "https",
+            "reworker.example",
+            443,
+            "/v1",
+            "rework-override",
+        )
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "reviewer",
+        )
+        rework_route = SimpleNamespace(
+            provider_id="reworker",
+            api_key_env="REWORKER_API_KEY",
+        )
+        with (
+            patch(
+                "pipeline.validate_provider_configuration",
+                side_effect=AssertionError("default route should not be checked"),
+            ),
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (
+                        rework_route,
+                        "http://127.0.0.1:6006/v1",
+                        rework_identity,
+                    ),
+                    (
+                        SimpleNamespace(provider_id="reviewer"),
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                ],
+            ) as resolve_route,
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "PROOFREAD_MODEL", "pool:stale-default"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            validate_translation_rework_provider_configuration(
+                "pool:rework-override"
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in resolve_route.call_args_list],
+            ["pool:rework-override", "pool:reviewer"],
+        )
+        authorize.assert_called_once_with(
+            "reworker",
+            ("source_text", "translation_text"),
+            {},
+            endpoint_is_local=True,
+        )
+
     async def test_local_http_base_url_is_allowed(self):
         with patch.object(Config, "API_TIMEOUT", 2.0):
             with patch("pipeline.AsyncOpenAI") as client_factory:
@@ -88,6 +339,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
     def test_pipeline_rejects_draft_summary_before_loading_knowledge(self):
         with (
             patch.object(Config, "WORKSPACE_DIR", "configured"),
+            patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
             patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
             patch.object(
                 Config,
@@ -108,6 +360,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             summary_path = Path(temporary) / "STORY_SUMMARY_reviewed.json"
             reviewed_tm_path = Path(temporary) / "translation_memory_reviewed.json"
             output_dir = Path(temporary) / "translated"
+            reviewed_tm_translation_root = Path(temporary) / "published"
             summary_path.write_text("{}", encoding="utf-8")
             events = []
             rag_kwargs = {}
@@ -127,6 +380,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch.object(Config, "WORKSPACE_DIR", "configured"),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
                 patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
                 patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
                 patch.object(Config, "RAW_DIR", "raw"),
@@ -135,6 +389,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                 patch.object(Config, "INFO_PATH", "Info.json"),
                 patch.object(Config, "TM_PATH", "TM.json"),
                 patch.object(Config, "TM_REVIEWED_PATH", str(reviewed_tm_path)),
+                patch.object(Config, "ALLOW_UNREVIEWED_TM", True),
                 patch(
                     "pipeline.load_reviewed_story_summary",
                     side_effect=load_summary,
@@ -142,7 +397,11 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                 patch("pipeline.load_json", side_effect=load_info),
                 patch("pipeline.RAGEngine", side_effect=build_rag),
             ):
-                translation_pipeline = TranslationPipeline()
+                translation_pipeline = TranslationPipeline(
+                    reviewed_tm_translation_root=str(
+                        reviewed_tm_translation_root
+                    )
+                )
 
         self.assertEqual(
             translation_pipeline.story_summary,
@@ -156,6 +415,11 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rag_kwargs["reviewed_tm_path"], str(reviewed_tm_path))
         self.assertEqual(rag_kwargs["translation_root"], str(output_dir))
+        self.assertEqual(
+            rag_kwargs["reviewed_tm_translation_root"],
+            str(reviewed_tm_translation_root),
+        )
+        self.assertTrue(rag_kwargs["allow_unreviewed_tm"])
 
     def test_pipeline_rejects_invalid_reviewed_summary_before_loading_knowledge(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,6 +427,7 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
             summary_path.write_text("{}", encoding="utf-8")
             with (
                 patch.object(Config, "WORKSPACE_DIR", "configured"),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
                 patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
                 patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
                 patch.object(Config, "RAW_DIR", "raw"),
@@ -179,6 +444,174 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
 
         load_json.assert_not_called()
         rag_engine.assert_not_called()
+
+    def test_optional_ai_summary_load_uses_current_ai_input_map(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            summary_path = Path(temporary) / "STORY_SUMMARY_reviewed.json"
+            summary_path.write_text("{}", encoding="utf-8")
+            chapter_map = [
+                {
+                    "raw_file": "editions/ai/episode-1.md",
+                    "translation_file": "episode-0001-101.md",
+                    "tm_key": "source-edition:work-1:101",
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "chapters/episode-1.md",
+                    "source_sha256": "a" * 64,
+                }
+            ]
+            with (
+                patch.object(Config, "WORKSPACE_DIR", "configured"),
+                patch.object(
+                    Config,
+                    "TRANSLATION_OUTPUT_MODE",
+                    "compatibility_draft",
+                ),
+                patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
+                patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
+                patch.object(Config, "RAW_DIR", "SourceArchive"),
+                patch.object(
+                    Config,
+                    "SOURCE_MANIFEST_PATH",
+                    "source_editions_manifest.json",
+                ),
+                patch.object(Config, "AI_EDITION_ROOT", "RAWs_AI"),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch(
+                    "pipeline.load_reviewed_story_summary",
+                    return_value="Approved synthetic summary.",
+                ) as load_summary,
+                patch("pipeline.load_json", return_value={}),
+                patch("pipeline.RAGEngine", return_value=Mock()),
+            ):
+                TranslationPipeline()
+
+        load_summary.assert_called_once_with(
+            str(summary_path),
+            "SourceArchive",
+            "source_editions_manifest.json",
+            source_input_root="RAWs_AI",
+            source_input_map={
+                "editions/ai/episode-1.md": {
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "chapters/episode-1.md",
+                    "source_sha256": "a" * 64,
+                }
+            },
+        )
+
+    def test_project_pipeline_requires_reviewed_full_book_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            summary_path = Path(temporary) / "STORY_SUMMARY_reviewed.json"
+            with (
+                patch.object(Config, "WORKSPACE_DIR", "configured"),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
+                patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
+                patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
+                patch.object(Config, "REQUIRE_REVIEWED_STORY_SUMMARY", True),
+                patch.object(Config, "RAW_DIR", "raw"),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", "source_editions_manifest.json"),
+                patch("pipeline.load_json") as load_json,
+                patch("pipeline.RAGEngine") as rag_engine,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "requires an approved full-book story summary",
+                ):
+                    TranslationPipeline()
+
+        load_json.assert_not_called()
+        rag_engine.assert_not_called()
+
+    def test_project_pipeline_binds_reviewed_summary_to_current_ai_map(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            summary_path = Path(temporary) / "STORY_SUMMARY_reviewed.json"
+            summary_path.write_text("{}", encoding="utf-8")
+            source_sha256 = hashlib.sha256(b"AI edition text").hexdigest()
+            chapter = ChapterSpec(
+                raw_file="editions/ai/episode-1.md",
+                translation_file="episode-0001-101.md",
+                tm_key="source-edition:work-1:101",
+                source_version_id="ai-version-1",
+                chapter_position=1,
+                source_input_file="episodes/episode-1.md",
+                source_sha256=source_sha256,
+            )
+            expected_bundle = {
+                "source_snapshot_id": "source-v1-" + "a" * 64,
+                "ai_bundle_id": "ai-v1-" + "b" * 64,
+                "bundle_set_relative_path": "collections/set.json",
+                "bundle_set_sha256": "c" * 64,
+                "ai_bundle_relative_path": "collections/ai/book.json",
+                "ai_bundle_sha256": "d" * 64,
+                "episode_count": 1,
+            }
+            with (
+                patch.object(Config, "WORKSPACE_DIR", "configured"),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
+                patch.object(Config, "GLOSSARY_PATH", "Knowledge/Glossary.json"),
+                patch.object(Config, "STORY_SUMMARY_PATH", str(summary_path)),
+                patch.object(Config, "REQUIRE_REVIEWED_STORY_SUMMARY", True),
+                patch.object(Config, "EXPECTED_BOOK_BUNDLE", expected_bundle),
+                patch.object(Config, "RAW_DIR", "SourceArchive"),
+                patch.object(Config, "OUTPUT_DIR", "external-translation-root"),
+                patch.object(
+                    Config,
+                    "SOURCE_MANIFEST_PATH",
+                    "source_editions_manifest.json",
+                ),
+                patch.object(Config, "AI_EDITION_ROOT", "RAWs_AI"),
+                patch.object(
+                    Config,
+                    "CHAPTER_MAP",
+                    [
+                        {
+                            "raw_file": chapter.raw_file,
+                            "source_version_id": chapter.source_version_id,
+                            "source_input_file": chapter.source_input_file,
+                            "source_sha256": source_sha256,
+                        }
+                    ],
+                ),
+                patch.object(Config, "INFO_PATH", "Knowledge/作品基本信息.json"),
+                patch.object(Config, "TM_PATH", "Knowledge/translation_memory.json"),
+                patch("pipeline.get_chapter_specs", return_value=[chapter]),
+                patch(
+                    "pipeline.load_reviewed_story_summary",
+                    return_value="Approved synthetic summary.",
+                ) as load_summary,
+                patch("pipeline.load_json", return_value={}),
+                patch("pipeline.RAGEngine", return_value=Mock()),
+            ):
+                translation_pipeline = TranslationPipeline()
+
+        self.assertEqual(
+            translation_pipeline.story_summary,
+            "Approved synthetic summary.",
+        )
+        load_summary.assert_called_once_with(
+            str(summary_path),
+            "SourceArchive",
+            "source_editions_manifest.json",
+            require_full_book_coverage=True,
+            require_book_bundle=True,
+            expected_book_bundle=expected_bundle,
+            expected_sources=[
+                {
+                    "filename": "editions/ai/episode-1.md",
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "episodes/episode-1.md",
+                    "source_sha256": source_sha256,
+                }
+            ],
+            source_input_root="RAWs_AI",
+            source_input_map={
+                "editions/ai/episode-1.md": {
+                    "source_version_id": "ai-version-1",
+                    "source_input_file": "episodes/episode-1.md",
+                    "source_sha256": source_sha256,
+                }
+            },
+        )
 
     def test_remote_http_and_invalid_provider_urls_are_rejected_before_client_creation(self):
         invalid_urls = (
@@ -359,6 +792,24 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
         with patch.object(Config, "GEMINI_FALLBACK_ENABLED", False):
             with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
                 await agent.call("source text")
+        agent._call_gemini.assert_not_awaited()
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
+    async def test_agent_can_disable_all_provider_fallbacks(self):
+        error = make_api_status_error(503)
+        agent = UnifiedAgent(
+            "deepseek-test",
+            "instruction",
+            allow_fallback=False,
+        )
+        agent._call_primary = AsyncMock(side_effect=error)
+        agent._call_gemini = AsyncMock(return_value="fallback")
+
+        with patch.object(Config, "GEMINI_FALLBACK_ENABLED", True):
+            with self.assertRaises(APIStatusError) as raised:
+                await agent.call("source text")
+
+        self.assertIs(raised.exception, error)
         agent._call_gemini.assert_not_awaited()
 
     @patch.dict(os.environ, {}, clear=True)
@@ -775,6 +1226,50 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
         ):
             validate_provider_configuration()
 
+    @patch.dict(
+        os.environ,
+        {
+            FALLBACK_ENV: "pool:backup",
+            "GEMINI_API_KEY": "synthetic-key",
+        },
+        clear=True,
+    )
+    def test_pool_fallback_preflight_does_not_require_gemini_translation_scope(self):
+        all_categories = frozenset(
+            {"source_text", "translation_text", "book_knowledge"}
+        )
+        source_and_knowledge = frozenset({"source_text", "book_knowledge"})
+
+        def route_for(model_name):
+            slot = model_name.split(":", 1)[1]
+            return SimpleNamespace(
+                provider_id=slot,
+                base_url=f"https://{slot}.example/v1",
+                api_key_env=f"{slot.upper()}_API_KEY",
+            )
+
+        with (
+            patch.object(Config, "INITIAL_MODEL", "pool:primary"),
+            patch.object(Config, "PROOFREAD_MODEL", "pool:primary"),
+            patch.object(Config, "STYLE_MODEL", "pool:primary"),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch.object(Config, "JYQF_FALLBACK_ENABLED", False),
+            patch.object(Config, "GEMINI_FALLBACK_ENABLED", True),
+            patch.object(
+                Config,
+                "PROVIDER_DATA_POLICY",
+                {
+                    "primary": all_categories,
+                    "backup": all_categories,
+                    "gemini": source_and_knowledge,
+                },
+            ),
+            patch("pipeline.get_primary_provider_route", side_effect=route_for),
+            patch("pipeline.get_base_url", side_effect=lambda url: url),
+            patch("pipeline.get_api_key", return_value="synthetic-key"),
+        ):
+            validate_provider_configuration()
+
     @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
     async def test_timeout_rate_limit_and_server_errors_allow_fallback(self):
         for status_code in (408, 429, 500, 599):
@@ -921,6 +1416,93 @@ class TestPrimaryResponseContract(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTestWorkspaceConfiguration(unittest.TestCase):
+    def test_no_project_default_does_not_fall_back_to_repository_raws(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("sys.argv", ["pipeline.py"]),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch.object(Config, "WORKSPACE_DIR", ""),
+            ):
+                with self.assertRaisesRegex(
+                    FileNotFoundError,
+                    "verified AI edition was selected",
+                ):
+                    Config.load_config()
+
+    def test_no_project_default_rejects_ambiguous_project_discovery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            projects_dir = repo_dir / "projects"
+            (projects_dir / "book-a").mkdir(parents=True)
+            (projects_dir / "book-b").mkdir()
+            (projects_dir / "example").mkdir()
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("sys.argv", ["pipeline.py"]),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch.object(Config, "WORKSPACE_DIR", ""),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Multiple translation projects.*--project.*TRANSLATOR_PROJECT",
+                ):
+                    Config.load_config()
+
+    def test_unreviewed_tm_opt_in_defaults_off_and_resets(self):
+        self.addCleanup(setattr, Config, "ALLOW_UNREVIEWED_TM", False)
+        with patch.dict(
+            os.environ,
+            {
+                "TEST_WORKSPACE_DIR": "isolated-test-workspace",
+                "ALLOW_UNREVIEWED_TM": "true",
+            },
+            clear=True,
+        ):
+            Config.load_config()
+        self.assertTrue(Config.ALLOW_UNREVIEWED_TM)
+
+        with patch.dict(
+            os.environ,
+            {"TEST_WORKSPACE_DIR": "isolated-test-workspace"},
+            clear=True,
+        ):
+            Config.load_config()
+        self.assertFalse(Config.ALLOW_UNREVIEWED_TM)
+
+    def test_unreviewed_tm_opt_in_uses_json_and_environment_override(self):
+        self.addCleanup(setattr, Config, "ALLOW_UNREVIEWED_TM", False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({"ALLOW_UNREVIEWED_TM": True}),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    Config.load_config(config_file=str(config_path))
+            self.assertTrue(Config.ALLOW_UNREVIEWED_TM)
+
+            with patch.dict(
+                os.environ,
+                {"ALLOW_UNREVIEWED_TM": "false"},
+                clear=True,
+            ):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    Config.load_config(config_file=str(config_path))
+            self.assertFalse(Config.ALLOW_UNREVIEWED_TM)
+
     def test_chapter_map_loads_from_json_and_resolves_multiple_volumes(self):
         self.addCleanup(setattr, Config, "CHAPTER_MAP", None)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1043,6 +1625,8 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             project_dir = repo_dir / "projects" / "sample"
             (project_dir / "生肉" / "第一卷").mkdir(parents=True)
             (project_dir / "生肉" / "第二卷").mkdir()
+            (project_dir / "SourceArchive").mkdir()
+            (project_dir / "RAWs_AI").mkdir()
             (project_dir / "熟肉" / "EPUB").mkdir(parents=True)
             (project_dir / "熟肉" / "Ntera").mkdir()
 
@@ -1050,10 +1634,19 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                 with patch.object(
                     pipeline_module, "__file__", str(repo_dir / "pipeline.py")
                 ):
-                    with self.assertRaisesRegex(
-                        ValueError, "set both RAW_DIR and OUTPUT_DIR"
+                    with patch(
+                        "pipeline._default_ai_edition_config",
+                        return_value={
+                            "source_root": str(project_dir / "SourceArchive"),
+                            "ai_edition_root": str(project_dir / "RAWs_AI"),
+                            "source_manifest_path": "source_editions_manifest.json",
+                            "chapter_map": [],
+                        },
                     ):
-                        Config.load_config(project="sample")
+                        with self.assertRaisesRegex(
+                            ValueError, "set both RAW_DIR and OUTPUT_DIR"
+                        ):
+                            Config.load_config(project="sample")
 
     def test_project_content_directory_rejects_nested_folders(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1082,6 +1675,625 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                 str(raw_dir),
             )
 
+    def test_project_mode_defaults_to_ai_mirror_with_archive_lineage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            project_dir = repo_dir / "projects" / "sample"
+            source_root = project_dir / "SourceArchive"
+            ai_root = project_dir / "RAWs_AI"
+            (project_dir / "生肉").mkdir(parents=True)
+            (project_dir / "生肉" / "human-copy.md").write_text(
+                "human-readable source", encoding="utf-8"
+            )
+            source_root.mkdir()
+            ai_root.mkdir()
+            (project_dir / "熟肉").mkdir()
+            index = {
+                "work_id": "work-1",
+                "catalog": {
+                    "relative_path": "source_catalog.json",
+                    "sha256": "catalog-hash",
+                },
+                "episodes": [
+                    {
+                        "episode_id": "102",
+                        "title": "Episode 2",
+                        "position": 2,
+                        "ai_archive_relative_path": "editions/ai/102/v2.md",
+                        "ai_relative_path": "episodes/0002-102.md",
+                        "output_sha256": "2" * 64,
+                        "ai_edition_version_id": "ai-version-2",
+                    },
+                    {
+                        "episode_id": "101",
+                        "title": "Episode 1",
+                        "position": 1,
+                        "ai_archive_relative_path": "editions/ai/101/v1.md",
+                        "ai_relative_path": "episodes/0001-101.md",
+                        "output_sha256": "1" * 64,
+                        "ai_edition_version_id": "ai-version-1",
+                    },
+                ],
+            }
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch(
+                    "pipeline.verify_ai_edition_index",
+                    return_value={"index": index},
+                ) as verify_index,
+                patch(
+                    "pipeline._load_catalog_snapshot",
+                    return_value={
+                        "work_id": "work-1",
+                        "sha256": "catalog-hash",
+                        "episodes": (
+                            SimpleNamespace(
+                                metadata=SimpleNamespace(
+                                    episode_id="101",
+                                    title="Episode 1",
+                                    position=1,
+                                )
+                            ),
+                            SimpleNamespace(
+                                metadata=SimpleNamespace(
+                                    episode_id="102",
+                                    title="Episode 2",
+                                    position=2,
+                                )
+                            ),
+                        ),
+                    },
+                ) as load_catalog,
+                patch.object(Config, "WORKSPACE_DIR", ""),
+                patch.object(Config, "RAW_DIR", ""),
+                patch.object(Config, "OUTPUT_DIR", ""),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", None),
+                patch.object(Config, "CHAPTER_MAP", None),
+            ):
+                Config.load_config(project="sample")
+
+                self.assertEqual(
+                    Path(Config.RAW_DIR).resolve(), source_root.resolve()
+                )
+                self.assertEqual(
+                    Path(Config.AI_EDITION_ROOT).resolve(), ai_root.resolve()
+                )
+                self.assertTrue(Config.REQUIRE_REVIEWED_STORY_SUMMARY)
+                self.assertTrue(Config.REQUIRE_REVIEWED_GLOSSARY)
+                self.assertTrue(Config.REQUIRE_REVIEWED_PUBLICATION)
+                self.assertEqual(
+                    Config.GLOSSARY_PATH,
+                    str(
+                        (project_dir / "Knowledge" / "Glossary_reviewed.json")
+                        .resolve()
+                    ),
+                )
+                self.assertEqual(
+                    Config.STORY_SUMMARY_PATH,
+                    str(
+                        (
+                            project_dir
+                            / "Knowledge"
+                            / "STORY_SUMMARY_reviewed.json"
+                        ).resolve()
+                    ),
+                )
+                self.assertEqual(
+                    Config.SOURCE_MANIFEST_PATH,
+                    "source_editions_manifest.json",
+                )
+                self.assertEqual(
+                    [chapter["raw_file"] for chapter in Config.CHAPTER_MAP],
+                    [
+                        "editions/ai/101/v1.md",
+                        "editions/ai/102/v2.md",
+                    ],
+                )
+                self.assertEqual(
+                    [chapter["source_input_file"] for chapter in Config.CHAPTER_MAP],
+                    [
+                        "episodes/0001-101.md",
+                        "episodes/0002-102.md",
+                    ],
+                )
+                self.assertEqual(
+                    [chapter["source_version_id"] for chapter in Config.CHAPTER_MAP],
+                    ["ai-version-1", "ai-version-2"],
+                )
+                self.assertEqual(
+                    [chapter["translation_file"] for chapter in Config.CHAPTER_MAP],
+                    ["episode-0001-101.md", "episode-0002-102.md"],
+                )
+                self.assertEqual(
+                    [chapter["tm_key"] for chapter in Config.CHAPTER_MAP],
+                    [
+                        "source-edition:work-1:101",
+                        "source-edition:work-1:102",
+                    ],
+                )
+                self.assertEqual(
+                    Path(
+                        verify_index.call_args.kwargs["source_root"]
+                    ).resolve(),
+                    source_root.resolve(),
+                )
+                self.assertEqual(
+                    Path(
+                        verify_index.call_args.kwargs["ai_root"]
+                    ).resolve(),
+                    ai_root.resolve(),
+                )
+                self.assertEqual(
+                    verify_index.call_args.kwargs[
+                        "source_manifest_relative_path"
+                    ],
+                    "source_manifest.json",
+                )
+                self.assertEqual(
+                    verify_index.call_args.kwargs[
+                        "edition_manifest_relative_path"
+                    ],
+                    "source_editions_manifest.json",
+                )
+                self.assertEqual(
+                    Path(load_catalog.call_args.args[0]).resolve(),
+                    source_root.resolve(),
+                )
+                self.assertEqual(
+                    load_catalog.call_args.args[1],
+                    "source_catalog.json",
+                )
+
+    def test_project_pipeline_cannot_write_without_an_active_review_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(workspace / "熟肉")),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "reviewed_run_draft"),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "TRANSLATION_RUN_ID", None),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "run_kakuyomu_workflow.py",
+                ):
+                    TranslationPipeline()
+
+    def test_project_pipeline_rejects_unreviewed_tm_override_before_loading_knowledge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(workspace / "drafts")),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "reviewed_run_draft"),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "ALLOW_UNREVIEWED_TM", True),
+                patch("pipeline.load_json") as load_json,
+                patch("pipeline.RAGEngine") as rag_engine,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "cannot enable unreviewed TM retrieval",
+                ):
+                    TranslationPipeline()
+
+            load_json.assert_not_called()
+            rag_engine.assert_not_called()
+
+    def test_unreviewed_pipeline_cannot_write_to_project_publication_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            publication_root = workspace / "熟肉"
+            publication_root.mkdir()
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(publication_root)),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", False),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "cannot write to a project publication directory",
+                ):
+                    TranslationPipeline()
+
+    def test_unreviewed_pipeline_cannot_write_to_configured_external_publication_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "project"
+            publication_root = Path(temporary) / "final-translation"
+            workspace.mkdir()
+            publication_root.mkdir()
+            (workspace / "workflow_paths.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "output_dir": str(publication_root),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(publication_root)),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", False),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "cannot write to a project publication directory",
+                ):
+                    TranslationPipeline()
+
+    def test_unreviewed_pipeline_allows_nonpublication_compat_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "project"
+            draft_root = workspace / "Workflow" / "LegacyDrafts"
+            draft_root.mkdir(parents=True)
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "OUTPUT_DIR", str(draft_root)),
+                patch.object(Config, "TRANSLATION_OUTPUT_MODE", "compatibility_draft"),
+                patch.object(Config, "GLOSSARY_PATH", ""),
+                patch.object(Config, "STORY_SUMMARY_PATH", ""),
+                patch.object(Config, "INFO_PATH", ""),
+                patch.object(Config, "TM_PATH", ""),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", False),
+                patch("pipeline.load_json", return_value={}),
+                patch("pipeline.RAGEngine", return_value=Mock()),
+            ):
+                TranslationPipeline()
+
+    def test_unreviewed_pipeline_checks_mapped_publication_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            chapter_map = [
+                {
+                    "raw_file": "raw/episode.md",
+                    "translation_file": "熟肉/episode.md",
+                    "tm_key": "episode-1",
+                }
+            ]
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "cannot write to a project publication directory",
+            ):
+                _reject_unreviewed_project_publication(
+                    str(workspace),
+                    str(workspace),
+                    chapter_map,
+                )
+
+            _reject_unreviewed_project_publication(
+                str(workspace),
+                str(workspace),
+                [
+                    {
+                        "raw_file": "raw/episode.md",
+                        "translation_file": "Workflow/Drafts/episode.md",
+                        "tm_key": "episode-1",
+                    }
+                ],
+            )
+
+    def test_explicit_json_pipeline_requires_compatibility_draft_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "project"
+            output_root = Path(temporary) / "arbitrary-output"
+            workspace.mkdir()
+            output_root.mkdir()
+            config_path = Path(temporary) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "WORKSPACE_DIR": str(workspace),
+                        "RAW_DIR": str(workspace / "source"),
+                        "OUTPUT_DIR": str(output_root),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.multiple(
+                Config,
+                WORKSPACE_DIR="",
+                RAW_DIR="",
+                OUTPUT_DIR="",
+                TRANSLATION_OUTPUT_MODE=None,
+                CHAPTER_MAP=None,
+                SOURCE_MANIFEST_PATH=None,
+                AI_EDITION_ROOT=None,
+                REQUIRE_REVIEWED_PUBLICATION=False,
+                TRANSLATION_RUN_ID=None,
+                REQUIRE_REVIEWED_STORY_SUMMARY=False,
+                EXPECTED_BOOK_BUNDLE=None,
+                REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE=False,
+                REQUIRE_REVIEWED_GLOSSARY=False,
+                TM_REVIEWED_PATH=None,
+                ALLOW_UNREVIEWED_TM=False,
+                GLOSSARY_PATH="",
+                GUIDELINES_PATH="",
+                INFO_PATH="",
+                STORY_SUMMARY_PATH="",
+                TM_PATH="",
+            ):
+                with (
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("pipeline.os.path.exists", return_value=False),
+                ):
+                    Config.load_config(config_file=str(config_path))
+
+                self.assertIsNone(Config.TRANSLATION_OUTPUT_MODE)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "explicit TRANSLATION_OUTPUT_MODE='compatibility_draft'",
+                ):
+                    TranslationPipeline()
+
+    def test_explicit_json_pipeline_accepts_marked_compatibility_draft(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "project"
+            output_root = Path(temporary) / "draft-output"
+            workspace.mkdir()
+            output_root.mkdir()
+            config_path = Path(temporary) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "WORKSPACE_DIR": str(workspace),
+                        "RAW_DIR": str(workspace / "source"),
+                        "OUTPUT_DIR": str(output_root),
+                        "TRANSLATION_OUTPUT_MODE": "compatibility_draft",
+                        "GLOSSARY_PATH": "",
+                        "GUIDELINES_PATH": "",
+                        "INFO_PATH": "",
+                        "STORY_SUMMARY_PATH": "",
+                        "TM_PATH": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.multiple(
+                Config,
+                WORKSPACE_DIR="",
+                RAW_DIR="",
+                OUTPUT_DIR="",
+                TRANSLATION_OUTPUT_MODE=None,
+                CHAPTER_MAP=None,
+                SOURCE_MANIFEST_PATH=None,
+                AI_EDITION_ROOT=None,
+                REQUIRE_REVIEWED_PUBLICATION=False,
+                TRANSLATION_RUN_ID=None,
+                REQUIRE_REVIEWED_STORY_SUMMARY=False,
+                EXPECTED_BOOK_BUNDLE=None,
+                REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE=False,
+                REQUIRE_REVIEWED_GLOSSARY=False,
+                TM_REVIEWED_PATH=None,
+                ALLOW_UNREVIEWED_TM=False,
+                GLOSSARY_PATH="",
+                GUIDELINES_PATH="",
+                INFO_PATH="",
+                STORY_SUMMARY_PATH="",
+                TM_PATH="",
+            ):
+                with (
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("pipeline.os.path.exists", return_value=False),
+                ):
+                    Config.load_config(config_file=str(config_path))
+
+                with (
+                    patch("pipeline.load_json", return_value={}),
+                    patch("pipeline.RAGEngine", return_value=Mock()),
+                ):
+                    TranslationPipeline()
+
+                self.assertEqual(
+                    Config.TRANSLATION_OUTPUT_MODE,
+                    "compatibility_draft",
+                )
+
+    def test_compatibility_draft_mode_cannot_claim_reviewed_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            config_path = workspace / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "WORKSPACE_DIR": str(workspace),
+                        "REQUIRE_REVIEWED_PUBLICATION": True,
+                        "TRANSLATION_OUTPUT_MODE": "compatibility_draft",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "cannot enable reviewed project publication",
+                    ):
+                        Config.load_config(config_file=str(config_path))
+
+    def test_project_output_override_keeps_ai_edition_as_translation_input(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir) / "repo"
+            project_dir = repo_dir / "projects" / "sample"
+            source_root = project_dir / "SourceArchive"
+            ai_root = project_dir / "RAWs_AI"
+            output_root = repo_dir / "external-translation-root"
+            human_root = repo_dir / "external-human-root"
+            source_root.mkdir(parents=True)
+            ai_root.mkdir()
+            output_root.mkdir()
+            human_root.mkdir()
+            (project_dir / "熟肉").mkdir()
+            settings = {
+                "schema_version": 1,
+                "output_dir": "../../external-translation-root",
+                "human_edition_root": "../../external-human-root",
+            }
+            (project_dir / "workflow_paths.json").write_text(
+                json.dumps(settings),
+                encoding="utf-8",
+            )
+            ai_chapter_map = [
+                {
+                    "raw_file": "editions/ai/episode-1.md",
+                    "translation_file": "episode-0001-101.md",
+                    "tm_key": "source-edition:work-1:101",
+                    "source_version_id": "ai-version-1",
+                    "chapter_position": 1,
+                }
+            ]
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch(
+                    "pipeline._default_ai_edition_config",
+                    return_value={
+                        "source_root": str(source_root),
+                        "ai_edition_root": str(ai_root),
+                        "source_manifest_path": "source_editions_manifest.json",
+                        "chapter_map": ai_chapter_map,
+                    },
+                ) as resolve_ai,
+                patch.object(Config, "WORKSPACE_DIR", ""),
+                patch.object(Config, "RAW_DIR", ""),
+                patch.object(Config, "OUTPUT_DIR", ""),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", None),
+                patch.object(Config, "CHAPTER_MAP", None),
+            ):
+                Config.load_config(project="sample")
+
+                self.assertEqual(
+                    Path(Config.RAW_DIR).resolve(), source_root.resolve()
+                )
+                self.assertEqual(
+                    Path(Config.AI_EDITION_ROOT).resolve(), ai_root.resolve()
+                )
+                self.assertEqual(
+                    Config.TRANSLATION_OUTPUT_MODE,
+                    "reviewed_run_draft",
+                )
+                self.assertEqual(Config.OUTPUT_DIR, str(output_root.resolve()))
+                self.assertEqual(
+                    Config.SOURCE_MANIFEST_PATH,
+                    "source_editions_manifest.json",
+                )
+                self.assertEqual(Config.CHAPTER_MAP, ai_chapter_map)
+                resolve_ai.assert_called_once()
+                self.assertEqual(
+                    _resolve_project_human_edition_root(str(project_dir)),
+                    str(human_root.resolve()),
+                )
+
+    def test_project_mode_does_not_fall_back_when_ai_edition_is_stale(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            project_dir = repo_dir / "projects" / "sample"
+            (project_dir / "SourceArchive").mkdir(parents=True)
+            (project_dir / "RAWs_AI").mkdir()
+            (project_dir / "生肉").mkdir()
+            (project_dir / "生肉" / "human-copy.md").write_text(
+                "human-readable source", encoding="utf-8"
+            )
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch(
+                    "pipeline.verify_ai_edition_index",
+                    side_effect=ValueError("AI edition index is stale."),
+                ),
+                patch.object(Config, "WORKSPACE_DIR", ""),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "AI edition index is stale"
+                ):
+                    Config.load_config(project="sample")
+
+    def test_project_mode_requires_ai_edition_instead_of_using_human_readable_raws(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            project_dir = repo_dir / "projects" / "sample"
+            raw_dir = project_dir / "生肉"
+            raw_dir.mkdir(parents=True)
+            (raw_dir / "human-copy.md").write_text(
+                "human-readable source", encoding="utf-8"
+            )
+            (project_dir / "熟肉").mkdir()
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch.object(Config, "WORKSPACE_DIR", ""),
+            ):
+                with self.assertRaisesRegex(
+                    FileNotFoundError, "requires a verified AI edition"
+                ):
+                    Config.load_config(project="sample")
+
+    def test_project_mode_rejects_ai_index_for_a_changed_catalog(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_dir = Path(temp_dir)
+            project_dir = repo_dir / "projects" / "sample"
+            (project_dir / "SourceArchive").mkdir(parents=True)
+            (project_dir / "RAWs_AI").mkdir()
+            index = {
+                "work_id": "work-1",
+                "catalog": {
+                    "relative_path": "source_catalog.json",
+                    "sha256": "old-catalog-hash",
+                },
+                "episodes": [],
+            }
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pipeline_module,
+                    "__file__",
+                    str(repo_dir / "pipeline.py"),
+                ),
+                patch(
+                    "pipeline.verify_ai_edition_index",
+                    return_value={"index": index},
+                ),
+                patch(
+                    "pipeline._load_catalog_snapshot",
+                    return_value={
+                        "work_id": "work-1",
+                        "sha256": "current-catalog-hash",
+                        "episodes": (),
+                    },
+                ),
+                patch.object(Config, "WORKSPACE_DIR", ""),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "stale for its source catalog"
+                ):
+                    Config.load_config(project="sample")
+
     def test_test_workspace_populates_all_path_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -1103,6 +2315,121 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             )
             self.assertEqual(Config.RAW_DIR, str(workspace / "input"))
             self.assertEqual(Config.OUTPUT_DIR, str(workspace / "output"))
+            self.assertEqual(Config.TRANSLATION_OUTPUT_MODE, "test_draft")
+
+    def test_test_workspace_default_pipeline_uses_nonpublication_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            knowledge_dir = workspace / "Knowledge"
+            knowledge_dir.mkdir()
+            (knowledge_dir / "作品基本信息.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {"TEST_WORKSPACE_DIR": str(workspace)},
+                clear=True,
+            ):
+                Config.load_config()
+                with patch("pipeline.RAGEngine"):
+                    TranslationPipeline()
+
+            self.assertEqual(
+                Config.OUTPUT_DIR,
+                str(workspace / "translated"),
+            )
+
+    def test_output_mode_resets_when_reloading_unmarked_json_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "WORKSPACE_DIR": str(root / "project"),
+                        "RAW_DIR": str(root / "project" / "source"),
+                        "OUTPUT_DIR": str(root / "drafts"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.multiple(
+                Config,
+                WORKSPACE_DIR="",
+                RAW_DIR="",
+                OUTPUT_DIR="",
+                TRANSLATION_OUTPUT_MODE=None,
+                CHAPTER_MAP=None,
+                SOURCE_MANIFEST_PATH=None,
+                AI_EDITION_ROOT=None,
+                REQUIRE_REVIEWED_PUBLICATION=False,
+                TRANSLATION_RUN_ID=None,
+                REQUIRE_REVIEWED_STORY_SUMMARY=False,
+                EXPECTED_BOOK_BUNDLE=None,
+                REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE=False,
+                REQUIRE_REVIEWED_GLOSSARY=False,
+                TM_REVIEWED_PATH=None,
+                ALLOW_UNREVIEWED_TM=False,
+            ):
+                with patch.dict(
+                    os.environ,
+                    {"TEST_WORKSPACE_DIR": str(root / "test-workspace")},
+                    clear=True,
+                ):
+                    Config.load_config()
+                self.assertEqual(Config.TRANSLATION_OUTPUT_MODE, "test_draft")
+
+                with (
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("pipeline.os.path.exists", return_value=False),
+                ):
+                    Config.load_config(config_file=str(config_path))
+
+                self.assertIsNone(Config.TRANSLATION_OUTPUT_MODE)
+
+    def test_pipeline_cli_rejects_unmarked_json_before_translation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = root / "project"
+            output_root = root / "arbitrary-output"
+            workspace.mkdir()
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "WORKSPACE_DIR": str(workspace),
+                        "RAW_DIR": str(workspace / "source"),
+                        "OUTPUT_DIR": str(output_root),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            repo_root = Path(__file__).resolve().parents[1]
+            environment = os.environ.copy()
+            environment.pop("TEST_WORKSPACE_DIR", None)
+            environment.pop("TRANSLATOR_PROJECT", None)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "pipeline.py"),
+                    "--config",
+                    str(config_path),
+                ],
+                cwd=repo_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "TRANSLATION_OUTPUT_MODE='compatibility_draft'",
+            completed.stderr,
+        )
+        self.assertFalse(output_root.exists())
+        self.assertNotIn("/v1/chat/completions", completed.stderr)
 
     def test_jyqf_fallback_requires_explicit_enablement(self):
         self.addCleanup(setattr, Config, "JYQF_FALLBACK_ENABLED", False)
@@ -1228,6 +2555,43 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
             },
         )
 
+    def test_stage_models_can_be_overridden_from_environment(self):
+        original_models = {
+            name: getattr(Config, name)
+            for name in ("INITIAL_MODEL", "PROOFREAD_MODEL", "STYLE_MODEL")
+        }
+        for name, value in original_models.items():
+            self.addCleanup(setattr, Config, name, value)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "INITIAL_MODEL": "json-initial",
+                        "PROOFREAD_MODEL": "json-proofread",
+                        "STYLE_MODEL": "json-style",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "INITIAL_MODEL": "gpt-6-Luna",
+                    "PROOFREAD_MODEL": "gpt-6-Luna",
+                    "STYLE_MODEL": "gpt-6-Luna",
+                },
+                clear=True,
+            ):
+                with patch("pipeline.os.path.exists", return_value=False):
+                    Config.load_config(config_file=str(config_path))
+
+        self.assertEqual(Config.INITIAL_MODEL, "gpt-6-Luna")
+        self.assertEqual(Config.PROOFREAD_MODEL, "gpt-6-Luna")
+        self.assertEqual(Config.STYLE_MODEL, "gpt-6-Luna")
+
     def test_provider_data_policy_uses_json_config_unless_environment_overrides(self):
         self.addCleanup(setattr, Config, "PROVIDER_DATA_POLICY", {})
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1334,6 +2698,26 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             ["第一段", "第二段"],
         )
 
+    def test_split_paragraphs_normalizes_windows_and_classic_mac_newlines(self):
+        self.assertEqual(
+            split_paragraphs("第一段\r\n\r\n第二段\r内换行"),
+            ["第一段", "第二段\n内换行"],
+        )
+
+    def test_aligned_paragraphs_normalize_internal_line_endings(self):
+        from utils import require_aligned_paragraphs
+
+        target = ["first\r\nsecond"]
+        require_aligned_paragraphs(["source"], target, "synthetic stage")
+        self.assertEqual(target, ["first\nsecond"])
+
+        with self.assertRaisesRegex(ValueError, "multiple paragraphs"):
+            require_aligned_paragraphs(
+                ["source"],
+                ["first\r\n\r\nsecond"],
+                "synthetic stage",
+            )
+
     def test_chapter_map_preserves_catalog_position(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1371,6 +2755,87 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "chapter_position"):
                 get_chapter_specs(str(raw_dir), str(output_dir), chapter_map)
 
+    def test_bound_ai_source_reader_uses_raws_ai_mirror(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive = root / "SourceArchive"
+            ai_root = root / "RAWs_AI"
+            archive.mkdir()
+            ai_root.mkdir()
+            translations = root / "translations"
+            translations.mkdir()
+            archived_text = "archived copy"
+            ai_text = "AI edition input"
+            archive_file = archive / "editions" / "ai" / "episode.md"
+            ai_file = ai_root / "episodes" / "episode.md"
+            archive_file.parent.mkdir(parents=True)
+            ai_file.parent.mkdir(parents=True)
+            archive_file.write_text(archived_text, encoding="utf-8")
+            ai_file.write_text(ai_text, encoding="utf-8")
+            raw_file = archive / "raw" / "episode.txt"
+            raw_file.parent.mkdir()
+            raw_file.write_text("archived raw source", encoding="utf-8")
+            append_artifact(
+                archive / "source_manifest.json",
+                {
+                    "artifact_id": "episode:raw",
+                    "version_id": "raw-version-1",
+                    "kind": "raw_source",
+                    "content_sha256": hashlib.sha256(
+                        b"archived raw source"
+                    ).hexdigest(),
+                    "relative_path": "raw/episode.txt",
+                    "parent_version_ids": [],
+                },
+            )
+            append_artifact(
+                archive / "source_manifest.json",
+                {
+                    "artifact_id": "episode:ai",
+                    "version_id": "ai-version-1",
+                    "kind": "normalized_source",
+                    "content_sha256": hashlib.sha256(
+                        ai_text.encode("utf-8")
+                    ).hexdigest(),
+                    "relative_path": "editions/ai/episode.md",
+                    "parent_version_ids": ["raw-version-1"],
+                },
+            )
+
+            with (
+                patch.object(Config, "RAW_DIR", str(archive)),
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch(
+                    "source_manifest._verify_artifact_file",
+                    side_effect=AssertionError(
+                        "archive body read during AI translation setup"
+                    ),
+                ),
+            ):
+                specs = get_chapter_specs(
+                    str(archive),
+                    str(translations),
+                    [
+                        {
+                            "raw_file": "editions/ai/episode.md",
+                            "translation_file": "episode.md",
+                            "tm_key": "episode:1",
+                            "source_version_id": "ai-version-1",
+                            "chapter_position": 1,
+                            "source_input_file": "episodes/episode.md",
+                            "source_sha256": hashlib.sha256(
+                                ai_text.encode("utf-8")
+                            ).hexdigest(),
+                        }
+                    ],
+                    "source_manifest.json",
+                    str(ai_root),
+                )
+                self.assertEqual(
+                    _read_chapter_source_text(specs[0], mapped_paths=True),
+                    ai_text,
+                )
+
     async def test_context_passes_explicit_position_to_guideline_selection(self):
         pipeline = TranslationPipeline.__new__(TranslationPipeline)
         pipeline.rag = SimpleNamespace(
@@ -1391,6 +2856,319 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             "normalized/opaque-content-hash.md",
             current_raw_text="synthetic source",
             chapter_position=2,
+        )
+
+    async def test_context_includes_reviewed_chapter_summary_and_terms(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline.rag = SimpleNamespace(
+            get_partitioned_guidelines=Mock(return_value="chapter rules"),
+            query_translation_memory=AsyncMock(return_value=[]),
+            get_cleaned_glossary=Mock(return_value=[]),
+        )
+        pipeline.story_summary = "Whole-book summary."
+        pipeline.info = {}
+        chapter_knowledge = {
+            "summary": "Approved chapter fact.",
+            "terms": {"alpha": "阿尔法"},
+        }
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE", True),
+            patch.object(
+                pipeline,
+                "_load_reviewed_chapter_knowledge",
+                return_value=chapter_knowledge,
+            ) as load_chapter_knowledge,
+        ):
+            context = await pipeline._build_run_context(
+                "editions/ai/episode-2.md",
+                "alpha source text",
+                2,
+            )
+
+        load_chapter_knowledge.assert_called_once_with(
+            "editions/ai/episode-2.md",
+            2,
+        )
+        pipeline.rag.get_cleaned_glossary.assert_called_once_with(
+            "alpha source text",
+            additional_glossary={"alpha": "阿尔法"},
+        )
+        self.assertIn("<CHAPTER_KNOWLEDGE>\nApproved chapter fact.", context["static_context"])
+
+    async def test_run_all_checks_every_pending_chapter_before_translation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            ai_root.mkdir()
+            chapters = []
+            chapter_map = []
+            for position in (1, 2):
+                input_file = f"episodes/{position}.md"
+                source_path = ai_root / input_file
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(
+                    f"synthetic source {position}",
+                    encoding="utf-8",
+                )
+                source_hash = hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest()
+                raw_file = f"editions/ai/episode-{position}.md"
+                chapter_map.append(
+                    {
+                        "raw_file": raw_file,
+                        "translation_file": f"episode-{position}.md",
+                        "tm_key": f"episode:{position}",
+                        "source_version_id": f"version-{position}",
+                        "chapter_position": position,
+                        "source_input_file": input_file,
+                        "source_sha256": source_hash,
+                    }
+                )
+                chapters.append(
+                    ChapterSpec(
+                        raw_file=raw_file,
+                        translation_file=f"episode-{position}.md",
+                        tm_key=f"episode:{position}",
+                        source_version_id=f"version-{position}",
+                        chapter_position=position,
+                        source_input_file=input_file,
+                        source_sha256=source_hash,
+                    )
+                )
+
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(tm_data={"chapters": {}})
+            pipeline.run_chapter = AsyncMock()
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_CHAPTER_KNOWLEDGE", True),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(root / "Drafts")),
+                patch.object(Config, "RAW_DIR", str(root / "SourceArchive")),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", "manifest.json"),
+                patch.object(
+                    pipeline_module,
+                    "validate_provider_configuration",
+                ),
+                patch.object(
+                    pipeline_module,
+                    "get_chapter_specs",
+                    return_value=chapters,
+                ),
+                patch.object(
+                    pipeline,
+                    "_load_reviewed_chapter_knowledge",
+                    side_effect=[
+                        {"summary": "approved", "terms": {}},
+                        ValueError("missing reviewed chapter summary"),
+                    ],
+                ) as load_chapter_knowledge,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "missing reviewed chapter summary",
+                ):
+                    await pipeline.run_all()
+
+            self.assertEqual(load_chapter_knowledge.call_count, 2)
+            pipeline.run_chapter.assert_not_awaited()
+
+    async def test_chapter_knowledge_preflight_skips_empty_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            ai_root.mkdir()
+            source_path = ai_root / "episodes/empty.md"
+            source_path.parent.mkdir()
+            source_path.write_text("", encoding="utf-8")
+            source_hash = hashlib.sha256(b"").hexdigest()
+            chapter = ChapterSpec(
+                raw_file="editions/ai/empty.md",
+                translation_file="episode-empty.md",
+                tm_key="episode:empty",
+                source_version_id="empty-version",
+                chapter_position=1,
+                source_input_file="episodes/empty.md",
+                source_sha256=source_hash,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(tm_data={"chapters": {}})
+            pipeline._load_reviewed_chapter_knowledge = Mock()
+            (root / "Drafts").mkdir()
+
+            with (
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(root / "Drafts")),
+            ):
+                pipeline._preflight_reviewed_chapter_knowledge([chapter])
+
+            pipeline._load_reviewed_chapter_knowledge.assert_not_called()
+
+    def test_chapter_knowledge_preflight_does_not_trust_orphaned_tm_entry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ai_root = root / "RAWs_AI"
+            output_root = root / "Drafts"
+            (ai_root / "episodes").mkdir(parents=True)
+            output_root.mkdir()
+            source_text = "synthetic AI source"
+            (ai_root / "episodes" / "episode.md").write_text(
+                source_text,
+                encoding="utf-8",
+            )
+            source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            chapter = ChapterSpec(
+                raw_file="normalized/episode.md",
+                translation_file="episode.md",
+                tm_key="source-edition:synthetic-work:episode-1",
+                source_version_id="source-version-1",
+                chapter_position=1,
+                source_input_file="episodes/episode.md",
+                source_sha256=source_hash,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={
+                    "chapters": {
+                        chapter.tm_key: [
+                            {
+                                "raw": "previous source",
+                                "translated": "previous draft",
+                            }
+                        ]
+                    }
+                }
+            )
+            pipeline._load_reviewed_chapter_knowledge = Mock()
+
+            with (
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(Config, "OUTPUT_DIR", str(output_root)),
+            ):
+                pipeline._preflight_reviewed_chapter_knowledge([chapter])
+
+            pipeline._load_reviewed_chapter_knowledge.assert_called_once_with(
+                chapter.raw_file,
+                1,
+            )
+
+    def test_chapter_knowledge_loader_binds_current_map_and_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "project"
+            source_root = workspace / "SourceArchive"
+            ai_root = workspace / "RAWs_AI"
+            draft_root = workspace / "Knowledge" / "ChapterDrafts"
+            source_root.mkdir(parents=True)
+            ai_root.mkdir()
+            source_version_id = "current-ai-version"
+            source_version_key = hashlib.sha256(
+                source_version_id.encode("utf-8")
+            ).hexdigest()[:16]
+            source_hash = hashlib.sha256(b"current AI text").hexdigest()
+            expected_bundle = {
+                "source_snapshot_id": "source-v1-" + "a" * 64,
+                "ai_bundle_id": "ai-v1-" + "b" * 64,
+                "bundle_set_relative_path": "collections/set.json",
+                "bundle_set_sha256": "c" * 64,
+                "ai_bundle_relative_path": "collections/ai.json",
+                "ai_bundle_sha256": "d" * 64,
+                "episode_count": 88,
+            }
+            current_bundle_dir = (
+                f"episode-0002-episode-2-{source_version_key}-bundle-"
+                + expected_bundle["bundle_set_sha256"][:16]
+            )
+            (draft_root / current_bundle_dir).mkdir(parents=True)
+            (draft_root / f"episode-0002-episode-2-{source_version_key}").mkdir()
+            chapter_glossary = {
+                "review": {
+                    "source_files": [
+                        {
+                            "filename": "editions/ai/episode-2.md",
+                            "source_version_id": source_version_id,
+                        }
+                    ]
+                }
+            }
+            glossary_path = (
+                draft_root / current_bundle_dir / "Glossary_reviewed.json"
+            )
+            glossary_path.write_text(
+                json.dumps(chapter_glossary),
+                encoding="utf-8",
+            )
+            chapter_map = [
+                {
+                    "raw_file": "editions/ai/episode-2.md",
+                    "source_version_id": source_version_id,
+                    "source_input_file": "episodes/episode-2.md",
+                    "source_sha256": source_hash,
+                    "chapter_position": 2,
+                }
+            ]
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                _parse_reviewed_glossary_bundle=Mock(
+                    return_value={"alpha": "阿尔法"}
+                )
+            )
+
+            with (
+                patch.object(Config, "WORKSPACE_DIR", str(workspace)),
+                patch.object(Config, "RAW_DIR", str(source_root)),
+                patch.object(Config, "AI_EDITION_ROOT", str(ai_root)),
+                patch.object(
+                    Config,
+                    "SOURCE_MANIFEST_PATH",
+                    "source_editions_manifest.json",
+                ),
+                patch.object(Config, "CHAPTER_MAP", chapter_map),
+                patch.object(Config, "EXPECTED_BOOK_BUNDLE", expected_bundle),
+                patch(
+                    "pipeline.load_reviewed_story_summary",
+                    return_value="Approved chapter summary.",
+                ) as load_summary,
+            ):
+                result = pipeline._load_reviewed_chapter_knowledge(
+                    "editions/ai/episode-2.md",
+                    2,
+                )
+
+        self.assertEqual(
+            result,
+            {
+                "summary": "Approved chapter summary.",
+                "terms": {"alpha": "阿尔法"},
+            },
+        )
+        pipeline.rag._parse_reviewed_glossary_bundle.assert_called_once_with(
+            chapter_glossary,
+            allow_chapter_local_coverage=True,
+        )
+        self.assertEqual(
+            load_summary.call_args.args[0],
+            str(
+                draft_root
+                / current_bundle_dir
+                / "STORY_SUMMARY_reviewed.json"
+            ),
+        )
+        self.assertEqual(
+            load_summary.call_args.kwargs["expected_chapter_local"],
+            {
+                "position": 2,
+                "source_file": "editions/ai/episode-2.md",
+                "source_version_id": source_version_id,
+                "source_input_file": "episodes/episode-2.md",
+                "source_sha256": source_hash,
+            },
+        )
+        self.assertEqual(
+            load_summary.call_args.kwargs["expected_book_bundle"],
+            expected_bundle,
         )
 
     async def test_mapped_chapter_writes_nested_output_and_uses_tm_key(self):
@@ -1441,7 +3219,16 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             )
             pipeline = TranslationPipeline.__new__(TranslationPipeline)
             pipeline.rag = SimpleNamespace(
-                tm_data={"chapters": {}},
+                tm_data={
+                    "chapters": {
+                        "Volume2/chapter10.md": [
+                            {
+                                "raw": "previous source",
+                                "translated": "previous draft",
+                            }
+                        ]
+                    }
+                },
                 update_translation_memory=Mock(),
             )
             pipeline._build_run_context = AsyncMock(
@@ -1485,6 +3272,405 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 provenance["source_version_id"], "source-version-1"
             )
 
+    def test_formal_stage_report_is_hash_only_and_attempts_are_append_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Workflow" / "Runs" / ("a" * 32) / "Drafts"
+            output_dir.mkdir(parents=True)
+            spec = ChapterSpec(
+                "episodes/episode-1.md",
+                "episode-0001-episode-1.md",
+                "source-edition:synthetic:episode-1",
+                "source-v1",
+                1,
+                "episodes/episode-1.md",
+                "b" * 64,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline._stage_trace = {
+                "translation": {
+                    "status": "completed",
+                    "input_sha256": hashlib.sha256(
+                        "secret source text".encode("utf-8")
+                    ).hexdigest(),
+                    "output_sha256": hashlib.sha256(
+                        "secret translated text".encode("utf-8")
+                    ).hexdigest(),
+                    "model": "synthetic-model",
+                }
+            }
+
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "TRANSLATION_RUN_ID", "a" * 32),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                pipeline._write_stage_report(
+                    spec,
+                    status="failed",
+                    failure_stage="translation",
+                    error_type="ValueError",
+                )
+                pipeline._stage_trace["translation"]["status"] = "completed"
+                pipeline._write_stage_report(spec, status="completed")
+
+            report_path = (
+                root
+                / "Workflow"
+                / "Runs"
+                / ("a" * 32)
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            self.assertTrue(report_path.is_file())
+            report_text = report_path.read_text(encoding="utf-8")
+            report = json.loads(report_text)
+            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["run_id"], "a" * 32)
+            self.assertEqual(report["work_id"], "synthetic-work")
+            self.assertEqual(report["episode"]["source_sha256"], "b" * 64)
+            self.assertEqual(len(report["attempts"]), 2)
+            self.assertEqual(report["attempts"][0]["status"], "failed")
+            self.assertEqual(
+                report["attempts"][0]["failure_stage"], "translation"
+            )
+            self.assertEqual(report["attempts"][0]["error_type"], "ValueError")
+            self.assertEqual(report["attempts"][1]["status"], "completed")
+            self.assertNotIn("secret source text", report_text)
+            self.assertNotIn("secret translated text", report_text)
+            self.assertNotIn("prompt", report_text.lower())
+
+    def test_formal_stage_report_recovery_fills_missing_report_without_rerun(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Workflow" / "Runs" / ("a" * 32) / "Drafts"
+            output_dir.mkdir(parents=True)
+            spec = ChapterSpec(
+                "episode.md",
+                "episode.md",
+                "source-edition:synthetic:episode-1",
+                "source-v1",
+                1,
+                "episode.md",
+                "b" * 64,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline._stage_trace = {"translation": {"status": "completed"}}
+
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "TRANSLATION_RUN_ID", "a" * 32),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="verified_output_missing_stage_report",
+                )
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="should_not_append",
+                )
+
+            report_path = (
+                root
+                / "Workflow"
+                / "Runs"
+                / ("a" * 32)
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(report["attempts"]), 1)
+            self.assertEqual(report["attempts"][0]["status"], "recovered")
+            self.assertEqual(
+                report["attempts"][0]["recovery_reason"],
+                "verified_output_missing_stage_report",
+            )
+            self.assertEqual(report["attempts"][0]["stages"], {})
+
+    def test_formal_stage_report_appends_recovery_after_failed_commit_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Workflow" / "Runs" / ("a" * 32) / "Drafts"
+            output_dir.mkdir(parents=True)
+            spec = ChapterSpec(
+                "episode.md",
+                "episode.md",
+                "source-edition:synthetic:episode-1",
+                "source-v1",
+                1,
+                "episode.md",
+                "b" * 64,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline._stage_trace = {}
+
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "TRANSLATION_RUN_ID", "a" * 32),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                pipeline._write_stage_report(
+                    spec,
+                    status="failed",
+                    failure_stage="commit",
+                    error_type="OSError",
+                )
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="committed_output_recovered",
+                )
+                pipeline._ensure_recovered_stage_report(
+                    spec,
+                    reason="should_not_duplicate",
+                )
+
+            report_path = (
+                root
+                / "Workflow"
+                / "Runs"
+                / ("a" * 32)
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [item["status"] for item in report["attempts"]],
+                ["failed", "recovered"],
+            )
+            self.assertEqual(
+                report["attempts"][-1]["recovery_reason"],
+                "committed_output_recovered",
+            )
+
+    def test_formal_stage_report_preserves_malformed_existing_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "Workflow" / "Runs" / ("a" * 32) / "Drafts"
+            output_dir.mkdir(parents=True)
+            reports_root = output_dir.parent / "StageReports"
+            reports_root.mkdir(parents=True)
+            spec = ChapterSpec(
+                "episode.md",
+                "episode.md",
+                "source-edition:synthetic:episode-1",
+                "source-v1",
+                1,
+                "episode.md",
+                "b" * 64,
+            )
+            report_path = reports_root / (
+                "episode-"
+                + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                + ".json"
+            )
+            report_path.write_text("{invalid report", encoding="utf-8")
+            original_bytes = report_path.read_bytes()
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline._stage_trace = {}
+
+            with (
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "TRANSLATION_RUN_ID", "a" * 32),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                with self.assertRaises(json.JSONDecodeError):
+                    pipeline._write_stage_report(spec, status="completed")
+
+            self.assertEqual(report_path.read_bytes(), original_bytes)
+
+    def _write_versioned_source(self, raw_dir: Path, source_text: str, version_id: str):
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        source_path = raw_dir / "chapter.md"
+        source_path.write_bytes(source_text.encode("utf-8"))
+        raw_source_path = raw_dir / "raw_sources" / "chapter.txt"
+        raw_source_path.parent.mkdir()
+        raw_source_path.write_bytes(source_text.encode("utf-8"))
+        append_artifact(
+            raw_dir / "source_manifest.json",
+            {
+                "artifact_id": "episode-1-raw",
+                "version_id": f"{version_id}-raw",
+                "kind": "raw_source",
+                "content_sha256": hashlib.sha256(
+                    source_text.encode("utf-8")
+                ).hexdigest(),
+                "relative_path": "raw_sources/chapter.txt",
+                "parent_version_ids": [],
+            },
+        )
+        append_artifact(
+            raw_dir / "source_manifest.json",
+            {
+                "artifact_id": "episode-1-normalized",
+                "version_id": version_id,
+                "kind": "normalized_source",
+                "content_sha256": hashlib.sha256(
+                    source_text.encode("utf-8")
+                ).hexdigest(),
+                "relative_path": "chapter.md",
+                "parent_version_ids": [f"{version_id}-raw"],
+            },
+        )
+        return source_path
+
+    async def test_versioned_run_preserves_and_blocks_stale_existing_translation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            output_dir = root / "translated"
+            output_dir.mkdir()
+            current_text = "current source"
+            output_path = output_dir / "episode-1.md"
+            output_path.write_text("older translation", encoding="utf-8")
+            self._write_versioned_source(raw_dir, current_text, "normalized-v2")
+            old_raw = "previous source"
+            old_translation = "older translation"
+            tm_data = {
+                "chapters": {
+                    "episode-1": [
+                        {"raw": old_raw, "translated": old_translation}
+                    ]
+                },
+                "source_provenance": {
+                    "episode-1": {
+                        "raw_file": "chapter.md",
+                        "raw_sha256": hashlib.sha256(
+                            old_raw.encode("utf-8")
+                        ).hexdigest(),
+                        "translation_file": "episode-1.md",
+                        "translation_sha256": hashlib.sha256(
+                            old_translation.encode("utf-8")
+                        ).hexdigest(),
+                        "source_version_id": "normalized-v1",
+                    }
+                },
+            }
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data=tm_data,
+                update_translation_memory=Mock(),
+            )
+            pipeline._build_run_context = AsyncMock()
+            pipeline._run_context_annotation = AsyncMock()
+            pipeline._run_translation_phase = AsyncMock()
+            pipeline._run_refinement_loop = AsyncMock()
+            spec = ChapterSpec(
+                "chapter.md",
+                "episode-1.md",
+                "episode-1",
+                "normalized-v2",
+                1,
+            )
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(
+                    Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    FileExistsError, "does not match the current source version"
+                ):
+                    await pipeline.run_chapter(spec)
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"), old_translation
+            )
+            pipeline.rag.update_translation_memory.assert_not_called()
+            pipeline._build_run_context.assert_not_awaited()
+
+    async def test_versioned_run_skips_existing_translation_verified_for_current_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            output_dir = root / "translated"
+            output_dir.mkdir()
+            source_text = "current source one\n\ncurrent source two"
+            translation_text = "current translation one\n\ncurrent translation two"
+            self._write_versioned_source(raw_dir, source_text, "normalized-v2")
+            spec = ChapterSpec(
+                "chapter.md",
+                "episode-1.md",
+                "episode-1",
+                "normalized-v2",
+                1,
+            )
+            tm_data = {"chapters": {}, "source_provenance": {}}
+
+            def update_translation_memory(
+                tm_key, pairs, *, source_provenance, expected_tm_sha256=None
+            ):
+                tm_data["chapters"][tm_key] = pairs
+                tm_data["source_provenance"][tm_key] = source_provenance
+
+            rag = SimpleNamespace(
+                tm_data=tm_data,
+                update_translation_memory=update_translation_memory,
+            )
+            commit_chapter_translation(
+                str(output_dir),
+                source_text,
+                spec,
+                translation_text,
+                rag,
+                lambda _raw, _translation: None,
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = rag
+            pipeline._build_run_context = AsyncMock()
+            pipeline._run_context_annotation = AsyncMock()
+            pipeline._run_translation_phase = AsyncMock()
+            pipeline._run_refinement_loop = AsyncMock()
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(
+                    Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"
+                ),
+            ):
+                await pipeline.run_chapter(spec)
+
+            self.assertEqual(
+                (output_dir / "episode-1.md").read_text(encoding="utf-8"),
+                translation_text,
+            )
+            pipeline._build_run_context.assert_not_awaited()
+
     async def test_run_chapter_rejects_embedded_paragraph_break_before_persisting(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             raw_dir = Path(temp_dir) / "raw"
@@ -1516,6 +3702,429 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse((output_dir / "第1話.md").exists())
             pipeline.rag.update_translation_memory.assert_not_called()
+
+    async def test_formal_project_blocks_severe_proofreading_before_polish(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "severe",
+                "critique": "synthetic critique",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch("pipeline.UnifiedAgent", return_value=proofreader) as factory,
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "severe proofreading issues"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(factory.call_count, 1)
+        proofreader.call.assert_awaited_once()
+        self.assertEqual(
+            pipeline._stage_trace["proofreading"][0]["metadata"][
+                "reported_severity"
+            ],
+            "severe",
+        )
+        self.assertEqual(pipeline._active_refinement_stage, "proofreading")
+
+    async def test_refinement_trace_separates_proofreading_reflection_and_polishing(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader_first = Mock()
+        proofreader_first.call = AsyncMock(
+            return_value={
+                "severity": "severe",
+                "critique": "SYNTHETIC_PRIVATE_CRITIQUE",
+                "corrected_text": ["SYNTHETIC_PROOFREAD"],
+            }
+        )
+        reflection = Mock()
+        reflection.call = AsyncMock(
+            return_value={"translated_paragraphs": ["SYNTHETIC_REFLECTION"]}
+        )
+        proofreader_second = Mock()
+        proofreader_second.call = AsyncMock(
+            return_value={
+                "severity": "minor",
+                "critique": "",
+                "corrected_text": ["SYNTHETIC_CORRECTED"],
+            }
+        )
+        polisher = Mock()
+        polisher.call = AsyncMock(
+            return_value={"polished_paragraphs": ["SYNTHETIC_POLISHED"]}
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", False),
+            patch.object(Config, "STRICT_REFLECTION_MODE", True),
+            patch(
+                "pipeline.UnifiedAgent",
+                side_effect=[
+                    proofreader_first,
+                    reflection,
+                    proofreader_second,
+                    polisher,
+                ],
+            ),
+        ):
+            result = await pipeline._run_refinement_loop(
+                "SYNTHETIC_SOURCE",
+                ["SYNTHETIC_INITIAL"],
+                "",
+                [],
+            )
+
+        self.assertEqual(result, ["SYNTHETIC_POLISHED"])
+        trace = pipeline._stage_trace
+        self.assertEqual(
+            [item["status"] for item in trace["proofreading"]],
+            ["completed", "completed"],
+        )
+        self.assertEqual(
+            [item["metadata"]["attempt"] for item in trace["proofreading"]],
+            [1, 2],
+        )
+        self.assertEqual(
+            trace["proofreading"][0]["metadata"]["reported_severity"],
+            "severe",
+        )
+        self.assertEqual(trace["reflection"][0]["status"], "completed")
+        self.assertEqual(
+            trace["reflection"][0]["metadata"]["attempt"], 1
+        )
+        self.assertEqual(trace["polishing"][0]["status"], "completed")
+        self.assertEqual(
+            trace["polishing"][0]["metadata"]["attempt"], 1
+        )
+        trace_text = json.dumps(trace, ensure_ascii=False)
+        for secret in (
+            "SYNTHETIC_PRIVATE_CRITIQUE",
+            "SYNTHETIC_SOURCE",
+            "SYNTHETIC_POLISHED",
+        ):
+            self.assertNotIn(secret, trace_text)
+
+    async def test_refinement_trace_marks_provider_failure_by_stage(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            side_effect=RuntimeError("synthetic provider failure")
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch.object(Config, "STRICT_REFLECTION_MODE", False),
+            patch("pipeline.UnifiedAgent", return_value=proofreader),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic provider failure"):
+                await pipeline._run_refinement_loop(
+                    "synthetic source", ["synthetic translation"], "", []
+                )
+
+        self.assertEqual(
+            pipeline._stage_trace["proofreading"][0]["status"], "failed"
+        )
+        self.assertEqual(pipeline._active_refinement_stage, "proofreading")
+
+    async def test_formal_project_blocks_after_strict_reflection_budget(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "severe",
+                "critique": "synthetic critique",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        translator = Mock()
+        translator.call = AsyncMock(
+            return_value={"translated_paragraphs": ["retry translation"]}
+        )
+        agents = [proofreader, translator, proofreader, translator, proofreader]
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch.object(Config, "STRICT_REFLECTION_MODE", True),
+            patch(
+                "pipeline.UnifiedAgent", side_effect=agents
+            ) as factory,
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "severe proofreading issues"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(factory.call_count, 5)
+        self.assertEqual(proofreader.call.await_count, 3)
+        self.assertEqual(translator.call.await_count, 2)
+
+    async def test_formal_project_rejects_invalid_proofread_contract(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "none",
+                "corrected_text": ["untrusted replacement"],
+            }
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch("pipeline.UnifiedAgent", return_value=proofreader) as factory,
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "proofreader response"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(factory.call_count, 1)
+
+    async def test_formal_project_rejects_unreadable_proofread_response(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            side_effect=ResponseContractError("synthetic malformed response")
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch("pipeline.UnifiedAgent", return_value=proofreader) as factory,
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "proofreader response"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(factory.call_count, 1)
+
+    async def test_formal_project_rejects_invalid_reflection_response(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "severe",
+                "critique": "synthetic critique",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        translator = Mock()
+        translator.call = AsyncMock(return_value={"unexpected": ["retry"]})
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch.object(Config, "STRICT_REFLECTION_MODE", True),
+            patch(
+                "pipeline.UnifiedAgent",
+                side_effect=[proofreader, translator],
+            ) as factory,
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "reflection translation response"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+        self.assertEqual(factory.call_count, 2)
+
+    async def test_formal_project_rejects_polisher_contract_fallback(self):
+        pipeline = TranslationPipeline.__new__(TranslationPipeline)
+        pipeline._get_agent_instruction = Mock(return_value="")
+        proofreader = Mock()
+        proofreader.call = AsyncMock(
+            return_value={
+                "severity": "minor",
+                "critique": "",
+                "corrected_text": ["proofread translation"],
+            }
+        )
+        polisher = Mock()
+        polisher.call = AsyncMock(
+            side_effect=ResponseContractError("synthetic malformed response")
+        )
+
+        with (
+            patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+            patch("pipeline.UnifiedAgent", side_effect=[proofreader, polisher]),
+        ):
+            with self.assertRaisesRegex(
+                TranslationQualityGateError, "polisher response"
+            ):
+                await pipeline._run_refinement_loop(
+                    "source", ["initial translation"], "", []
+                )
+
+    async def test_formal_project_gate_failure_does_not_write_translation_or_tm(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            run_id = "c" * 32
+            output_dir = root / "Workflow" / "Runs" / run_id / "Drafts"
+            raw_dir.mkdir()
+            (raw_dir / "chapter.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["initial translation"]
+            )
+            pipeline._get_agent_instruction = Mock(return_value="")
+            proofreader = Mock()
+            proofreader.call = AsyncMock(
+                return_value={
+                    "severity": "severe",
+                    "critique": "synthetic critique",
+                    "corrected_text": ["proofread translation"],
+                }
+            )
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "STRICT_REFLECTION_MODE", False),
+                patch.object(Config, "TRANSLATION_RUN_ID", run_id),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+                patch("pipeline.UnifiedAgent", return_value=proofreader),
+            ):
+                with self.assertRaises(
+                    TranslationQualityGateError
+                ) as raised:
+                    await pipeline.run_chapter(
+                        ChapterSpec(
+                            "chapter.md",
+                            "chapter.md",
+                            "chapter.md",
+                            chapter_position=7,
+                        )
+                    )
+
+            self.assertEqual(raised.exception.chapter_position, 7)
+            self.assertFalse((output_dir / "chapter.md").exists())
+            pipeline.rag.update_translation_memory.assert_not_called()
+            report_path = (
+                output_dir.parent
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(b"chapter.md").hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["attempts"][0]["status"], "failed")
+            self.assertEqual(
+                report["attempts"][0]["failure_stage"], "proofreading"
+            )
+
+    async def test_formal_project_polisher_gate_does_not_commit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "raw"
+            run_id = "d" * 32
+            output_dir = root / "Workflow" / "Runs" / run_id / "Drafts"
+            raw_dir.mkdir()
+            (raw_dir / "chapter.md").write_text("source paragraph", encoding="utf-8")
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = SimpleNamespace(
+                tm_data={"chapters": {}},
+                update_translation_memory=Mock(),
+            )
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["initial translation"]
+            )
+            pipeline._get_agent_instruction = Mock(return_value="")
+            proofreader = Mock()
+            proofreader.call = AsyncMock(
+                return_value={
+                    "severity": "minor",
+                    "critique": "",
+                    "corrected_text": ["proofread translation"],
+                }
+            )
+            polisher = Mock()
+            polisher.call = AsyncMock(
+                side_effect=ResponseContractError("synthetic malformed response")
+            )
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "STRICT_REFLECTION_MODE", False),
+                patch.object(Config, "TRANSLATION_RUN_ID", run_id),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+                patch("pipeline.UnifiedAgent", side_effect=[proofreader, polisher]),
+            ):
+                with self.assertRaisesRegex(
+                    TranslationQualityGateError, "polisher response"
+                ) as raised:
+                    await pipeline.run_chapter(
+                        ChapterSpec(
+                            "chapter.md",
+                            "chapter.md",
+                            "chapter.md",
+                            chapter_position=7,
+                        )
+                    )
+
+            self.assertEqual(raised.exception.chapter_position, 7)
+            self.assertFalse((output_dir / "chapter.md").exists())
+            pipeline.rag.update_translation_memory.assert_not_called()
+            report_path = (
+                output_dir.parent
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(b"chapter.md").hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["attempts"][0]["status"], "failed")
+            self.assertEqual(
+                report["attempts"][0]["failure_stage"], "polishing"
+            )
 
     async def test_run_chapter_refuses_source_changed_during_processing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1693,6 +4302,67 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 list(output_dir.glob(".codex-chapter-transaction-*.json")), []
             )
             pipeline._run_translation_phase.assert_awaited_once()
+
+    async def test_embedding_failure_keeps_chapter_transaction_for_retry(self):
+        from rag_engine import RAGEngine
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "生肉"
+            output_dir = root / "熟肉"
+            raw_dir.mkdir()
+            (raw_dir / "第1話.md").write_text("source paragraph", encoding="utf-8")
+            tm_path = root / "translation_memory.json"
+            rag = RAGEngine(
+                str(tm_path),
+                str(root / "Glossary.json"),
+                str(root / "guidelines.txt"),
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = rag
+            pipeline._build_run_context = AsyncMock(
+                return_value={"static_context": "", "glossary_matches": []}
+            )
+            pipeline._run_context_annotation = AsyncMock(return_value=[])
+            pipeline._run_translation_phase = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+            pipeline._run_refinement_loop = AsyncMock(
+                return_value=["translated paragraph"]
+            )
+
+            with patch.object(Config, "RAW_DIR", str(raw_dir)):
+                with patch.object(Config, "OUTPUT_DIR", str(output_dir)):
+                    with patch(
+                        "rag_engine.RAGEngine._generate_embedding_sync",
+                        side_effect=[
+                            RuntimeError("SYNTHETIC_PRIVATE_ERROR"),
+                            [0.5],
+                        ],
+                    ) as embed:
+                        with self.assertRaisesRegex(RuntimeError, "TM update was aborted") as raised:
+                            await pipeline.run_chapter("第1話.md")
+
+                        self.assertNotIn("SYNTHETIC_PRIVATE_ERROR", str(raised.exception))
+                        output_path = output_dir / "第1話.md"
+                        self.assertEqual(
+                            output_path.read_text(encoding="utf-8"),
+                            "translated paragraph",
+                        )
+                        self.assertEqual(rag.tm_data, {"chapters": {}})
+                        self.assertTrue(
+                            list(output_dir.glob(".codex-chapter-transaction-*.json"))
+                        )
+
+                        await pipeline.run_chapter("第1話.md")
+
+            self.assertEqual(embed.call_count, 2)
+            self.assertEqual(pipeline._run_translation_phase.await_count, 1)
+            self.assertEqual(pipeline._run_refinement_loop.await_count, 1)
+            self.assertIn("第1話.md", rag.tm_data["chapters"])
+            self.assertFalse(
+                list(output_dir.glob(".codex-chapter-transaction-*.json"))
+            )
 
     async def test_pending_chapter_transaction_refuses_changed_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1968,6 +4638,90 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                     await pipeline.run_chapter("第1話.md")
 
             warning.assert_not_called()
+
+    async def test_empty_versioned_chapter_commits_and_resumes_without_provider_calls(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            raw_dir = root / "RAWs_AI"
+            raw_dir.mkdir()
+            source_path = raw_dir / "episodes" / "empty.md"
+            source_path.parent.mkdir()
+            source_path.write_bytes(b"")
+            run_id = "a" * 32
+            run_root = root / "Workflow" / "Runs" / run_id
+            output_dir = run_root / "Drafts"
+            (run_root / "StageReports").mkdir(parents=True)
+            output_dir.mkdir()
+            spec = ChapterSpec(
+                "episodes/empty.md",
+                "episode-0001-empty-zh.md",
+                "source-edition:synthetic:empty",
+                "source-v1",
+                1,
+            )
+            rag = SimpleNamespace(
+                tm_data={"chapters": {}, "source_provenance": {}}
+            )
+
+            def update_translation_memory(
+                key, pairs, *, source_provenance, expected_tm_sha256=None
+            ):
+                rag.tm_data["chapters"][key] = pairs
+                rag.tm_data["source_provenance"][key] = source_provenance
+
+            rag.update_translation_memory = Mock(
+                side_effect=update_translation_memory
+            )
+            pipeline = TranslationPipeline.__new__(TranslationPipeline)
+            pipeline.rag = rag
+            pipeline._verify_chapter_source_snapshot = Mock()
+
+            with (
+                patch.object(Config, "RAW_DIR", str(raw_dir)),
+                patch.object(Config, "OUTPUT_DIR", str(output_dir)),
+                patch.object(Config, "SOURCE_MANIFEST_PATH", "source_manifest.json"),
+                patch.object(Config, "REQUIRE_REVIEWED_PUBLICATION", True),
+                patch.object(Config, "TRANSLATION_RUN_ID", run_id),
+                patch.object(
+                    Config,
+                    "EXPECTED_BOOK_BUNDLE",
+                    {"work_id": "synthetic-work"},
+                ),
+            ):
+                await pipeline.run_chapter(spec)
+                await pipeline.run_chapter(spec)
+
+            self.assertEqual((output_dir / spec.translation_file).read_bytes(), b"")
+            self.assertEqual(rag.tm_data["chapters"][spec.tm_key], [])
+            self.assertEqual(
+                rag.tm_data["source_provenance"][spec.tm_key][
+                    "source_version_id"
+                ],
+                "source-v1",
+            )
+            rag.update_translation_memory.assert_called_once()
+            self.assertEqual(
+                list(output_dir.glob(".codex-chapter-transaction-*.json")),
+                [],
+            )
+            report_path = (
+                run_root
+                / "StageReports"
+                / (
+                    "episode-"
+                    + hashlib.sha256(spec.tm_key.encode("utf-8")).hexdigest()[:32]
+                    + ".json"
+                )
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(report["attempts"]), 1)
+            self.assertEqual(report["attempts"][0]["status"], "completed")
+            self.assertEqual(
+                set(report["attempts"][0]["stages"]),
+                {"source_validation", "commit"},
+            )
 
     async def test_annotation_phase_preserves_valid_structured_records(self):
         pipeline = TranslationPipeline.__new__(TranslationPipeline)

@@ -121,9 +121,12 @@ class PandocExecutableResolutionTests(unittest.TestCase):
                     )
                 raise OSError("synthetic conversion stop")
 
-            self.assertEqual(_resolve_pandoc_executable("pandoc"), "pandoc")
             with (
                 patch("epub_builder.subprocess.run", side_effect=run),
+                patch(
+                    "epub_builder.shutil.which",
+                    return_value=expected_executable,
+                ),
                 self.assertRaisesRegex(OSError, "synthetic conversion stop"),
             ):
                 build_epub_candidate(
@@ -142,6 +145,11 @@ class PandocExecutableResolutionTests(unittest.TestCase):
             self.assertEqual(calls[0][0][0], expected_executable)
             self.assertEqual(calls[1][0][0], expected_executable)
             self.assertEqual(Path(calls[1][1]["cwd"]).name, "inputs")
+
+    def test_resolves_bare_pandoc_name_before_changing_working_directory(self):
+        resolved = str(Path.cwd() / "tools" / "pandoc.exe")
+        with patch("epub_builder.shutil.which", return_value=resolved):
+            self.assertEqual(_resolve_pandoc_executable("pandoc"), resolved)
 
 
 class EpubCandidateTests(unittest.TestCase):
@@ -255,7 +263,12 @@ class EpubCandidateTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _build(self, max_output_bytes=4 * 1024 * 1024):
+    def _build(
+        self,
+        max_output_bytes=4 * 1024 * 1024,
+        metadata_translation_provenance=None,
+        chapter_source_titles=None,
+    ):
         return build_epub_candidate(
             input_root=self.input_root,
             catalog_relative_path="epub-catalog.json",
@@ -266,6 +279,8 @@ class EpubCandidateTests(unittest.TestCase):
             max_total_bytes=2 * 1024 * 1024,
             max_output_bytes=max_output_bytes,
             pandoc_executable=self.pandoc,
+            metadata_translation_provenance=metadata_translation_provenance,
+            chapter_source_titles=chapter_source_titles,
         )
 
     def test_builds_candidate_with_source_hashes_and_preserves_markdown(self):
@@ -325,6 +340,158 @@ class EpubCandidateTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in output_dir.iterdir()),
             ["build.json", "candidate.epub"],
+        )
+
+    def test_approved_chapter_title_is_staged_without_changing_source_markdown(self):
+        chapter_path = self.input_root / "chapter-1.md"
+        original_bytes = chapter_path.read_bytes()
+        self.catalog["chapters"][0]["title"] = "第一话"
+        self._write_catalog()
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "3" * 64,
+                }
+            },
+        }
+
+        self._build(
+            metadata_translation_provenance=provenance,
+            chapter_source_titles={
+                "episode-1": "Chapter One",
+                "episode-2": "Chapter Two",
+            },
+        )
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        build_manifest = json.loads(
+            (output_dir / "build.json").read_text(encoding="utf-8")
+        )
+        chapter = build_manifest["chapters"][0]
+        translated_bytes = b"# \xe7\xac\xac\xe4\xb8\x80\xe8\xaf\x9d\n\nSynthetic translation one.\n"
+        self.assertEqual(chapter["title"], "第一话")
+        self.assertEqual(chapter["source_title"], "Chapter One")
+        self.assertEqual(
+            chapter["content_sha256"],
+            hashlib.sha256(original_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            chapter["pandoc_content_sha256"],
+            hashlib.sha256(translated_bytes).hexdigest(),
+        )
+        self.assertEqual(chapter_path.read_bytes(), original_bytes)
+        with zipfile.ZipFile(output_dir / "candidate.epub") as archive:
+            xhtml = "\n".join(
+                archive.read(name).decode("utf-8", errors="ignore")
+                for name in archive.namelist()
+                if name.endswith(".xhtml")
+            )
+        self.assertIn("第一话", xhtml)
+        self.assertNotIn("Chapter One", xhtml)
+
+    def test_chapter_source_title_must_match_the_original_h1(self):
+        self.catalog["chapters"][0]["title"] = "第一话"
+        self._write_catalog()
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "3" * 64,
+                }
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "catalog-matched H1 title"):
+            self._build(
+                metadata_translation_provenance=provenance,
+                chapter_source_titles={
+                    "episode-1": "Wrong original title",
+                    "episode-2": "Chapter Two",
+                },
+            )
+
+    def test_build_manifest_binds_approved_metadata_translation_provenance(self):
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "work.title": {
+                    "source_version_id": "work-v1",
+                    "source_sha256": "3" * 64,
+                },
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "4" * 64,
+                },
+            },
+        }
+
+        result = self._build(metadata_translation_provenance=provenance)
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        build_manifest = json.loads(
+            (output_dir / "build.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(build_manifest["metadata_translation"], provenance)
+        self.assertEqual(
+            result["metadata_translation_artifact_sha256"],
+            provenance["artifact_sha256"],
+        )
+
+    def test_build_rejects_malformed_metadata_translation_provenance(self):
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self._build(metadata_translation_provenance={"artifact_sha256": "bad"})
+
+    def test_builds_with_bare_pandoc_name_after_changing_working_directory(self):
+        self.pandoc = Path(self.pandoc).name
+
+        result = self._build()
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertTrue(
+            (
+                self.output_root
+                / "synthetic-work"
+                / "edition-001"
+                / "candidate.epub"
+            ).is_file()
         )
 
     def test_build_uses_validated_snapshots_and_terminates_pandoc_options(self):

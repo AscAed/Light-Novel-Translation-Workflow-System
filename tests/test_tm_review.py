@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rag_engine import RAGEngine
+from embedding_provider import embedding_identity_for_vector
 from source_ingestion import (
     EpisodeMetadata,
     LocalEpisodeFile,
@@ -19,6 +20,7 @@ from tm_review import (
     load_reviewed_tm_snapshot,
     publish_reviewed_tm,
 )
+from scripts.rebuild_tm_embeddings import rebuild_translation_memory_embeddings
 
 
 class TranslationMemoryReviewTests(unittest.TestCase):
@@ -70,18 +72,23 @@ class TranslationMemoryReviewTests(unittest.TestCase):
         translation_digest = hashlib.sha256(
             self.translation_text.encode()
         ).hexdigest()
+        embedding_a = [1.0, 0.0]
+        embedding_b = [0.0, 1.0]
+        identity = embedding_identity_for_vector(embedding_a)
         self.tm = {
             "chapters": {
                 "第1話.md": [
                     {
                         "raw": "alpha raw",
                         "translated": "alpha target",
-                        "embedding": [1.0, 0.0],
+                        "embedding": embedding_a,
+                        "embedding_identity": identity,
                     },
                     {
                         "raw": "beta raw",
                         "translated": "beta target",
-                        "embedding": [0.0, 1.0],
+                        "embedding": embedding_b,
+                        "embedding_identity": identity,
                     },
                 ]
             },
@@ -181,6 +188,9 @@ class TranslationMemoryReviewTests(unittest.TestCase):
                 "raw": raw,
                 "translated": translated,
                 "embedding": [float(index == 1), float(index == 2)],
+                "embedding_identity": embedding_identity_for_vector(
+                    [float(index == 1), float(index == 2)]
+                ),
             }
             for index, (raw, translated) in enumerate(
                 (
@@ -228,6 +238,131 @@ class TranslationMemoryReviewTests(unittest.TestCase):
             str(self.translation_root),
             "source_manifest.json",
         )
+
+    def test_rebuild_creates_source_verified_candidate_and_preserves_source_tm(self):
+        original_bytes = self.tm_path.read_bytes()
+        vectors = [[0.5, 0.5], [0.25, 0.75]]
+        identity = embedding_identity_for_vector(vectors[0])
+        with patch(
+            "scripts.rebuild_tm_embeddings.generate_embeddings",
+            return_value=(vectors, identity),
+        ) as generate:
+            result = rebuild_translation_memory_embeddings(
+                str(self.tm_path),
+                "translation_memory.reembedded.json",
+                str(self.source_root),
+                str(self.translation_root),
+                "source_manifest.json",
+            )
+
+        candidate_path = self.knowledge_root / result["output"]
+        candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+        self.assertEqual(self.tm_path.read_bytes(), original_bytes)
+        self.assertEqual(result["chapter_count"], 1)
+        self.assertEqual(result["pair_count"], 2)
+        self.assertEqual(
+            [pair["embedding"] for pair in candidate["chapters"]["第1話.md"]],
+            vectors,
+        )
+        self.assertEqual(
+            candidate["source_provenance"],
+            self.tm["source_provenance"],
+        )
+        generate.assert_called_once()
+        create_tm_review_template(
+            str(candidate_path),
+            "reembedded-review.json",
+            str(self.source_root),
+            str(self.translation_root),
+            "source_manifest.json",
+        )
+
+    def test_rebuild_refuses_existing_candidate_before_provider_call(self):
+        output_path = self.knowledge_root / "translation_memory.reembedded.json"
+        output_path.write_text("preserve", encoding="utf-8")
+        with patch(
+            "scripts.rebuild_tm_embeddings.generate_embeddings"
+        ) as generate:
+            with self.assertRaises(FileExistsError):
+                rebuild_translation_memory_embeddings(
+                    str(self.tm_path),
+                    output_path.name,
+                    str(self.source_root),
+                    str(self.translation_root),
+                    "source_manifest.json",
+                )
+        self.assertEqual(output_path.read_text(encoding="utf-8"), "preserve")
+        generate.assert_not_called()
+
+    def test_rebuild_discards_candidate_if_source_changes_during_provider_call(self):
+        output_path = self.knowledge_root / "translation_memory.reembedded.json"
+        identity = embedding_identity_for_vector([0.5, 0.5])
+
+        def update_source(_texts, **_kwargs):
+            self.translation_path.write_text(
+                "changed target\n\nbeta target\n",
+                encoding="utf-8",
+            )
+            return [[0.5, 0.5], [0.25, 0.75]], identity
+
+        with patch(
+            "scripts.rebuild_tm_embeddings.generate_embeddings",
+            side_effect=update_source,
+        ):
+            with self.assertRaisesRegex(ValueError, "not fully verified"):
+                rebuild_translation_memory_embeddings(
+                    str(self.tm_path),
+                    output_path.name,
+                    str(self.source_root),
+                    str(self.translation_root),
+                    "source_manifest.json",
+                )
+        self.assertFalse(output_path.exists())
+
+    def test_rebuild_discards_candidate_if_tm_changes_during_provider_call(self):
+        output_path = self.knowledge_root / "translation_memory.reembedded.json"
+        identity = embedding_identity_for_vector([0.5, 0.5])
+
+        def update_tm(_texts, **_kwargs):
+            changed = json.loads(self.tm_path.read_text(encoding="utf-8"))
+            changed["concurrent_change"] = True
+            self.tm_path.write_text(
+                json.dumps(changed, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return [[0.5, 0.5], [0.25, 0.75]], identity
+
+        with patch(
+            "scripts.rebuild_tm_embeddings.generate_embeddings",
+            side_effect=update_tm,
+        ):
+            with self.assertRaisesRegex(ValueError, "Translation memory changed"):
+                rebuild_translation_memory_embeddings(
+                    str(self.tm_path),
+                    output_path.name,
+                    str(self.source_root),
+                    str(self.translation_root),
+                    "source_manifest.json",
+                )
+        self.assertFalse(output_path.exists())
+
+    def test_rebuild_provider_failure_leaves_source_and_candidate_unchanged(self):
+        original_bytes = self.tm_path.read_bytes()
+        output_path = self.knowledge_root / "translation_memory.reembedded.json"
+        with patch(
+            "scripts.rebuild_tm_embeddings.generate_embeddings",
+            side_effect=RuntimeError("synthetic provider failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic provider failure"):
+                rebuild_translation_memory_embeddings(
+                    str(self.tm_path),
+                    output_path.name,
+                    str(self.source_root),
+                    str(self.translation_root),
+                    "source_manifest.json",
+                )
+        self.assertEqual(self.tm_path.read_bytes(), original_bytes)
+        self.assertFalse(output_path.exists())
 
     def test_receipt_is_pending_hash_bound_and_approved_snapshot_is_filtered(self):
         result = self._template()
@@ -309,6 +444,7 @@ class TranslationMemoryReviewTests(unittest.TestCase):
             source_manifest_path="source_manifest.json",
             reviewed_tm_path=str(self.bundle_path),
             translation_root=str(self.translation_root),
+            allow_unreviewed_tm=True,
         )
 
         with patch.object(
