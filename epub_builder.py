@@ -602,6 +602,81 @@ def _write_json_exclusive(path, value):
         os.fsync(stream.fileno())
 
 
+def _validate_metadata_translation_provenance(value):
+    if value is None:
+        return None
+    required = {
+        "artifact_sha256",
+        "plan_sha256",
+        "candidate_sha256",
+        "review_sha256",
+        "quality_rules_sha256",
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+        "field_lineage",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("Metadata translation provenance is invalid.")
+    for key in required - {
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+        "field_lineage",
+    }:
+        digest = value[key]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("Metadata translation provenance digest is invalid.")
+    for snapshot_name in (
+        "artifact_source_snapshot",
+        "current_source_snapshot",
+    ):
+        snapshot = value[snapshot_name]
+        if not isinstance(snapshot, dict) or set(snapshot) != {
+            "catalog_sha256",
+            "manifest_sha256",
+        }:
+            raise ValueError("Metadata translation source snapshot is invalid.")
+        for digest in snapshot.values():
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError("Metadata translation source digest is invalid.")
+    field_lineage = value["field_lineage"]
+    if not isinstance(field_lineage, dict) or not field_lineage:
+        raise ValueError("Metadata translation field lineage is invalid.")
+    for source in field_lineage.values():
+        if not isinstance(source, dict) or set(source) != {
+            "source_version_id",
+            "source_sha256",
+        }:
+            raise ValueError("Metadata translation field lineage is invalid.")
+        if not isinstance(source["source_version_id"], str) or not source[
+            "source_version_id"
+        ]:
+            raise ValueError("Metadata translation field source version is invalid.")
+        source_sha256 = source["source_sha256"]
+        if source_sha256 is not None and (
+            not isinstance(source_sha256, str)
+            or len(source_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in source_sha256)
+        ):
+            raise ValueError("Metadata translation field source digest is invalid.")
+    return {
+        **value,
+        "artifact_source_snapshot": dict(value["artifact_source_snapshot"]),
+        "current_source_snapshot": dict(value["current_source_snapshot"]),
+        "field_lineage": {
+            field_id: dict(source)
+            for field_id, source in field_lineage.items()
+        },
+    }
+
+
 def build_epub_candidate(
     *,
     input_root,
@@ -614,6 +689,7 @@ def build_epub_candidate(
     max_output_bytes,
     pandoc_executable="pandoc",
     timeout_seconds=120,
+    metadata_translation_provenance=None,
 ):
     """Build a non-publishable candidate and a provenance sidecar manifest."""
     max_chapter_bytes = _positive_limit(
@@ -635,6 +711,9 @@ def build_epub_candidate(
         timeout_seconds,
         "timeout_seconds",
         maximum=86400,
+    )
+    metadata_translation_provenance = _validate_metadata_translation_provenance(
+        metadata_translation_provenance
     )
 
     root = Path(input_root).resolve(strict=True)
@@ -774,10 +853,12 @@ def build_epub_candidate(
             },
             "validation": validation,
         }
+        if metadata_translation_provenance is not None:
+            manifest["metadata_translation"] = metadata_translation_provenance
         _write_json_exclusive(staging_dir / "build.json", manifest)
         os.rename(staging_dir, target_dir)
         staging_dir = None
-        return {
+        result = {
             "status": "candidate",
             "relative_directory": f"{catalog['work_id']}/{catalog['build_id']}",
             "chapter_count": len(chapters),
@@ -785,6 +866,11 @@ def build_epub_candidate(
             "pandoc_version": pandoc_version,
             "validation": validation,
         }
+        if metadata_translation_provenance is not None:
+            result["metadata_translation_artifact_sha256"] = (
+                metadata_translation_provenance["artifact_sha256"]
+            )
+        return result
     finally:
         if staging_dir is not None:
             resolved_stage = staging_dir.resolve(strict=False)

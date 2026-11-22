@@ -8,11 +8,97 @@
 
 当前三个流水线生成绑定按代码实际映射为：`INITIAL_MODEL` 负责初译及反思重译；`PROOFREAD_MODEL` 负责上下文标注、校对和全书/单话知识抽取；`STYLE_MODEL` 负责润色。`FINAL_REVIEW_MODEL` 经静态预检后可由终审 CLI 调用；两次评估走相同 route，不构成独立身份或语义正确性证明。终审预检要求接收方获得 `source_text`、`translation_text`、`book_knowledge` 全类别授权；当前审阅 prompt 实际发送 source、translation 和策略定义，不发送 book knowledge。向导会在读取 Key 前显示并确认接收类别。向导只为已分配职责索取端点 Key，不保存未分配端点；激活 API 池时清除旧池 Key 和未配置的 `FINAL_REVIEW_MODEL` 环境变量。
 
+`未实现` 元数据翻译没有独立 Provider role 或 `INITIAL_MODEL` 自动映射。`scripts/import_metadata_translation_candidate.py` 只导入已准备好的完整双语候选；其 `provider_export` provenance 是输入方声明，不触发或认证 Provider 请求。元数据在线生成必须另行显式定义调用角色，并在请求前核验当前 route、allowlist、匹配 tokenizer 与费用/调用预算；不可将章节初译配置默认解释为 metadata role。
+
 `部分实现` 用户选择保存时，生成池和可选 embedding 配置写入当前用户 `%LOCALAPPDATA%\TranslatorAI\api-pool.json`；Key 保存在当前用户 Windows Credential Manager 中，profile 只存凭据引用及授权。凭据绑定整份配置摘要，配置变更导致绑定不符时拒绝加载；运行期间 Key 进入当前进程环境，可能被子进程继承。配置保存失败时只回收本次已成功写入的新凭据引用，不触碰旧配置/凭据；若清理本身失败，会报告需检查 `TranslatorAI/API` 或 `TranslatorAI/Embedding` 项。schema v1/v2 可加载；确认迁移的 v1 仍迁到 v2。新配置无终审槽时保存为 v2，配置终审槽时保存为 v3；两版 embedding 字段保持兼容。新旧凭据引用均不自动删除。存储依赖 Windows 用户账户及凭据服务，换账户或设备需重新配置；同一账户内运行的程序仍可能访问其凭据。真实端点诊断和真实服务验收仍为计划。不要把真实 Key 放入命令行或聊天。
 
 配置时逐端点明示并确认本次职责所需 `source_text`、`translation_text` 和 `book_knowledge` 类别；备用端点同样须授权。备用仅对连接错误、408/429 和 5xx 尝试一次；内容拦截和认证错误不触发，可能重复计费。当前备用仅覆盖 `UnifiedAgent` 翻译调用，不覆盖独立知识抽取脚本；后者沿用校对模型的主端点。Key、端点、模型兼容性和真实质量未作线上验证。
 
 - API 池增量（R4 前快照）本地验证：`tests.test_api_pool` 11 项通过；`tests.test_api_pool tests.test_pipeline_contracts tests.test_kakuyomu_workflow -q` 164 项通过；当时全量非 E2E 677 项运行、673 项通过、4 项跳过；loopback mock E2E 7 项通过。覆盖生成请求模型 ID、启动预检、未使用端点不取 Key、凭据写入/配置替换失败回滚、主备授权及内容拦截不回退。当前 schema v2、embedding 与迁移验证见[最新开发记录](development.md#2026-11-20-api-池-v2-与可配置-embedding)。测试不访问真实 Provider，不验证渠道兼容、账单或语义质量。
+
+## 2026-11-21 模型目录、多协议与推理强度规划
+
+本节是基于当前仓库基线和供应商公开资料形成的后续计划，不表示模型目录、协议适配或推理强度选择已经实现。调查基线为分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。本轮只读检查 `.venv` 的 Python 3.14.7 和模块可发现性；未运行测试、读取私有 API profile/Key 或书籍正文，也未连接任何 Provider。
+
+### 当前能力与限制
+
+- `部分实现` `scripts/configure_api_pool.py` 是现有 API 配置入口，可登记多个 OpenAI-compatible 生成端点、手工输入模型 ID、分配当前生成职责、选择备用端点，并可单独配置 Gemini 或 OpenAI-compatible embedding。API Key 通过隐藏输入；保存能力和平台限制见上方 API 池状态。保存配置不等于端点、模型或服务已经验证。
+- `部分实现` `api_pool_store.py` 当前保存 API 池 schema v2/v3；生成池条目以 `base_url`、`model` 和凭据引用为核心，没有通用生成协议字段。embedding 绑定已有自己的协议字段；这不等于生成协议选择已实现。
+- `部分实现` `pipeline.py::UnifiedAgent` 的主生成请求使用 OpenAI SDK Chat Completions；Gemini 生成使用单独 Google SDK 路径。`UnifiedAgent.call(enable_thinking=...)` 目前没有把该参数传到模型请求；源码中没有通用的 Responses、Anthropic Messages 或按模型/协议配置 reasoning effort 的适配层。
+- `已验证` 当前项目 `.venv` 为 Python 3.14.7；可发现 `openai`、`google`，未发现 `anthropic`、`prompt_toolkit`、Textual、Rich 或 Questionary。`requirements.txt` 含 `aiohttp`、`google-genai`、`numpy`、`openai`、`tokenizers`，不含 Anthropic SDK。CI 在 Ubuntu/Windows Python 3.14 安装 requirements 并运行本地/loopback 测试；不验证真实 Provider。
+- `计划` 统一常驻 CLI/TUI 尚未实现。API 模型目录功能先接入现有配置向导，后续再由统一入口复用；不得因此并行创建第二套 Provider 配置、凭据存储或授权逻辑。
+- `未知` 本机当前 API profile、Key、渠道实际模型列表、端点协议兼容、账号可见模型、推理等级、服务政策、配额、费用、真实内容拦截和翻译效果。本轮未检查私有配置或发起请求。
+
+### 官方目录和模型 ID 来源
+
+公开厂商目录、实际推理端点返回值和本项目验证结果是不同证据，不得混为一谈。模型记录至少保留 `source_kind`、来源地址、获取时间、厂商/端点身份、地区或 workspace、API model ID、可用协议、能力和字段可信状态。缺少公开证据的字段记为未知，不从模型名称、别名或同厂商其他模型推断。
+
+| 厂商/来源 | 可用发现方式 | 可确认的边界 |
+| --- | --- | --- |
+| OpenAI / GPT | 官方 Models API 可列出当前凭据可访问的模型 ID；能力、生命周期和 reasoning 参数仍需关联相应官方模型/API 文档。 | 列表不等于每个端点/组织都能调用，也不代表模型所有能力均可由列表响应确认。 |
+| Anthropic / Claude | 官方 Models API 提供模型列表；模型能力和 thinking/effort 规则需按当前 Messages API 文档与具体型号登记。 | 官方 Key 与自定义中转端点的目录可见性是两件事。 |
+| Google / Gemini | 官方 `ListModels` 可提供模型及支持的方法等信息；保留模型目录中提供的具体字段和时间戳。 | 不能假定所有列出模型都支持同一种生成接口、Thinking 配置或当前账户配额。 |
+| DeepSeek | 官方 `GET /models` 可列出模型 ID，并提供模型级能力元数据，包括支持的 effort 和按 API 协议声明的能力。 | 公开元数据仍需与用户所配中转端点的实际路由、型号名称和行为区分。 |
+| 阿里云百炼 Model Studio / Qwen 及托管模型 | 官方模型列表 API 需要对应区域、workspace 与 Key，提供模型 ID、作者、推理服务商、能力/特性、上下文和价格等字段，并支持分页。 | “模型作者”与“推理服务商”不同；百炼可见项不等于直连原厂目录或其他渠道可用。 |
+| 智谱 / GLM 直连 | 本次未确认智谱官方动态 Model List API。首版使用有来源日期的官方静态模型资料；若用户配置端点提供模型列表，则单独标为“端点返回”。 | 阿里云列表中的 `zhipu-ai` 是百炼目录记录，不能据此宣称直连智谱账户已有相同目录/API。 |
+| 用户配置的中转/自定义端点 | 只有用户明确触发时，才可向配置的 endpoint 查询其本身支持的模型列表；按实际响应记录端点来源。 | 中转站可能暴露别名、虚拟 ID、过滤列表或不同能力；不得自动将其映射成官方模型 ID，也不得把中转 Key 发送至厂商文档或其他域名。 |
+| 无动态目录的模型 | 以随软件发布的、带官方来源与核对日期的静态目录作为候选；允许用户手动输入 ID 并标记为未经目录/端点验证。 | 静态目录有版本滞后；不伪装成实时或账户级可用性。 |
+
+官方资料访问日期：2026-11-21。
+
+| 官方来源 | 在本计划中的用途 |
+| --- | --- |
+| [OpenAI Models API](https://platform.openai.com/docs/api-reference/models/list)、[Responses API](https://platform.openai.com/docs/api-reference/responses) 与[推理指南](https://developers.openai.com/api/docs/guides/reasoning) | 模型发现、Responses 请求边界及模型相关 reasoning 参数。 |
+| [Anthropic Models API](https://platform.claude.com/docs/en/api/models/list)、[Messages API](https://platform.claude.com/docs/en/api/messages/create) 与[Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) | 模型发现、Messages 数据结构及模型相关 thinking/effort 能力。 |
+| [Gemini ListModels](https://ai.google.dev/api/models)、[Interactions API](https://ai.google.dev/gemini-api/docs/interactions) 与[Thinking](https://ai.google.dev/gemini-api/docs/thinking) | Gemini 模型发现、原生交互协议与模型/请求相关 thinking 设置。 |
+| [DeepSeek Lists Models](https://api-docs.deepseek.com/api/list-models/)、[Responses API](https://api-docs.deepseek.com/api/create-response/) 与[API 入门](https://api-docs.deepseek.com/) | 模型能力目录、Responses/兼容 API 的具体支持边界及调用 ID。 |
+| [阿里云百炼模型列表 API](https://help.aliyun.com/en/model-studio/list-models) | 区域/workspace 级模型发现、分页、能力与作者/推理服务商字段。 |
+| [智谱官方文档入口](https://docs.bigmodel.cn/) | GLM 静态官方资料的候选入口；本次未确认直连动态模型列表 API 或完整协议能力矩阵。实施时须精确记录实际引用的模型/API 文档页。 |
+
+以上官方资料描述的是厂商公开接口，不代表用户的 JOJO Code、JYQF AI 或其他中转端点支持相同路径、模型 ID、字段、参数或能力。未找到或不可访问的目录接口应进入“静态官方资料/手动 ID/endpoint 返回”的有来源替代路径，不通过网页抓取伪装成稳定 API。
+
+### 协议与能力边界
+
+- `Chat` 在本方案中明确指 OpenAI Chat Completions 风格 API，不泛指对话任务；它是当前生成主路径。维持现有调用契约作为兼容基线。
+- `Responses` 是独立 API 协议，不视为 Chat Completions 的路径别名。适配器须保留其输入/输出 item、工具和事件语义；只在具体厂商、端点和模型均声明/验证支持时可选用其专有能力。
+- `anthropic` 指 Anthropic Messages API。它与 OpenAI Chat/Responses 的 system、消息内容块、工具和 thinking 结构不同，必须使用独立协议适配器；不能只替换 URL 或把请求 JSON 原样转发。
+- `Gemini Interactions` 已按用户选择纳入首版支持范围，使用 Google 原生 API 的独立适配器，不把 Interactions 冒充 OpenAI Responses。现有 `generateContent` 路径先保留为兼容路径，按模型目录/API 支持情况选择，不在无验证时静默迁移。
+- 其他供应商可能提供 OpenAI-compatible 或 Anthropic-compatible 接口，但兼容范围以该供应商对具体型号和功能的官方文档、端点响应及合成 contract test 为准。能力按 `endpoint × protocol × model` 建立，而不是简单按厂商设置。
+- 首版使用现有 `openai` SDK 承载已支持的 Chat 路径，并验证其 Responses 支持和依赖版本；Anthropic 优先评估官方 SDK 在 Python 3.14 与 Windows/Ubuntu 的安装/运行兼容，未满足时使用现有 `aiohttp` 建立独立 REST 适配器；Gemini 使用现有 `google-genai` SDK，新增 Interactions 前先验证当前版本接口。不得为了“统一 SDK”丢弃协议独有能力。
+
+### 推理强度能力发现与自动选择
+
+推理能力记录粒度为 `endpoint × protocol × model`，至少包含 `supports_reasoning`、原厂接受值与顺序、Provider 默认值、实际 API 字段、来源/核对日期及验证级别。`unknown` 与“不支持”必须区分。Provider 原生 `auto` 只有在对应模型与协议的公开资料或端点验证支持时才能使用。
+
+内部意图先采用 `light`、`balanced`、`deep`，再由适配器映射成模型实际接受的值。基于现有职责的首轮候选策略为：`INITIAL_MODEL` 采用 balanced；`PROOFREAD_MODEL`（当前涵盖上下文标注、校对和知识抽取）采用 deep；`STYLE_MODEL` 采用 balanced；可选 `FINAL_REVIEW_MODEL` 采用 deep。它们是需经本项目获准样本校准的计划默认，不代表质量最优或所有模型都应设置同一 effort。若职责后续拆分，再独立校准相应 profile。
+
+- 模型支持列表已确认时，选择最接近职责意图且该协议明确接受的等级；记录最终发出的原厂参数和值。
+- 支持 Native `auto` 且职责策略选择自动时，使用已证实的 Provider `auto`；不可把某 Provider 的 `auto` 语义搬到另一家。
+- 能力未知、不支持或中转端点无法确认时，不注入推理参数，采用 Provider 默认值；诊断状态明确为“使用服务端默认/实际等级未知”。
+- 若 Provider 返回参数/schema 错误，不用盲目重试或跨协议降级掩盖不兼容；保留失败类型，提示用户核对模型、端点和目录数据。
+- 首版按职责确定性映射，不尝试让模型自行估算“该想多深”，也不因内容敏感或被拦截而自动更换 Provider。后续只能基于获准样本和显式预算评估策略调整。
+
+### 向导、缓存与配置迁移
+
+1. 在现有 `configure_api_pool.py` 中为每个 Provider 记录协议/适配器和目录来源；生成池、embedding、职责、备用、数据授权继续统一存储。菜单先展示 endpoint、协议和模型来源，再让用户按职责选择合法模型。
+2. 动态目录只在用户主动刷新时请求；不在应用启动或保存 profile 时静默联网。端点目录使用配置给定 endpoint 和其凭据；官方文档来源通过随版本发布的静态元数据，不把用户 API Key 转发给官网。
+3. 动态目录缓存单独保存在 `%LOCALAPPDATA%\TranslatorAI\model-catalog-cache.json`，不写入 API profile digest；默认缓存有效期 24 小时。过期或离线时显示最后成功更新时间并允许查看/手动输入。刷新结果缺少旧 ID 时标记“未在最新列表发现”，不自动删除、替换或重路由既有配置。
+4. 目录响应严格做 schema/大小/分页/重复 ID 校验；保留 `official_catalog`、`configured_endpoint`、`curated_static`、`manual_unverified` 来源标签。调用前可做明确触发的无书籍内容验证，目录可见不能替代生成请求测试。
+5. 增加 profile schema v4 保存生成协议、目录来源/所选 ID 引用及 reasoning policy；目录缓存与 profile 分离。迁移 v1/v2/v3 时保留现有 endpoint、model ID、职责、授权、回退、embedding、终审和 Credential Manager 引用。迁移先写非秘密备份及临时 profile，通过结构/摘要检查后原子替换；失败保留旧 profile 和旧凭据，不在本功能中自动删除凭据。
+6. 现有 Windows Credential Manager 仍是 Windows 凭据后端；Linux 可运行与 Linux 凭据持久化不是同一承诺，后者未实现/未验证时须明确报告。不得将 Key 写入模型缓存、profile 明文、请求日志、异常或 shell 命令。
+
+### 分阶段实施与验收
+
+| 阶段 | 目标、依赖与交付物 | 验收条件 | 主要风险与回退 |
+| --- | --- | --- | --- |
+| P0 协议/目录契约 | 依赖：本计划。交付职责到协议/输入类别/推理意图矩阵、目录来源清单及能力字段规范；逐一核对官方接口与当前用户配置入口。 | 当前调用都映射到旧协议/角色；未知能力可保持 unknown；GLM 直连目录无动态 API 证据时采用官方静态目录和手动 ID，不伪称实时发现。 | 官方文档变化；按 source URL、访问日期和修订记录更新，不把静态信息作为在线可用性。 |
+| P1 目录适配与缓存 | 依赖：P0。交付 OpenAI、Anthropic、Gemini、DeepSeek、百炼动态目录适配；GLM 静态资料与用户 endpoint-list/manual fallback；带分页/时间/来源的缓存。 | 合成测试覆盖成功、分页、缺项、重复/非法 ID、网络中断、401/403、429、字段未知、缓存过期和 last-good 保留；密钥只发给用户指定 endpoint。 | 不同 API/渠道目录字段不同；适配器各自解析成共同元数据，保留原始来源摘要，失败时保留旧目录并明确过期。 |
+| P2 协议适配 | 依赖：P0 及 P1 的协议能力字段。交付 Chat 兼容路径、Responses、Anthropic Messages、Gemini Interactions 适配器；保留 Gemini generateContent。 | 各协议有 request/response contract tests、结构化输出、工具/内容块/事件解析和错误归类；不支持的 endpoint/model/protocol 组合在发送内容前拒绝。 | SDK 在 Python 3.14 或目标 OS 不兼容；Anthropic 回退到隔离 `aiohttp` REST adapter；单协议适配器故障时原 Chat 路由继续可用。 |
+| P3 推理等级策略 | 依赖：P1 元数据、P2 请求适配器。交付逐模型协议能力映射、职责 profile 和诊断结果。 | 对多个支持等级/仅默认/未知/不支持的合成模型验证实际出参；没有公开/端点证据时不发送该字段；未知时提供默认值状态。 | 供应商参数语义不同；只通过 adapter 映射，不作跨厂商数值等价假设；按获准样本校准 profile。 |
+| P4 API 向导及迁移 | 依赖：P1–P3。交付现有向导内的刷新、选择、协议、职责和 reasoning 配置，以及 schema v4 迁移。 | 新建/编辑/重启加载流程完整；v1/v2/v3 → v4 的授权/路由/embedding/reviewer 不丢失；模拟失败时旧 profile 与凭据引用可继续使用；敏感值不出日志。 | 迁移错误会影响现有配置；先复制非秘密备份与临时写入，单独校验后切换，保留旧版本恢复路径。 |
+| P5 跨平台和受控端点验收 | 依赖：P4；真实验收另需用户可用账户、端点、预算及授权。交付 CI 合成回归和单独的端点验证记录。 | Windows/Ubuntu Python 3.14 CI 覆盖目录漂移、协议组合、参数映射、错误与脱敏；用户触发的无书籍 smoke test 记录真实协议/模型是否可用。真实翻译质量、政策拦截和费用各自独立验收。 | Mock 不能证明中转站兼容或翻译质量；无法取得真实端点时只关闭真实验收项，不阻塞 schema 和 fixture 工作。 |
+
+这些工作是项目路线图阶段 3 的细化计划；统一常驻 CLI/TUI 仍属阶段 5 计划。所有阶段均不设虚构工期。P4 后的配置能力先由现有 API 向导承载；统一入口实现后复用同一配置服务，不另起数据或密钥体系。
 
 ## 2026-11-20 职责细分与统一嵌入规划
 
@@ -212,7 +298,7 @@
 - JOJO→JYQF 回退由 `ENABLE_JYQF_FALLBACK` 显式启用，默认关闭，只覆盖 JOJO 主路由；使用 `deepseek-v4.1-flash`，复用同一请求提示词与响应 schema，备用客户端设置 `max_retries=0`，避免 SDK 在单次回退调用内自动重试。阶段启动预检会校验 JYQF URL、数据类别授权和远端 Key；`UnifiedAgent` 创建 JYQF 客户端前再次检查类别，本地 loopback 按本地端点规则处理。回退失败会直接传播，不级联 Gemini。仅有合成契约测试证据，mock E2E 不覆盖该回退路径；真实中转站兼容性、费用与模型表现未验证。
 - `API_TIMEOUT` 默认 10 秒且必须是有限正数；当前传入 OpenAI-compatible 聊天和 Gemini 生成、RAG embedding、章节对齐 embedding 调用。Gemini SDK `HttpOptions.timeout` 使用毫秒，由秒值换算；默认值对慢速模型可能过短，须按获准端点实测后由操作者配置。
 - `PROVIDER_DATA_POLICY` 已实现为默认空的逐 Provider/数据类别 allowlist，涵盖主请求、Gemini 回退、RAG、章节对齐和知识抽取。生成流水线按阶段声明最小类别；启动预检只检查当前运行时可达的 Gemini 回退阶段，并逐阶段检查 JOJO→JYQF 回退与实际调用一致。类别未全部获准时请求在客户端边界被拒绝。2026-11-17 的历史记录中本机 `.env` 为试点列出 `source_text`、`translation_text`、`book_knowledge`；当前私有配置未在本轮核验。用户后续同意 AI 模型履职所需数据，代码默认仍为空；真实端点和实际请求尚未验收。
-- 2026-11-17 配置增量：`Config.load_config` 允许 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 由环境变量覆盖 JSON 配置；本机试点用例选择 JOJO 主模型并启用已选 JYQF 有限回退。回归覆盖环境变量优先级。配置系统仍未提供一般化 Provider/模型能力目录、阶段 UI、凭据存储或端点验证命令。
+- 2026-11-17 配置增量（历史快照）：`Config.load_config` 允许 `INITIAL_MODEL`、`PROOFREAD_MODEL`、`STYLE_MODEL` 由环境变量覆盖 JSON 配置；当时配置系统尚未提供一般化 Provider/模型能力目录、API 池阶段向导、凭据存储或端点验证命令。当前 API 池/Windows 凭据实际能力见本文“2026-11-20 API 池配置”；模型目录、多协议及推理强度仍是“2026-11-21”计划。
 - 知识抽取脚本使用 `Config.PROOFREAD_MODEL` 发起请求，并复用 `get_primary_provider_route` 选择对应 Provider ID、base URL 与专属 Key；未知模型名在读取来源前失败，避免模型 ID 与实际接收 Provider 不一致。该共用路由不自动授权知识抽取用途，仍须该 Provider 的 `source_text` 在本地 allowlist 中获准；全书预算/分批与 tokenizer 适配未实现。
 - `CODING_PLAN_BASE_URL`/`CODING_PLAN_API_KEY` 仍在配置类中声明/读取，但没有接入当前主请求路由。用户决定暂不作为独立 Provider 支持，保留未接入配置；不能据此声称已实现 Coding Plan 或可替换 Provider。
 - 以上是静态代码与 mock 测试基线；本轮未调用真实端点。M1 仍须定义完整 Provider/模型/凭据/阶段绑定契约，并为当前真实配置建立迁移和兼容规则。
@@ -235,6 +321,70 @@
 - 单价最低但人工修订显著增加的配置，不得仅凭 API 账单判为最优；总成本应包括多阶段调用、回退/重试、嵌入和人工后编辑时间。
 - 评测样本及输出留在获准的本地项目存储；外发或上传评测集前须按项目数据政策取得授权。
 
+## 2026-11-22 翻译范围与模型职责复核
+
+本节补充作品元数据翻译、本地化交付和更细职责模型。模型资料来源为用户工作区外部文件 `D:\OWN\Programming\AI\TranslatorAI\目前可以使用的AI API 模型及价格表.md`，访问日期 2026-11-22。该文件是用户提供的渠道目录/报价快照，不是官方质量、审核策略或项目连通性证明。此处新增价格不覆盖前面标注为 2026-11-14 的历史报价；渠道、模型别名、协议和价格须按各自来源及日期区分。
+
+### 当前翻译对象及状态
+
+- `部分实现` 当前 `pipeline.py` 仍以章节正文为核心；作品 catalog 可保存标题、作者、宣传语、概要、详细介绍、类型、Tag、连载状态等字段，但未发现字段级元数据翻译、审核与正式发布闭环。章节/话标题随来源目录采集，不代表已有对应中文译文。
+- `部分实现` 现有调用绑定仍是 `INITIAL_MODEL`（初译/反思）、`PROOFREAD_MODEL`（上下文标注/校对/知识抽取/定向返工）、`STYLE_MODEL`（润色）及可选 `FINAL_REVIEW_MODEL`；这些是路由职责，不等于彼此隔离的专门 Agent。Embedding 为独立配置。具体事实见本文前述 2026-11-20 角色表和项目代码链接。
+- `计划` 对作品标题、宣传语、概要、详细介绍、类型/Tag 的读者可见文本以及章节/话标题提供日文原值与中文译值并列记录；来源 ID、URL、日期、计数、状态等结构值不翻译。字段级译文绑定来源版本、配置/提示词、审核结果和更新时间；元数据与正文分别追踪，来源变更使依赖译文过期而不覆盖旧版。
+- `计划` 采用忠实原意、保留作品特色并优化中文阅读体验的本地化原则。先在正文自然表达专名、俚语、梗、致敬、双关和日本文化信息；只有自然表达不能保留关键信息且确有理解需要时，才添加最少量编号文末注。注释应带来源证据，不增添未经证实的设定。该呈现偏好已由用户确认，质量门槛和注释样本仍需校准。
+
+### 用户提供模型与渠道资料（2026-11-22）
+
+以下逐项转录该资料中与本项目相关的价格和协议标签。人民币 token 单价依用户确认按 1M tokens；按请求价单独标记。免费/按请求价格不可与 token 价格直接横向比较。原表没有各模型质量、内容拒绝率、审核政策、可靠性、延迟或项目可用性测量；这些信息统一视为`未知`，不据模型名称或国别推断。
+
+| 用户资料中的渠道/模型名 | 用户所列协议及价格 | 可用于规划的结论与限制 |
+| --- | --- | --- |
+| JOJO Code / GPT Plus / `gpt-6-luna` | `/responses`；输入/输出/缓存命中 0.017/0.085/0.0017 元/1M tokens | 用户已选择 JOJO 的 GPT Luna 为主渠道模型；价格是该渠道报价。当前主翻译调用为 Chat Completions，Responses 兼容性未验证，不能仅凭相同模型名认定可直接接入。 |
+| JOJO Code / GPT Plus / `gpt-6.1-terra` | `/responses`；0.17/0.85/0.0085 元/1M tokens | 高价候选；没有本项目质量或性能对比，不能宣称优于 Luna。 |
+| JOJO Code / GPT Pro / `gpt-6-luna` | `/responses`；0.028/0.14/0.0028 元/1M tokens | 同模型的另一用户渠道报价；与 Plus 价格不同，须作为不同渠道产品/计费配置记录。 |
+| JOJO Code / Claude Kiro / `claude-haiku-5-5` | `/anthropic`；0.03/0.15/0.003 元/1M tokens | 可能适配需双语理解的生成/校对职责，但当前无通用 Anthropic Messages 适配；端点协议和模型别名均未验收。 |
+| JOJO Code / Claude Cursor / `claude-haiku-5-5` | `/anthropic`；0.05/0.25/0.005 元/1M tokens | 与 Kiro 报价分列；不能把相同模型 ID 等同于相同服务条件。 |
+| JYQF AI / `gemini-3.5-flash-lite` | `/chat/completions`；免费 | 用户列出的通道报价；免费不表示无配额、无数据处理条件或与项目 Chat 请求兼容。 |
+| JYQF AI / `gemini-3.8-flash` | `/chat/completions`；0.008 元/请求 | 计价单位是请求，不可直接按 token 与其它行比较；请求口径及适用内容未核实。 |
+| Work Buddy / `Qwen3.8-Flash` | `/chat/completions`；输入/输出/缓存命中 0.15/0.47/0.016 元/1M tokens | 用户提供的反代别名和报价；端点在用户资料中使用明文 HTTP。未确认安全传输、上游 ID 映射和条款前，不应承载原文/译文/知识等敏感书籍数据。 |
+| Work Buddy / `deepseek-v4.1-flash` | `/chat/completions`；0.165/0.66/0.0033 元/1M tokens | 此报价对应 Work Buddy，不等于此前 JYQF 的 DeepSeek 渠道价或路由。用户已选择 JYQF DeepSeek 为备用模型，但此文件未列 JYQF DeepSeek 报价。 |
+| Work Buddy / `glm-5.3-flash` | `/chat/completions`；0.11952/0.41831/0.03436 元/1M tokens | 用户提供的渠道别名和价格；资料未证明它是原厂模型 ID、endpoint 映射、内容政策或兼容性。明文 HTTP 安全问题同上。 |
+| Gemini Embedding 2 | 参考配额 100 RPM / 30k TPM / 1k RPD；未提供价格 | 仅作为嵌入能力候选，配额为用户参考值而非账户保证；不能执行翻译生成，价格未知。 |
+| Gemini Decision 1、Gemma 4 31B | 分别为 200/50k/10k 与 30/16k/14.4k RPM/TPM/RPD 参考配额 | 资料未提供本次候选配置的可比价格与质量；Decision 是专用决策能力候选，不能作为通用生成模型；Gemma 的项目端点/协议未验证。 |
+
+### 细分职责与暂定模型策略
+
+下表的候选仅用于安排后续协议验证和同样本对照，不是模型质量/审核宽松度排名。对任何可能包含 R18、暴力或血腥内容的职责，审核拦截取决于具体模型、Provider/中转渠道、地区、政策、请求及响应内容和部署方式；用户资料没有足够数据估算概率。不得以改写/隐藏内容、切换模型或跨 Provider 回退规避内容政策。用户已表示 AI 职责可获得履职所需的数据授权；具体渠道仍需在配置中绑定到实际职责和最小必要数据类别，并核实安全传输及渠道政策。该原则不等于渠道已经接通或接受相关内容，也不替代 Notion 等非 AI 接收方的独立授权。
+
+| 职责（建议独立观察，非已实现 Agent） | 数据与性能要求 | 模型候选与推荐条件 |
+| --- | --- | --- |
+| 来源、字段覆盖、章节映射、哈希、排版校验 | 以原文结构、元数据和 manifest 为输入；要求确定性、可复现、完整报告 | 优先确定性代码，不调用 LLM。缺失字段、重复/乱序和来源变化不能让模型猜测补齐。 |
+| 元数据双语翻译 | 标题、宣传语、概要、详细介绍、类型/Tag 的源字段；要求短文本准确、术语一致，保留中日并列和缺失状态 | 先评估 JOJO `gpt-6-luna`，但须先证明 `/responses` 与调用适配兼容，或实现协议适配；JYQF Gemini 仅在其 Chat 兼容性验证后作为低成本对照。内容仍可能含敏感简介，不能按“短文本”视为低审核风险。 |
+| 文化项、俚语、双关、致敬分析 | 原文片段、上下文和批准知识；日语/文化理解、证据引用、保守不臆造 | 使用经授权且协议通过的双语模型做候选；JOJO Luna 可进入对照，Claude Haiku 可在 Anthropic adapter 完成后评估。是否由国内模型处理应由内容合规实测决定，价格表没有审核证据。 |
+| 全书知识候选抽取与综合 | AI 版合集分批、跨话证据；需预算控制、覆盖、长程一致性和可追溯结构 | 先以 JOJO Luna 建立用户已选主渠道基线，复杂跨话任务再比较 Terra/Claude；实际 token/context 和合成质量须验证。仅经审核的知识才能进入批准快照。 |
+| 单话上下文标注/说话人、指代识别 | 原文、相关批准知识；需日语理解、段落对齐和结构输出 | 现有 `PROOFREAD_MODEL` 职责可先维持基线；后续对 Luna、DeepSeek/JYQF 等做标注误差对比。国内模型是否接受具体原文片段未知，不能仅以其执行分析而假设低风险。 |
+| 初译 | 原文和批准知识；首要忠实、完整，保持人物声线和结构 | JOJO `gpt-6-luna` 为当前用户选择的主候选；JYQF `deepseek-v4.1-flash` 为用户选择的备用候选，但须先验证真实映射与协议。仅对临时技术错误使用已配置的有限备用策略；内容拦截不触发回退。国内 Qwen/GLM 只能在安全传输、政策可接受、端点兼容并通过同样本评测后加入。 |
+| 忠实度校对、语义/逻辑校验 | 原文、译文、知识；必须高召回发现漏译、误译、指代/逻辑冲突，输出证据定位 | JOJO Luna 作当前候选基线，比较 Terra/Claude 或获准国内模型的漏检、误报和成本；审校原文/译文通常比元数据更敏感，不能以“只做审核”推断可避开内容审核。 |
+| 定向返工/反思修订 | 原文、译文、问题清单；要求仅修订目标内容、保留结构且不引入新错误 | 复用已配置修订路由进行同样本验证；模型必须接收对应原文/译文授权。若对内容拒绝或策略不兼容则停止并报告，不切换渠道绕过。 |
+| 文风润色 | 译文、风格知识，必要时原文约束；要求改善中文自然度但不得改变事实 | 在事实/忠实度阶段通过后比较 Luna、Terra、Claude；若只做非语义格式美化，优先确定性排版工具。所有语义改动需重新校对。 |
+| 分阶段审核与最终审核 | 原文、译文、候选差异及质量策略；结构化判定、证据、严重度和稳定收敛判断 | 终审候选必须与生成模型/route 做独立性评估；目前两次同 route 评估不构成独立判断。候选模型须先确认协议和相同样本的误判/漏报，不按国别或价格直接定为审核器。 |
+| 向量嵌入和检索 | 原文/知识片段可能包含敏感内容；需要稳定向量空间和版本身份 | Gemini Embedding 2 是现有独立配置路线，用户资料只含参考配额、无价格；应继续作为单独 embedding binding 验证。向量化不是脱敏；Work Buddy 明文 HTTP 端点不得承载这类数据，除非安全传输得到验证。 |
+| 用量、成本、状态汇总 | 结构化 usage/error，不需全文 | 确定性解析，不需生成模型。无 usage 或价格字段时显示未知；按缓存、请求价、峰谷、重试和回退分开计算，不能把人民币报价当实际账单。 |
+
+**推荐策略**：先保持用户已选 JOJO Luna 主渠道与 JYQF DeepSeek 备用的产品方向，不宣称它们已连通、协议兼容或质量胜出；用一组职责分明的获准样本分别测元数据、初译、校对/终审、返工、润色和敏感内容处理表现。模型切换只响应可重试的技术故障且符合既有授权策略；内容拦截必须停止并展示原因。国内模型是否适用应根据具体服务条款/端点对受测内容的响应和完整性决定，不能从“国内”推断必然更严或必然不可用。
+
+### 实施顺序与验收增量
+
+| 阶段 | 工作与依赖 | 验收标准 | 风险与回退 |
+| --- | --- | --- | --- |
+| M7 翻译对象与字段契约 | 依赖当前 source catalog、bundle 和翻译 run 版本；列出正文/作品字段/目录字段，界定翻译、保留、缺失及过期状态；定义双语元数据记录和必要注释引用。 | 每个来源读者可见字段映射到输出或明确 `missing/not_translatable/pending`；结构字段不被翻译；字段和来源哈希绑定；纯合成数据覆盖新增、空值、缺失、冲突、改版。 | schema 不完整会漏字段；先禁止静默丢弃并保存原值，旧版本只读回退。 |
+| M8 元数据翻译与审核闭环 | 依赖 M7 及已批准知识快照；将 metadata/标题作为字段级任务，独立保存候选、审核、批准版本和差异。 | 生成失败、审核拒绝、源字段变化均保留原值/旧译并显示未完成；只有绑定当前 source、知识和审核版本的值进入正式导出；中日并列、注释引用、目录/EPUB 消费契约有合成回归。 | 字段分散增加调用和成本；可先只对标题/概要试点，但不假称全字段完成。 |
+| M9 本地化与读者版验证 | 依赖 M8 和现有格式 profile；制定文化项分类、正文优先/文末注判定、术语和人物声音检查；建立不包含未授权正文的合成用例及获准样本评测流程。 | 用例覆盖俚语、致敬、双关、日本文化、必要/不必要注释；检查注释与原文证据关联、无无据扩写、译文结构保真。获准样本再测语义和阅读效果。 | 模型自评可能系统性漏判；保存争议样本并收紧规则，不自动放宽“信”门槛。 |
+| M10 模型/协议/渠道资格矩阵 | 依赖现有模型目录、多协议计划；逐个验证 `endpoint × protocol × model ID × task`、TLS、认证、错误语义、内容政策可用信息和 usage 字段。 | 明文公网 HTTP 对书籍数据预检拒绝；不匹配的协议/模型在发书籍数据前失败；不支持或未知推理能力不发送猜测字段；凭据不进文档/日志。 | 用户表的反代名称与原厂目录可能不一致；不可验证的渠道保持禁用或仅用合成数据，保留 JOJO/JYQF 既有配置不受影响。 |
+| M11 职责评测与候选默认 | 依赖 M7–M10、可用账户和既有授权；同一输入对照候选模型，按职责评估忠实/完整、术语、问题召回与误报、读者体验、拒答/拦截、延迟、用量/成本。 | 记录模型/渠道/协议/提示词/来源版本和全部失败样本；按预先定义的各职责质量底线与预算选择默认；不达标则保留当前人工配置，不宣称性价比胜出。 | 模型版本和渠道策略可变；每次运行固化所选 ID/版本/日期并允许回退至既有配置。 |
+| M12 端到端正式产物 | 依赖 M8–M11；整合作品元数据、正文、知识、逐阶段审核/返工及最终发布。 | 通过获准试点证明字段覆盖、源版本追踪、质量审核和正式输出门禁；源更新使译文过期；审核失败/预算耗尽不会静默发布。 | mock 不代表真实翻译验收；真实服务、账户或费用不具备时仅完成离线/合成部分并明确标记。 |
+
+**关键限制**：用户资料的 Work Buddy endpoint 是明文 HTTP；在书籍数据进入该渠道前必须先解决传输机密性并复核服务身份，不可把“用户授权模型职能”视为对明文网络传输风险的豁免。当前任务未检查私有 API profile、Key、endpoint 实际响应或任何小说正文；未调用模型、不验证审核拦截率。提供的渠道价目表没有 GLM/Qwen/GPT/Claude 的内容政策、质量或延迟数据，因而对“国内模型审核更严格”的比较只能作为需实测假设，不能作为推荐结论。
+
 ## 后续维护
 
 - 模型名称、用户渠道价、Gemini 参考配额、API 端点和时段政策可能变化；每次更新目录时记录访问日期、来源和变更点，不覆盖历史价格记录。
@@ -244,7 +394,7 @@
 
 ## 公开资料
 
-以下为供应商公开资料，访问日期均为 2026-11-14。公开能力描述只支持用途/接口判断，不构成本项目翻译质量结论。
+以下为模型候选/价格方案所引用的供应商公开资料，访问日期均为 2026-11-14。公开能力描述只支持用途/接口判断，不构成本项目翻译质量结论。2026-11-21 新查的模型目录与协议来源见“2026-11-21 模型目录、多协议与推理强度规划”。
 
 | 来源 | 用途 |
 | --- | --- |

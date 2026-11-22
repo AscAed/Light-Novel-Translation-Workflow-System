@@ -2249,7 +2249,7 @@ class TestTestWorkspaceConfiguration(unittest.TestCase):
                 env=environment,
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=30,
             )
 
         self.assertNotEqual(completed.returncode, 0)

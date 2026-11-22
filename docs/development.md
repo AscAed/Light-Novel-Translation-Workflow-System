@@ -2,6 +2,116 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-22 K5 输入复核与当前阻塞
+
+- `已验证` 当前工作树只读复核了试点来源：`.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json` 为 356/356 文件通过；同命令将 manifest 换为 `source_editions_manifest.json` 后为 532/532 文件通过。
+- `已验证` `.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI --manifest source_manifest.json --edition-manifest source_editions_manifest.json` 返回 `verified`、88 话；AI/人读版分别为 774,253/799,293 bytes。
+- `已验证` 通过 `book_bundles.load_verified_ai_book_bundle` 复核当前 AI bundle 时，必须传入 bundle 绑定的 `source_checkpoint.raw-html-refresh-2026-11-17.json`。本轮摘要为 88 话、bundle-set SHA-256 `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`、AI bundle SHA-256 `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`。误传默认 `source_checkpoint.json` 会得到 `Book bundle requires a complete current checkpoint for the catalog.`；这是 checkpoint 参数不匹配，不是 bundle 过期证据。
+- `已验证` `.venv\Scripts\python.exe scripts\run_kakuyomu_workflow.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --translation-root '..\祝福のネトラレラ(祝福的寝取系女主)\熟肉' --ai-edition-root projects\祝福のネトラレラ\RAWs_AI --edition-manifest source_editions_manifest.json --plan-only` 返回 `ready_for_review`、88/88 来源、0 issue，plan SHA-256 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`，`network_requests=0`、`provider_calls=0`、`filesystem_writes=0`、`source_text_included=false`。完整预览含逐话映射元数据，因此此处仅记录摘要，不复制预览内容。
+- `已验证` 当前试点 `Knowledge/` 根目录缺少全书 `Glossary_reviewed.json`、`STORY_SUMMARY_reviewed.json` 及候选完整组；`Workflow/Runs/` 不存在。`Workflow/Approvals/` 有结构审阅回执，不代表 reviewed 知识已发布。
+- `已验证` K5 定向验证共 131 项通过：`.venv\Scripts\python.exe -m unittest tests.test_knowledge_extraction_plan tests.test_knowledge_extraction_unit tests.test_knowledge_ai_review tests.test_story_summary_review -q` 为 84 项（4.094 秒）；`.venv\Scripts\python.exe -m unittest tests.test_knowledge_review tests.test_knowledge_provenance_audit tests.test_kakuyomu_workflow -q` 为 47 项（3.764 秒）。覆盖预算、抽取、证据/概要审核、知识发布与 Kakuyomu 编排门禁；均为本地/合成输入，未对试点正文调用 Provider，也不证明真实知识内容正确。
+- `已验证` 当前 checkout `.venv\Scripts\python.exe scripts\run_unit_tests.py`：856 项运行、5 项 Windows 能力跳过、0 失败（105.302 秒）；`.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过、退出码 0（221.290 秒，既有验证记录）。E2E runner 自动关闭 mock server；这些结果不验证真实 Provider、语义质量或试点产物。
+- `未验证` 在仓库和 `D:\OWN\Programming\AI\TranslatorAI` 范围内未发现 `tokenizer.json`。`PROVIDER_DATA_POLICY`、`PROOFREAD_MODEL`、JOJO/JYQF endpoint 与 key 环境变量在 Process/User/Machine 三个作用域均不存在；根 `.env` 存在且会由 `Config.load_config()` 读取，但本轮未读取其内容。`api_pool_store.default_profile_path()` 使用 `%LOCALAPPDATA%\TranslatorAI\api-pool.json`；截至本轮该路径存在，但未读取其内容；`%APPDATA%\TranslatorAI\api-pool.json` 不存在。Credential Manager 未检查。因此活动 route、模型、allowlist、模型匹配 tokenizer/context/template 和预算均不能确认；未调用真实 Provider。
+- `已验证` 源码复核发现 `pipeline.validate_provider_configuration()` 会对远程 route 调用 `get_api_key()` 检查凭据，不是无密钥状态探针；本仓库未找到独立的脱敏 Provider readiness CLI。本轮没有调用该校验函数，避免触及本地凭据。
+- 续接：配置所有者需提供不含密钥的目标模型 ID、匹配 tokenizer 的本地路径及来源、context/output/message/safety/call 上限和费用预算，并在本机确认 route 与知识抽取所需 allowlist。此后先运行 `scripts/plan_knowledge_extraction.py` 只读预检；预算通过后依次生成候选、执行逐证据审核、用现有发布器创建 reviewed glossary/summary，再运行第 1 话受控试译。不得用未匹配 tokenizer 或旧式知识文件绕过这些门禁。
+
+## 2026-11-22 元数据翻译 M4 freshness 与 EPUB 消费
+
+- `部分实现` `verify_metadata_translation_plan_freshness(..., allow_field_drift=True)` 仍从当前 verified catalog/manifest 完整构造字段清单，但逐 field ID 返回 `current`、`stale`、`source_removed` 或 `unplanned`，并对当前字段输出不含原值的 source version ID 与 source SHA。默认 `allow_field_drift=False` 维持 M1/M2/M3 全计划严格门禁；只有 metadata-aware consumer 可逐字段判断。
+- 新增 `metadata_translation_epub.py` 与 `scripts/build_epub_candidate_with_metadata.py`。入口读取项目 `Workflow/Plans/` 下的 plan/candidate/review 和 `Metadata/` 下的 approved artifact，先按 artifact 原批准 snapshot 重验其内部 plan/candidate/review/rubric lineage，再重验当前每个源字段。
+- 构建时只将当前 `work.title` 和本次 EPUB catalog 所选 episode 的已批准标题写入临时 catalog 副本；要求 EPUB catalog 的 `work_id` 与 artifact 一致、`language` 等于 artifact 目标 locale，且每个选中字段状态为 `current`、source SHA 与已批准值一致。无关字段变化不会使所选字段失效；变更/移除的所选源字段会在 Pandoc 启动前阻断。作者、identifier 等结构值和原 catalog/Markdown 均保持原字节不变；临时 catalog 在构建结束后清理。
+- EPUB `build.json` 新增 `metadata_translation` lineage，绑定 artifact、plan、candidate、review、rubric、artifact 批准 snapshot、当前 source snapshot，以及每个实际消费字段的当前 version ID/SHA。普通 `scripts/build_epub_candidate.py` 不变；metadata-aware 新入口命令格式如下：
+
+  ```powershell
+  .venv\Scripts\python.exe scripts\build_epub_candidate_with_metadata.py `
+    --input-root <translation-root> --epub-catalog <catalog.json> `
+    --source-root <SourceArchive> --source-manifest source_manifest.json `
+    --metadata-source-catalog <raw-catalog.json> `
+    --metadata-plan <Workflow\Plans\plan.json> `
+    --metadata-candidate <candidate.json> --metadata-review <review.json> `
+    --metadata-artifact <approved.json> --output-root <EPUB> `
+    --max-chapter-bytes 16777216 --max-total-bytes 1073741824 `
+    --max-output-bytes 1073741824
+  ```
+
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation tests.test_epub_builder -q`：65 项通过。覆盖单字段变更只标 stale、其他字段保持 current、snapshot 变化但消费字段不变时允许构建、选中字段 stale 时不调用 builder、approved title overlay、locale/work ID、临时 catalog 清理/不改原 catalog，以及 Pandoc 构建 sidecar per-field lineage 和畸形 provenance 拒绝。`test_epub_candidate_integration_revalidates_and_uses_temporary_catalog` 通过 `publish_metadata_translation_artifact` 的 create-only 入口生成批准 artifact，再交给 EPUB consumer 读取，验证 M3 到 M4 的本地集成链；输入和 source freshness 均为合成夹具。具体 `py_compile`、CLI `--help`、全量回归及 Markdown 链接结果以本节最终验证补记为准。
+- 局限：字段级比较目前只服务于 EPUB metadata consumer；M1/M2/M3 生成、审核和正式 artifact 写入仍要求完整计划 freshness，来源变化后需要用新计划/候选/审核重新批准。没有通用下游 freshness registry，也未连接 Notion/UI。结构性作者字段没有现成已批准译名，因此保持 catalog 提供值。测试使用合成 metadata；没有真实 EPUB metadata artifact、试点译文、EPUBCheck 或阅读器验收。
+
+## 2026-11-22 元数据翻译阶段最终验证
+
+- `已验证` 当前工作树 `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation tests.test_epub_builder -q`：65 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py`：856 项运行、5 项 Windows 能力跳过、0 失败（108.827 秒）。
+- `已验证` `.venv\Scripts\python.exe tests\run_tests.py`：loopback mock E2E 7 项通过（233.623 秒，退出码 0）。测试输出中的 content-filter、段落对齐和模拟失败日志属于负向夹具；runner 汇总 `OK`。
+- `已验证` `.venv\Scripts\python.exe -m py_compile metadata_translation_freshness.py metadata_translation_epub.py epub_builder.py scripts\build_epub_candidate_with_metadata.py tests\test_metadata_translation.py tests\test_epub_builder.py`、`scripts\build_epub_candidate_with_metadata.py --help`、`git diff --check` 均通过。8 份改动 Markdown 的相对链接目标存在性检查通过。
+- 所有测试仅验证当前代码及 synthetic/loopback fixtures；未调用真实 Provider、未读取试点 `Metadata/`/candidate/review/译文或受保护 freshness JSON，也未构建真实试点 EPUB。Notion/UI、真实语义/阅读器验收和受控试译未完成。
+
+## 2026-11-22 元数据翻译 M3 本地批准 artifact
+
+- 路径依据：[`source-ingestion-and-publication-plan.md`](source-ingestion-and-publication-plan.md#目标目录与版本约束)已将项目内 `<project>/Metadata/` 记录为元数据默认目录；本试点该目录存在，本轮只检查目录存在性，未列出或读取内容。此前 M3 表格称正式路径未定，现已按该已有默认布局调整。
+- `部分实现` 新增 `metadata_translation_publication.py` 与 `scripts/publish_metadata_translation.py`。入口同时验证 plan、candidate、M2 schema v2 review、reviewed source snapshot 与当前 catalog/manifest freshness；只有所有有源译文项均通过时才可写入。artifact 保留完整 plan 顺序、稳定实体/字段 ID、源版本/摘要、日中值、逐字段 `approved` 或 `missing_source` 状态、候选 provenance 和 plan/candidate/review/rubric/source 摘要。
+- 输出固定进入计划所属项目已存在的 `Metadata/`；文件名必须是简单 JSON 文件名，写入 create-only，同字节重跑复用，不同内容冲突拒绝覆盖。artifact 内容确定化，不以运行时当前时钟制造重复版本。source catalog 中非语言 ID/URL/作者/计数等仍是其来源的权威字段并由 catalog 摘要绑定，本 artifact 不改写 catalog。M3 阶段将缺源项保留为显式状态，不定义消费者展示方式；后续 EPUB 消费边界见本文件上方 M4 记录，Notion 尚未接入。
+- CLI 示例：`.venv\\Scripts\\python.exe scripts\\publish_metadata_translation.py --plan <Workflow\\Plans\\plan.json> --candidate <candidate.json> --review <approved-review.json> --source-root <SourceArchive> --catalog <catalog.json> --artifact-name <metadata-v1.json>`。stdout 只输出 artifact/source 摘要和覆盖计数，不输出字段值；命令不加载 Provider 配置、不请求外部服务。
+- `已验证` `.venv\\Scripts\\python.exe -m unittest tests.test_metadata_translation -q`：36 项通过，覆盖全字段/缺源呈现、M2 未通过阻断、current source 绑定、摘要与数据篡改校验、Metadata 路径写入、幂等重跑及冲突不覆盖。完整回归与静态/文档检查见本节最终验证补记。
+- 局限：未使用真实试点 candidate/review 或生成正式译文；未验证用户现场的 `Metadata/` 内容/冲突；reviewer 身份仍未认证。Notion/EPUB/UI 没有消费接线；目录或缺源字段的读者展示策略、字段级 freshness 传播仍待 M4。此阶段实现 artifact contract 和本地正式读取验证函数，不代表下游消费者或真实语义质量验收。
+
+## 2026-11-22 元数据翻译 M2 结构化语义审核规则
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；保留既有混合工作树和受保护未跟踪 freshness JSON，未暂存、提交、重置或清理。未读取 freshness JSON、`.env`、Provider profile/key、试点 metadata 值或章节正文。
+- `部分实现` `metadata_translation_review.py` 将人工审核模板/回执升级到 schema v2，并绑定 `metadata-translation-semantic-v1`。每个候选字段必须逐项判断：原意/事实/语气保真、信息完整、适用术语、中文自然度、本地化表达；每项都要求理由。模板携带且校验固定规则说明，回执保存逐项判断与派生结果。
+- 结果由检查自动导出：忠实度/完整性/自然度失败或术语冲突会拒绝该字段；任一维度不确定、或因当前候选 schema 没有独立注释字段而需要注释时会升级；只有全部适用项通过才批准。任何非批准字段使整份报告 `needs_resolution`。审核者不能通过手填聚合 `approved` 覆盖失败或不确定检查。
+- 旧 schema v1 模板不会被迁改或覆盖，当前 finalize 入口只接受 v2；需要重新审核时创建新的模板与回执文件名。该变更不读取或改写真实候选/审核数据，也不创建正式 metadata artifact。
+- 规则来源是[端到端目标中的本地化与注释规则](end-to-end-workflow-target.md#元数据翻译与本地化交付契约2026-11-22)及“信、达、雅/忠实完整硬门槛”。回执是人工声明：审核者身份未认证，术语参考未绑定一个已审核知识快照；它不等于 AI 审核、独立质量证明或获准样本验收。需要独立注释的字段暂时升级，不能塞进单一译文字段后冒充已经记录注释。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v`：33 项通过，覆盖规则说明不可改、模板全项覆盖/理由、通过/失败/不确定/注释升级、自动派生结果、结果篡改拒绝和 CLI 往返。完整测试及静态检查见本节最终验证补记。
+
+## 2026-11-22 元数据翻译 M1 Provider 执行器合成验证
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留混合未提交工作树和受保护的 freshness JSON；未暂存、提交、重置或清理。未读取该 JSON、`.env`、API profile/key、试点元数据值或章节正文。只检查存在性：仓库根 `.env` 存在；本轮所查 Process 环境中的 `PROVIDER_DATA_POLICY`、模型、JOJO/JYQF endpoint/key、API pool 与 fallback 变量均不存在。未检查 User/Machine 环境，不能据此判断 `.env` 或其他 scope 是否含有效配置。
+- `部分实现` `metadata_translation_generation.py` 现在可在内存中构建预算摘要及同一套 request batches；新增 `metadata_translation_executor.py` 和 `scripts/generate_metadata_translation_candidate.py`。默认命令只做来源 freshness/tokenizer/预算预检，不加载 Provider 配置；显式 `--execute` 才按必填 `--model-id` 调用现有 `get_primary_provider_route`，复检 `source_text` 授权，并以 `max_retries=0` 创建 OpenAI-compatible client。这里是单次命令显式选模，不是新增持久化 metadata Translator role，也不默认借用 `INITIAL_MODEL`。
+- 执行器在每批请求前重验 source snapshot；请求前 create-only 写入内容无关的 intent，响应必须是严格 JSON，且对该批字段 ID 完整、唯一、无额外项。合格结果写入 create-only checkpoint；相同 run 的并发会被文件锁拒绝，已有 checkpoint 可恢复复用。只有所有批次完整且来源仍新鲜才创建 `review_pending` candidate，并保存不含来源值/译文的 run receipt。checkpoint 会在本地 `Workflow/Plans/` 保存译文，按项目数据策略保护。
+- 恢复边界：intent 存在而 checkpoint 不存在代表请求可能已经发送/计费，重跑不会自动重发；当前没有自动消歧或清除 intent 的命令，必须保留现场并由后续人工核对服务端记录、制定显式恢复处置。Provider 结果格式错误、截断、内容拦截或异常中断同样会留下 intent。成本只按调用方单价/tokenizer 估算，`max_tokens` 和零 SDK retry 限制请求，但 `provider_cost_cap_enforced=false`；渠道协议、真实用量和账单仍未知。
+- CLI 示例：`.venv\Scripts\python.exe scripts\generate_metadata_translation_candidate.py --help`。计划模式所需预算参数与 `scripts/plan_metadata_translation_generation.py` 相同；执行另需 `--execute --candidate-name <filename>`。stdout 仅给出模型/Provider 标识、run/candidate 摘要、调用计数和状态，不打印字段值、译文或服务端异常正文。执行不会发布或批准 candidate。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -q`：31 项通过，覆盖默认不加载 Provider、合成批次调用、严格 field coverage、source recheck、create-only checkpoint/receipt/candidate、同参数恢复零新增调用、ambiguous intent 不重发和并发锁。最终完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py`：847 项运行、5 项跳过、0 失败（103.462 秒）。`py_compile`、新 CLI `--help` 通过。验证仅用合成来源/tokenizer/provider stub；未执行 loopback E2E、未读取真实配置、未发出外网请求。
+- `未验证` 真实 103 字段试点未运行；metadata role、实际 endpoint/model、runtime allowlist/凭据、匹配 tokenizer/context/template 和可接受费用仍待配置所有者确认。显式执行能力不表示当前可以执行真实调用，也不代替语义审核或用户验收。
+- 下一步：先检查当前 runtime route 和 `source_text` allowlist 的非秘密状态，并取得可验证匹配的 tokenizer/context/template 及费用上限；再用小批受控 Provider 试验，人工核对成本/内容/失败恢复。M2 语义审核规则、M3 正式 metadata 目标路径和 consumer contract、M4 字段级 freshness/EPUB/Notion 消费仍待推进。
+
+## 2026-11-22 元数据翻译 M1 离线生成预算预检
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；保留混合未提交工作树和受保护的 freshness JSON。本增量仅修改 metadata 预算预检、对应测试及状态/路线图/交接文档；未暂存、提交或清理。未读取受保护 JSON、`.env`、API profile/key 或书籍正文。
+- `已实现` `metadata_translation_generation.py` 与 `scripts/plan_metadata_translation_generation.py` 提供无 Provider 的 M1 请求规划：先复核计划与当前 catalog、manifest 和作品/话目来源字段，再使用现有 `knowledge_batching.py` 的 tokenizer 加载、消息 token 计数、分批器和调用上限。预检只处理 M0 计划已列出的作品/章节/话目元数据字段，不读取章节正文；摘要绑定 plan/catalog/manifest/tokenizer/prompt SHA，并输出批次数、输入 token、每批最大输出预留及按调用方输入/输出单价估算的费用。
+- 运行时不加载 `Config`、不读凭据、不联网、不创建 Provider client、不写候选或报告文件；stdout 不含来源值/译文。模型 ID、context、tokenizer、消息开销和单价都由调用方提供，model/tokenizer/endpoint/template 是否匹配未经验证。费用是声明参数下的预估，不是服务商端强制额度；服务端重试、缓存和未计入的协议开销可能改变实际费用。报告状态 `ready_for_operator_review` 只表示预检参数和本地输入通过，不表示可以安全调用模型。
+- CLI 参数可由 `.venv\Scripts\python.exe scripts\plan_metadata_translation_generation.py --help` 查看。必需输入包括 `--plan`、`--source-root`、`--catalog`、`--tokenizer-json`、`--model-id`、context/output/safety/message token 参数、输入/输出每百万 token 单价和 `--max-estimated-cost`；`--max-provider-calls` 默认 100。拒绝过期来源、无效/超大数值、不可容纳单字段的预算、批次超限或估算费用超过调用方额度。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -q`：26 项通过，覆盖 M0–M2 既有契约以及 M1 分批、调用上限、费用拒绝、当前来源绑定、报告不含字段值、零 Provider 调用/文件写入与 CLI 日志边界。`.venv\Scripts\python.exe scripts\run_unit_tests.py`：842 项运行、5 项跳过、0 失败（109.852 秒）。`py_compile`、CLI `--help`、六份改动 Markdown 的本地链接目标检查与 `git diff --check` 通过。未重跑 loopback E2E，预算规划器不接入翻译流水线且没有 Provider 执行路径。
+- `未验证` 未对真实 103 字段试点运行预算预检：当前工作树尚无本轮确认的 metadata Translator role、活动 route/allowlist、与目标模型匹配的 tokenizer/context/template 或费用参数；没有读私密配置或执行 Provider 请求。即使预检未来通过，也不能代替调用执行器的响应契约、checkpoint/重试幂等和并发互斥设计。
+- 下一步依赖：由配置所有者确认不含密钥的 role/model、route/allowlist 状态、可证明匹配的 tokenizer/context/template 与可接受调用/费用额度；然后以当前 source-bound plan 运行只摘要预检。实际生成执行器仍需 fail-closed 授权预检、严格 JSON/逐字段覆盖响应校验、每批 create-only checkpoint、并发保护和中断恢复测试。M2 语义标准/升级处置和 M3 正式双语 artifact 目标路径/consumer contract 仍未确定；路径与展示策略需在发布实现前由产品所有者确认。
+
+## 2026-11-22 元数据翻译 M2 人工逐字段审核基线
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；保留原混合工作树及受保护的未跟踪 freshness 索引。本增量只新增审核模块/CLI/测试，并更新阶段状态；未暂存、提交或清理。
+- `部分实现` 新增 `metadata_translation_review.py`、`metadata_translation_freshness.py` 与 `scripts/review_metadata_translation_candidate.py`。模板逐字段绑定 plan/candidate/source/translation 摘要；模板生成和回执固化均重验当前 schema v3 catalog、manifest 最新作品 metadata、全部 episode metadata 字节/版本及 catalog 对应标题/顺序。回执带 catalog/manifest SHA；固化前再核一次，期间来源改变则拒绝。审核者声明和 UTC 时间、每项理由为 finalize 必填。完整 `approved` 决定生成 `approved` 状态报告；存在 `rejected`/`escalated` 时生成 `needs_resolution`；不自动发布。模板和报告均在既有 `Workflow/Plans/` create-only 保存，同字节重跑复用。
+- CLI 示例：`.venv\Scripts\python.exe scripts\review_metadata_translation_candidate.py --plan <Workflow\\Plans\\plan.json> --candidate <candidate.json> --source-root <SourceArchive> --catalog <catalog.json> --create-template <review.json>`；审核者填写模板后运行 `.venv\Scripts\python.exe scripts\review_metadata_translation_candidate.py --plan <Workflow\\Plans\\plan.json> --candidate <candidate.json> --source-root <SourceArchive> --catalog <catalog.json> --review-template <review.json> --report-name <receipt.json>`。拒绝/升级是成功生成的处置报告，不是通过；stdout 只输出路径、摘要与计数。
+- 安全/语义边界：reviewer ID 是调用方声明而非认证；`approved` 只汇总声明的逐字段决定，不是独立质量证明。source snapshot 是本地未签名证据；M3 消费者必须将报告内 catalog/manifest SHA 与当时 verified source 比较，不能只调用结构 verifier。M2 仍未实现专名/术语、事实/遗漏及本地化语义标准或 AI 审核。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v`：22 项通过，覆盖 M0/M1 回归及 M2 模板绑定、全通过/拒绝/升级/pending、作品/章节/话目来源更新拒绝、非字符串决定、缺理由、报告篡改、CLI 日志脱敏和 create-only 幂等。完整 `.venv\Scripts\python.exe scripts\run_unit_tests.py`：838 项运行、5 项因 Windows 能力限制跳过、0 失败（103.204 秒）。相关 Python 文件 `py_compile`、CLI `--help`、`git diff --check` 与 Markdown 本地链接检查通过。
+- `已验证` 当前试点本地 inventory 的 freshness 复核：plan SHA `b7b614920eb50cdbbe12697b531b7700d64c5a54605e1b8b86d79e1891a8d665`，状态 `current`，字段数 103；current catalog SHA `b6d6102ba44a41a7ee58b867380d2d226f8557d37c8d7be67d64f592ef293e38`，manifest SHA `a8e8355895e6ae6315a2fefd9e044b0e690bd5bbcda8f47576da10d79e5d810a`。只输出摘要、未打印作品字段。该检查只验证来源仍匹配，不表示候选译文或审核报告存在。
+- `未验证` 未重跑 loopback mock E2E：M2 仅增加独立离线 metadata 模板/回执契约，既有 E2E 不覆盖它；前一阶段 7 项 mock E2E 结果只作为旧 checkout 的历史证据，不外推为本阶段验证。该回执不触发 Provider、配置读取或发布。
+- 后续依赖：补齐语义审核规则/获准 reviewer role 与适用时的 Provider route/tokenizer/预算；实现能对照当前 live source 的过期检测；然后再确定 M3 正式双语 artifact 与 consumer contract。完整交付/验收/风险见[元数据实施工作包](end-to-end-workflow-target.md#元数据实施工作包m0m4)。
+
+## 2026-11-22 元数据翻译 M1 候选导入契约
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`；工作树保留既有混合文档修改和受保护 freshness 索引。本增量改 metadata 模块/CLI/测试与状态文档，并仅为全量测试中观察到的 Windows spawn/子进程启动时序，将两个锁测试 ready 等待及一个拒绝路径 CLI 子进程 timeout 从 10/15 秒放宽至 30 秒；行为断言未变。未暂存或提交。
+- `部分实现` `metadata_translation.py` 增加双语 candidate schema：完整覆盖计划中所有非空来源字段；每条记录绑定 field ID、实体、来源版本、源值/摘要和译文/摘要，候选整体绑定 plan SHA，并保持 `review_pending`。缺失源字段不生成候选项。`provider_export` 的 provider/model/prompt/time 是导入方声明，不是经签名或请求记录认证的事实。
+- `已实现` `scripts/import_metadata_translation_candidate.py` 只接受严格 schema v1 JSON 输入，拒绝重复键、非有限数、超限或无效 UTF-8、plan 摘要不符、缺/多/空译文及不合法 provenance；输出限制在现有 `Workflow/Plans/`，create-only；相同字节重跑复用，不同内容冲突时拒绝覆盖。stdout/stderr 不输出来源值或译文，命令不加载配置、不读取 Key、不调用 Provider。
+- `已验证` 最终 M1 定向 `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v`：14 项通过。覆盖完整字段绑定、缺/多/空译文、来源/译文篡改、声明 provider provenance、同字节幂等、冲突拒绝覆盖、重复 JSON 键、reparse-point 目录拒绝和输出脱敏；其余 7 项覆盖 M0 inventory。最终源码 `py_compile`、CLI `--help`、`git diff --check` 和 7 份相关 Markdown 的本地链接目标均通过。
+- `已验证` 最终 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 全量非 E2E：830 项运行、5 项因 Windows 能力限制跳过、0 失败（111.570 秒）。两个子进程锁时序用例与未标记 JSON CLI 拒绝路径的 3 项定向复验也通过。`.venv\Scripts\python.exe tests\run_tests.py`：仓库 loopback mock E2E 7 项通过、退出码 0（922.426 秒）；它验证现有合成主流程，不触发 metadata candidate importer。内容拦截、段落数量异常和模拟写盘失败日志来自预期负向 fixture。
+- 此导入器支持把外部准备的译文形成可审核候选，不执行翻译，也不验证其语义质量、来源完整性或模型真实参与；不创建 checkpoint、审核/批准回执、正式 metadata artifact 或下游 freshness。M1 真实生成仍需明确 metadata Translator 绑定并核验活动 Provider/授权、匹配 tokenizer、调用/费用预算；M2–M4 仍按[端到端工作包](end-to-end-workflow-target.md#元数据实施工作包m0m4)推进。
+
+## 2026-11-22 元数据翻译 M0 来源盘点
+
+- 基线：分支 `codex/translation-workflow-audit-20261117`、HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。保留既有未提交文档修改和受保护的未跟踪 freshness 索引；本阶段新增 `metadata_translation.py`、`scripts/prepare_metadata_translation.py`、`tests/test_metadata_translation.py`，未暂存或提交。
+- `已实现` M0 只读重验现有完整 AI bundle、catalog/checkpoint、SourceArchive manifest、AI/人读双版本，再创建本地 create-only inventory。覆盖作品 `title/catchphrase/introduction/genre/tags`、章节组标题和话标题；工作字段绑定当前 manifest work artifact version，章节标题绑定 catalog SHA，话标题绑定各自 episode metadata version。清单带每字段原文 SHA 和 canonical plan SHA；stdout 仅输出计数/摘要，不输出字段值。无正文、Provider 调用或远端请求。
+- `已验证` 试点计划 `projects/祝福のネトラレラ/Workflow/Plans/metadata-translation-plan-2026-11-22.json`：103 字段（作品 12、章 3、话 88），103 待翻译、0 缺源，SHA `b7b614920eb50cdbbe12697b531b7700d64c5a54605e1b8b86d79e1891a8d665`；用当前 verified bundle/manifest 重新生成内存计划后 SHA 完全一致。目录位于 `.gitignore` 忽略的本地项目数据中，不纳入版本控制。
+- `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation -v`：7 项通过；覆盖 plan hash/源值篡改、缺失与顺序、重复/不连续 episode、work artifact/manifest SHA、create-only、reparse-point 路径拒绝和 CLI 日志不泄漏。`.venv\Scripts\python.exe scripts\run_unit_tests.py` 全量非 E2E：823 项运行、5 项因 Windows 能力限制跳过、0 失败；`.venv\Scripts\python.exe tests\run_tests.py` loopback mock E2E：7 项通过（223.223 秒，退出码 0）。E2E 输出中的 content-filter 和段落数量异常来自预期负向 fixture。
+- `部分实现` 本阶段不翻译或审核字段，不创建正式双语 metadata，不更新 Notion/EPUB/熟肉显示。Catalog/bundle 当前没有单独的前记、后记、作者的话字段；这些文本未被该 inventory 覆盖。当前 Translator/Reviewer role 到 metadata 字段的配置映射、真实 route/allowlist/预算尚未核验；未读 `.env`、API profile 或凭据。
+- 后续 M1–M4 依赖、交付、门禁与回退见[元数据实施工作包](end-to-end-workflow-target.md#元数据实施工作包m0m4)。进入真实 M1 调用前，先验证当前实际配置和费用/调用上限；M3 前确定本地正式 metadata artifact 与 consumers 的读取合同。详细断点见[翻译工作流续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-22-元数据翻译-m0-断点)。
+
 ## 2026-11-21 当前工作树综合自检
 
 - 验证针对起始 HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82` 上的现有工作树修改；本轮未读取 `.env`、API profile、密钥、试点正文/译文或受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，未调用真实 Provider 或线上部署。
@@ -721,7 +831,7 @@
   ```powershell
   .\.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json
   .\.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_editions_manifest.json
-  .\.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root ..\祝福のネトラレラ(祝福的寝取系女主)\生肉 --ai-root projects\祝福のネトラレラ\RAWs_AI
+  .\.venv\Scripts\python.exe scripts\validate_source_editions.py --source-root projects\祝福のネトラレラ\SourceArchive --catalog source_catalog.raw-html-2026-11-17.json --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' --ai-root projects\祝福のネトラレラ\RAWs_AI
   ```
 
 - 双版本 validator 返回 `verified`、88 话，读取 source 793,183 bytes 并重算出 AI 774,253 bytes、人读 799,293 bytes；未输出正文或改写清洗文件。默认 `--plan-only` 选中 `ai-efficient-v1`，88/88 `RAWs_AI` 正文与对应归档 provenance 有效、0 问题、0 网络请求、0 Provider 调用、0 写入、`source_text_included=false`。当时人工审阅计划位于 `Workflow/Plans/translation_plan_review_ai_raw_html_2026-11-17.json`，为 schema v1 且已被后续 schema v2 计划取代。计划不含章节正文，88 个 episode ID 和译文目标均唯一。
@@ -760,7 +870,7 @@
   .\.venv\Scripts\python.exe scripts\validate_source_editions.py `
     --source-root projects\祝福のネトラレラ\SourceArchive `
     --catalog source_catalog.append-2026-11-17.json `
-    --human-root ..\祝福のネトラレラ(祝福的寝取系女主)\生肉 `
+    --human-root '..\祝福のネトラレラ(祝福的寝取系女主)\生肉' `
     --ai-root projects\祝福のネトラレラ\RAWs_AI
   ```
 

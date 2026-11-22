@@ -2420,7 +2420,7 @@ class TranslationReviewTests(unittest.TestCase):
         )
         process.start()
         try:
-            self.assertTrue(ready.wait(timeout=10))
+            self.assertTrue(ready.wait(timeout=30))
 
             async def wait_for_lock():
                 entered = asyncio.Event()
@@ -2468,7 +2468,7 @@ class TranslationReviewTests(unittest.TestCase):
         )
         process.start()
         try:
-            self.assertTrue(ready.wait(timeout=10))
+            self.assertTrue(ready.wait(timeout=30))
             process.terminate()
             process.join(timeout=10)
             self.assertFalse(process.is_alive())

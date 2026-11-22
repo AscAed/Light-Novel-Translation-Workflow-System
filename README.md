@@ -4,7 +4,7 @@
 
 - 当前产品范围是日语轻小说译成中文；多语言、多文本类型仍是长期目标。
 - 当前交付形态是本地 Python CLI，试点工作流包含来源版本管理、AI/人读版本、计划与知识审核、逐话翻译审校及受控发布。模块状态与证据见[项目现状](docs/project-status.md)和[架构与边界](docs/architecture.md)。
-- 当前 88 话的结构映射、来源 lineage 与双版本机器审阅已有匹配回执；全书知识语义审核、真实 Provider 单话试译和质量验收仍待完成。结构回执不证明逐段语义质量或阅读器视觉效果。最新验证结果和限制集中记录在[开发与验证](docs/development.md)；本地测试不代表真实服务、语义质量或部署已通过。
+- 当前 88 话的结构映射、来源 lineage 与双版本机器审阅已有匹配回执；2026-11-22 K5.1 来源、bundle 与计划复核仍为 88/88。K5.2 起尚不能继续：缺少可验证匹配的 tokenizer/model/context/预算和当前 route/allowlist 核验；因此没有 bundle-bound reviewed 全书知识或正式翻译 run。具体输入要求见[项目现状](docs/project-status.md#2026-11-22-k5-输入复核与当前阻塞)和[当前续接交接](docs/handoffs/2026-11-15-translation-workflow.md)。元数据 M0 来源盘点、M1 候选导入/预算预检和受控执行器、M2 版本化人工语义检查、M3 create-only 本地批准 artifact，以及 M4 EPUB 标题消费和逐字段 freshness 门禁均有合成验证；M1 未运行真实试点生成，费用估算不是服务商硬上限。M2 rubric 仍是未认证人工声明，不等于 AI 审核或获准样本质量验收；M3 未生成真实试点 artifact。字段级 freshness 目前仅供 EPUB 消费，M1/M2/M3 写入仍要求完整计划 freshness；Notion/UI 消费未实现。真实 Provider 单话试译、真实 EPUB 和质量验收仍待完成。结构回执不证明逐段语义质量或阅读器视觉效果。最新验证结果和限制集中记录在[开发与验证](docs/development.md)；本地测试不代表真实服务、语义质量或部署已通过。
 - GitHub Actions 已配置 Ubuntu/Windows Python 3.14 回归；以具体 commit 的 hosted check 为准，首次执行及依赖锁定状态见[开发与验证](docs/development.md#持续集成)。
 - 通用阶段、角色职责和质量门禁见[翻译流程](docs/translation-workflow.md)；阶段依赖与验收标准见[路线图](docs/roadmap.md)。
 

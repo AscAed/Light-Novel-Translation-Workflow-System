@@ -2,14 +2,14 @@
 
 > 状态：`部分实现`。2026-11-18 初版基于 `07efed2` 和当时工作树，随后增量已纳入 `7ea8e10`；当前复核基准和验证范围见[项目现状](project-status.md#2026-11-18-文档复核基线)。本文区分用户目标、已验证能力和未实现目标；不是整条工作流完成证明。现状以[项目现状](project-status.md)、[翻译流程](translation-workflow.md)、[知识治理](knowledge-governance.md)和[来源方案](source-ingestion-and-publication-plan.md)为准。本方案映射既有路线图阶段 0–5、I0–I6，不另定义项目阶段。
 
-## 2026-11-21 K5 当前状态
+## 2026-11-22 K5 当前状态
 
 - `已验证` 当前 88 话计划已完成 AI 结构审阅并生成匹配的 schema v2 审批回执：映射、来源 lineage、AI/人读文件字节与 profile 各 88 项通过、0 issue。该审阅解决了机器可复验的结构门禁，不是逐段语义、文学质量、阅读器视觉或站点公开目录之外完整性的结论。旧人工模板的 264 个 `pending` 值保留，不再作为当前结构审查阻塞。
 - `已实现` 知识发布及正式 RAG 路径现在绑定当前 AI bundle 与完整章节 map；审核 CLI 直接从 `load_verified_ai_book_bundle` 导出器获取验证身份，不信任调用者手写 map。AI 镜像 SHA 与 archive normalized SHA 分开核验。此项是来源/范围门禁，不产生知识候选，也不证明语义完整；全书审核入口、测试和限制见[开发记录](development.md#2026-11-21-k5-全书知识-bundle-绑定与审核入口)。
 - `已实现` 新增无 Provider 的全书知识抽取预检，复用当前 bundle loader 和抽取器的分批契约；报告调用下限及预算，不包含章节路径/正文，也不读取 `.env`、访问 key 或写文件。模型/tokenizer 匹配、实际调用总数与费用仍未验证；详见[开发与验证](development.md#2026-11-21-k5-全书知识抽取预检)。
 - `已实现` 新增全书知识候选语义审核入口，逐项绑定当前 AI bundle 和 claim/glossary 段落证据，支持严格的批准、拒绝、升级决定和批次 checkpoint；默认只读预检，显式执行才调用获准的 `PROOFREAD_MODEL`，且不自动发布 reviewed 知识。审核只证明候选与所引证据的关系，不证明整书完整性、独立审核者身份或语义质量；详见[开发与验证](development.md#2026-11-21-k5-全书知识候选语义审核)。
-- `未验证` 当前没有与该 bundle 身份绑定的 reviewed 全书知识、translation run 或真实译文；没有调用真实 Provider。真实端点/路由/预算、知识候选语义、译文质量和最终目录呈现仍待验收。
-- `计划` 下一步是基于已验证 AI bundle 生成有逐段证据的全书知识候选，并让审核 AI 评估覆盖、矛盾、证据和未决项；只有无法可靠判定的问题升级用户。发布后核验当前主备渠道配置和授权，再受控执行第 1 话，记录按职责的翻译/审核结果、返工、费用、故障恢复和目标目录产物。无可用真实服务时仅完成合成子项，不把它视为端到端试点通过。
+- `未验证` 当前没有与该 bundle 身份绑定的 reviewed 全书知识、translation run 或真实译文；没有调用真实 Provider。当前进程/User/Machine 中已检查的 Provider 环境变量均未设置；仓库根 `.env` 会由 `Config.load_config()` 读取，但本轮未读取内容。`api_pool_store.default_profile_path()` 使用 `%LOCALAPPDATA%\TranslatorAI\api-pool.json`；截至本轮该路径存在，但未读取其内容；`%APPDATA%\TranslatorAI\api-pool.json` 不存在。Credential Manager 未检查。因此活动 route、allowlist、目标模型和 tokenizer/context/template 匹配仍未知，不能从历史授权决定推断本机配置已启用。真实端点、预算、知识候选语义、译文质量和最终目录呈现仍待验收。
+- `计划` 下一步按依赖推进：先由配置所有者给出非秘密 model ID、可验证匹配 tokenizer 路径、context/output/message/safety/call 上限和费用预算；针对当前 bundle 运行无网络知识抽取预检。预检通过后，在本机确认活动 route 和 `source_text`/`book_knowledge` allowlist，再显式生成有逐段证据的全书候选；AI 审核覆盖、矛盾、证据和未决项，仅把无法可靠判定的问题升级。通过现有 create-only 发布器生成 reviewed 知识后，受控执行第 1 话，记录按职责的翻译/审核结果、返工、费用、故障恢复和目标目录产物。无可用真实服务时仅完成合成子项，不把它视为端到端试点通过。
 
 ## 2026-11-18 实施进度
 
@@ -180,8 +180,38 @@ EPUB、Notion 和其他语言场景继续按原路线图推进。实施前需明
 | 信、达、雅逐级达标；每级有翻译和审核职责 | 有初译/校对/润色，但没有三组独立审核结果和逐级硬门槛。 | 三阶段各保存输入、产出、审核版本、判定及证据；“信”未通过不可进入“达”，“信/达”未通过不可进入“雅”，后级分数不能抵消前级严重问题。 |
 | 阶段和终审不通过须返工、复审，通过后才写 `熟肉` | 项目路径已有人工清单及 create-only 发布；兼容路径、评分和返工链不足。 | 合成测试覆盖每级失败、无效响应、重试耗尽、重审、过期、直接入口和发布冲突；只有绑定全部通过结果的版本可发布，耗尽时保留版本并转人工。 |
 | 最终译文的人类观感排版 | 有段落和引号门禁，尚无最终排版质量及阅读器证据。 | 固定可复现样例检查章节、段落、引号及原意；以目标阅读器渲染/截图和自动检查评估可验证的显示结果，只有设备差异、内容冲突或工具无法判定时才请求用户验收。 |
+| 作品信息、正文及其结构都进入翻译范围 | `部分实现` 现有章节流水线处理正文；2026-11-22 已为当前 verified bundle 建立作品标题/宣传语/概要/类型/Tag、章标题和话标题的 source-bound inventory（103 字段），但尚未生成译文、审核或发布。前记/后记/作者的话仍属于正文周边文本，当前 bundle 没有独立字段，故未纳入该 inventory。 | 每个有来源值的读者可见文本字段都有源语言值、目标语言值、来源版本和状态；非文本标识、URL、计数、日期及连载状态保留为结构化数据而不送入翻译；缺失字段明确标为缺失而非由模型补写。标题、概要、详细介绍、类型/Tag、章/话标题及正文按字段清单核对，无静默遗漏。 |
+| 忠实保留原意并优化本地化表达 | `计划` 当前有“信达雅”和知识/审核基础，但尚未规定文化解释、双关和注释的可检验产物契约。 | 固定样例检查专名、造词、俚语、梗/致敬、双关和日本文化项：正文先采用不损害事实、语气和人物声音的自然中文表达；只有直译/本地化都无法在不损失关键理解的前提下解释时，才加入最少量编号文末注。每条注释有原文依据、解释范围和关联段落；未证实背景不作事实补充。 |
 
 “无错误且完整”是用户最终目标，不能由哈希、模型自评或有限样本证明绝对成立。上述覆盖、审核和样本指标是可执行的验收证据，而非对绝对正确性的替代声明；未知和未解决冲突必须显式保留。分阶段质量阈值及 AI/工具可判定性未经获准样本校准前，真实生产验收保持 `未验证`；用户不承担例行中间审核，只处理系统明确升级的事项。
+
+### 元数据翻译与本地化交付契约（2026-11-22）
+
+`计划` 翻译对象包括正文和作品/目录中面向读者的文字信息。现有 Kakuyomu catalog 已采集部分作品字段并版本化，但代码现状不等于已具备元数据翻译、审核、发布或双语展示。具体字段以来源实际提供值为界：
+
+- 需要翻译并保留日中并列值：作品标题、catchphrase/宣传语、概要、详细介绍、类型和 Tag 的读者可见标签、章节标题、话标题，以及已采集的前记、后记、作者的话等正文周边文本。
+- 作为结构数据保留、不做语言改写：作者稳定标识/用户名、作品/章节 ID、来源 URL、发布时间、公开话数、连载状态、章节顺序和来源定位。作者显示名是否另做中文转写属于可选展示字段，不得替代来源原值或猜造作者信息；建议首版保留原名，另有明确译名证据时才登记中文别名。
+- 每个字段应独立表示原文值、中文值、字段状态、来源 artifact/version/hash、译文版本、翻译配置/提示词版本、审核结果和更新时间。缺失、空值、来源冲突、机器译文待审、已批准及过期状态需区分。该结构是规划建议，不是现有 schema。
+- 元数据翻译和章节翻译共享书籍术语、风格约束及同一来源 lineage，但分别保存、审核和失效：作品简介变更只使对应元数据译文过期；章/话标题变更使对应标题译文及依赖它的目录/EPUB 元数据待更新；正文版本变更沿用现有来源新鲜度规则标记相关下游产物，不覆盖旧译文。
+- 正式可见输出只消费绑定当前来源版本且通过质量门禁的中文元数据版。Notion 与 EPUB 如需呈现双语值，应读取同一获准版本；其外发/分发授权仍按各自既有边界处理。
+
+**本地化与注释规则**：忠实保留事实、语气、人物声音与日本作品特色，再优化中文可读性。术语、专有表达、网络俚语、梗、致敬、双关和文化背景先检索已批准知识并判断上下文；可在正文自然传达且不损害原意时不加注。只有无法靠正文表达而确实影响理解的解释，才使用短小编号文末注。注释不得替原文补充未经来源支持的剧情事实；明确区分原文事实与文化解释，并关联具体话目/段落/原文证据。标题、宣传语、概要和详细介绍也适用相同规则。新发现内容只能提交知识候选，审核通过前不得反向改写其他已批准文本。
+
+**可检验验收**：对元数据字段清单和代表性章节建立同源 fixture；验证双语字段一一对应、缺字段不臆造、特殊字符/标记和章节顺序保持、注释引用可追溯、原文改版准确使依赖译文过期、旧版本可恢复。获准样本另评估翻译忠实度、遗漏、术语一致、注释必要性与读者观感；结构测试不作为语义质量证明。
+
+### 元数据实施工作包（M0–M4）
+
+此路线细化元数据子流程，不替代 K0–K5、I0–I6 阶段。M0 已实现；M1 的候选契约、离线导入、预算预检和合成验证的显式执行器已部分实现；M2 已有固定版本的人工语义检查 rubric 和结构回执；M3 已有绑定当前来源与 M2 回执的本地批准 artifact 写入口；M4 的字段级 freshness 判断已供 EPUB 标题 consumer 使用。尚未执行真实模型生成，未写入试点正式译文/metadata artifact，也没有 Notion/UI 下游消费。
+
+| 工作包 | 目标、边界与交付物 | 依赖与验收标准 | 风险与回退 |
+| --- | --- | --- | --- |
+| M0 来源字段盘点 | `已实现`：`metadata_translation.py` 与 `scripts/prepare_metadata_translation.py` 从当前 verified AI book bundle 提取作品文字字段、章标题和话标题；输出 create-only `Workflow/Plans/` inventory。工作元数据绑定当前 manifest artifact version，章标题绑定 catalog SHA，话标题绑定各自 metadata version。 | 依赖已验证的 catalog、checkpoint、raw/AI/human bundles 与 editions。合成测试验证缺失字段、顺序、SHA、重复话目、连续位置和路径边界；当前试点 103/103 字段有源值，计划 SHA 可由当前输入重现；输出不含正文。 | 不覆盖既有计划；过期或不匹配时失败关闭。生成的本地计划可保留作历史，修复源后使用新文件名重建。仅覆盖当前 bundle 暴露的字段，不表示整个读者可见字段集合完整。 |
+| M1 译文候选 | `部分实现`：`metadata_translation.py` 定义完整双语候选与逐字段来源/译文 SHA；`scripts/import_metadata_translation_candidate.py` 导入外部译文并 create-only 生成 `review_pending` 候选。`scripts/plan_metadata_translation_generation.py` 和 `metadata_translation_generation.py` 重验当前 catalog/manifest，复用 `knowledge_batching.py` 按调用方 tokenizer、context/output/safety/message 参数分批并估算预算。新增 `metadata_translation_executor.py` 与 `scripts/generate_metadata_translation_candidate.py`；默认只预检，显式 `--execute` 且指定本次 `--model-id` 后才加载当前 route/key，并要求 Provider 对 `source_text` 的现行授权。逐批严格 JSON/ID 校验，发送前复核来源；先 create-only 写 intent，再调用一次，不进行 SDK 自动重试；checkpoint、完成 receipt 和 `review_pending` candidate 仅写入本地 `Workflow/Plans/`。 | 离线契约依赖 M0 和完整 field-ID 映射；合成测试覆盖全字段、缺/多/空译文、绑定篡改、来源过期、预算溢出、调用上限、批次执行、checkpoint 恢复、重复调用防护、同 run 并发互斥和日志脱敏。真实试点仍依赖配置所有者核验活动 route/allowlist、tokenizer/context/template 匹配及调用/费用预算；长期 metadata Translator role 尚未定义。 | `provider_export` provenance、model ID、tokenizer 适配性、渠道兼容和价格均未认证；成本不是服务商硬性限额。intent 存在而 checkpoint 缺失时视为请求可能已送达，系统阻止重发；当前没有自动消歧工具，保留现场并由人工核对 Provider 记录后才能制定恢复。来源/预算不符则发送前停止；候选仍待 M2 审核，不能发布。 |
+| M2 质量审核与处置 | `部分实现`：`metadata_translation_review.py` schema v2 使用固定 `metadata-translation-semantic-v1` rubric，逐字段覆盖原意保真、信息完整、适用术语、中文自然度和本地化处置；每项需理由，字段决定由检查结果派生。模板/回执绑定 plan、candidate、译文及当前来源摘要；来源复核失败则不固化。失败或术语冲突拒绝，不确定或需要独立注释时升级；未批准字段使报告 `needs_resolution`，不发布。当前是人工声明，没有 AI reviewer。 | 离线子项依赖 M1；测试覆盖 rubric/schema 绑定、全项填写、通过/失败/不确定/注释升级、结果派生与篡改拒绝、来源版本变化拒绝、回执摘要与同字节幂等。正式发布还必须从 verified bundle 重验 freshness。 | reviewer 是本地未认证声明；通过结果不认证身份或证明语义正确。术语参考未绑定 reviewed knowledge snapshot。schema v1 模板保持原样，但当前 finalize 只接受 v2；旧模板需创建新版本重新审查。报告中的 source snapshot 未签名，消费者必须与当前来源比较；冲突时保留旧文件并创建新 revision。 |
+| M3 本地正式元数据版本 | `部分实现`：`metadata_translation_publication.py` 定义确定性双语 artifact；`scripts/publish_metadata_translation.py` 仅接受全字段通过的 M2 schema v2 回执，并在计划所属项目的 `Metadata/` 默认目录 create-only 写入。每个字段带源/译值、稳定 ID、来源版本/摘要及 `approved` 或 `missing_source` 状态；结构性 catalog 字段保持原来源并由 catalog 摘要绑定。 | 验收依赖 M2 `approved`、candidate/plan/review 摘要有效及当前 catalog/manifest freshness；合成测试覆盖缺源状态、过期审核、幂等重跑、内容冲突拒绝覆盖和 artifact 哈希验证。读入口通过 `verify_metadata_translation_artifact` 对照 plan/candidate/review 与 current source 验证。EPUB 已由 M4 接线；Notion/UI 仍无 consumer。 | 默认路径依据[来源发布方案](source-ingestion-and-publication-plan.md#目标目录与版本约束)；artifact 写入不修改 catalog、不覆盖既有版本。reviewer 仍未认证；缺源字段由 artifact 显式标注，展示策略不替消费者决定。 |
+| M4 新鲜度与下游消费 | `部分实现`：`verify_metadata_translation_plan_freshness(..., allow_field_drift=True)` 对完整当前 catalog/manifest inventory 返回逐 field ID 状态和当前 version/SHA；默认严格模式不变。`scripts/build_epub_candidate_with_metadata.py` 校验 artifact 在原批准 snapshot 下完整有效，再对当前 `work.title` 与选中 episode title 做字段 freshness 门禁；只把有效译名写入临时 catalog，要求 work ID/target locale 匹配，并将批准 snapshot、当前 snapshot、消费字段 version/SHA 和 artifact lineage 写入 EPUB `build.json`。Notion/UI consumer 未实现。 | M4 依赖 M3 和 I5 builder；合成测试覆盖字段改变传播、无关字段保持 current、current 字段可跨无关 manifest 变化使用、选中 stale 字段在 builder 前拒绝、临时 catalog 清理和 sidecar lineage。后续需在真实译文上做文本往返、EPUBCheck 和阅读器验收；Notion live sync 另需 OAuth/页面权限和用户显式启用。 | 字段级 freshness 目前仅由 EPUB consumer 使用；M1/M2/M3 正式生成与批准仍要求全计划来源新鲜，故变更后需新计划与回执。缺失/过期选中字段阻断构建，不自动修改旧 artifact。Notion 授权不由 Provider 授权推导。 |
+
+**当前阶段结论**：M0 已完成并有合成及当前输入重现验证；M1 已有来源绑定候选 schema、离线导入、预算预检和合成验证的显式执行器，但真实试点生成尚未运行；M2 现有固定版本的人工语义检查 rubric、来源 freshness 门禁与结构化回执，但审核者身份和术语知识参考未认证/绑定，也未做获准样本验收；M3 可在批准和来源新鲜时写入项目 `Metadata/` artifact，尚未生成真实试点 artifact；M4 已有字段级 freshness 与 EPUB 标题消费，但仅该 consumer 采用字段级状态，未做真实译文/阅读器验收。Notion/UI 消费仍未完成。正文周边文字须先在来源/话目模型中找到可验证字段或单独定义提取方式，不能从章节正文中猜测性拆分。本地 artifact 使用来源发布方案中的 `Metadata/` 默认目录；长期 Provider role 映射仍未确认。单次显式 `--model-id` 的执行入口不定义默认角色；合成执行测试不证明真实渠道兼容、费用或译文质量。 |
 
 ### 方案取舍与契约
 

@@ -263,7 +263,11 @@ class EpubCandidateTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _build(self, max_output_bytes=4 * 1024 * 1024):
+    def _build(
+        self,
+        max_output_bytes=4 * 1024 * 1024,
+        metadata_translation_provenance=None,
+    ):
         return build_epub_candidate(
             input_root=self.input_root,
             catalog_relative_path="epub-catalog.json",
@@ -274,6 +278,7 @@ class EpubCandidateTests(unittest.TestCase):
             max_total_bytes=2 * 1024 * 1024,
             max_output_bytes=max_output_bytes,
             pandoc_executable=self.pandoc,
+            metadata_translation_provenance=metadata_translation_provenance,
         )
 
     def test_builds_candidate_with_source_hashes_and_preserves_markdown(self):
@@ -334,6 +339,49 @@ class EpubCandidateTests(unittest.TestCase):
             sorted(path.name for path in output_dir.iterdir()),
             ["build.json", "candidate.epub"],
         )
+
+    def test_build_manifest_binds_approved_metadata_translation_provenance(self):
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "work.title": {
+                    "source_version_id": "work-v1",
+                    "source_sha256": "3" * 64,
+                },
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "4" * 64,
+                },
+            },
+        }
+
+        result = self._build(metadata_translation_provenance=provenance)
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        build_manifest = json.loads(
+            (output_dir / "build.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(build_manifest["metadata_translation"], provenance)
+        self.assertEqual(
+            result["metadata_translation_artifact_sha256"],
+            provenance["artifact_sha256"],
+        )
+
+    def test_build_rejects_malformed_metadata_translation_provenance(self):
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self._build(metadata_translation_provenance={"artifact_sha256": "bad"})
 
     def test_builds_with_bare_pandoc_name_after_changing_working_directory(self):
         self.pandoc = Path(self.pandoc).name

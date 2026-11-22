@@ -57,6 +57,7 @@ Kakuyomu 普通 episode URL 采集、作品主页目录发现和到现有翻译�
 | `scripts/materialize_source_markdown.py` | 从 manifest 指定的原始版本生成字节保真的 UTF-8 `.md` 派生版本 | 数据根目录 + work/episode ID -> `normalized_source` artifact |
 | `scripts/merge_source_markdown.py` | 按显式来源顺序合并章节集合，支持完整 checkpoint v5 门禁并记录输入版本 | 数据根目录 + work ID + 显式有序 episode IDs 或完整 checkpoint + 必填输出字节上限 -> `export` artifact |
 | `scripts/build_epub_candidate.py` | 用精确版本匹配的 Pandoc 构建显式章节选集的 EPUB candidate 并执行有限结构检查 | 章节 catalog + 译文 Markdown -> candidate EPUB + 输入/输出哈希 sidecar |
+| `metadata_translation_epub.py` / `scripts/build_epub_candidate_with_metadata.py` | 重验当前来源并将已批准作品/话标题用于 EPUB 候选；记录双语 metadata artifact lineage | M3 plan/candidate/review/artifact + EPUB catalog/译文 -> metadata-aware candidate EPUB |
 | `epub_builder.py` | 校验 EPUB candidate catalog、尺寸/版本约束及 ZIP/OPF/XHTML 基本结构 | 合成/真实 Markdown 输入与 Pandoc -> candidate 及局部验证结果 |
 | `scripts/auto_extract_knowledge.py` / `knowledge_batching.py` | 实验性生成知识和来源清单草稿；默认前三章；`--full-book` 或 `--chapter-position` 从 verified AI bundle 按本地 tokenizer/context 限额分批，并校验候选段落引用 | verified AI bundle + 字符上限、tokenizer 与模型容量参数 -> 全书候选或单话局部候选及 provenance；单话概要/可选术语经人工回执发布后由 `pipeline.py` 按当前章节及 bundle 身份校验并注入上下文 |
 | `chapter_transaction.py` | 逐章记录译文/TM 更新意图，并在重跑时验证和恢复未完成提交 | 章节映射、原文/译文哈希、TM 基线 -> 输出文件与 TM |

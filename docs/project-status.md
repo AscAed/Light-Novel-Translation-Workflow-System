@@ -2,6 +2,24 @@
 
 本页按当前状态优先记录；较早的日期条目是其记录时点的快照，不能覆盖本节。通用验证环境、命令及边界见[开发与验证](development.md)。
 
+## 2026-11-22 K5 输入复核与当前阻塞
+
+- `已验证` 当前试点来源仍与 88 话计划匹配：`source_manifest.json` 为 356/356 文件通过，`source_editions_manifest.json` 为 532/532 文件通过；双版本验证状态为 `verified`，AI 版 774,253 bytes、人读版 799,293 bytes。`run_kakuyomu_workflow.py --plan-only` 返回 88/88 来源、0 issue、0 网络请求、0 Provider 调用、0 文件写入，计划 SHA-256 为 `63b286ca64e506e467239035c779f834acdc699c5765b4988e8b2088c013a329`。
+- `已验证` 当前 AI bundle 经 `load_verified_ai_book_bundle` 使用其实际绑定的完整 checkpoint `source_checkpoint.raw-html-refresh-2026-11-17.json` 复核通过，覆盖 88 话；bundle-set SHA-256 为 `434b86a037c0c4f9f31a8a85b3ac482504758f63134015efae52ee9b2653f22f`，AI bundle SHA-256 为 `173666f05cb172cca71d751c161db91e33496409fac78e626356fc8623069bb0`。误用默认 `source_checkpoint.json` 会因不是该 bundle 绑定的完整 checkpoint 而失败；不能据此判断 bundle 已过期。
+- `已验证` 当前项目 `Knowledge/` 根目录没有 `Glossary_reviewed.json`、`STORY_SUMMARY_reviewed.json` 或完整书知识候选三件套；`Workflow/Runs/` 不存在。`Workflow/Approvals/` 只有 2026-11-21 结构审阅回执。旧 `Glossary.json`、`STORY_SUMMARY.md` 不满足当前 bundle-bound reviewed 知识门禁。
+- `未验证` 本轮没有在仓库、`D:\OWN\Programming\AI\TranslatorAI` 父目录或常见用户级 Hugging Face 缓存位置发现 `tokenizer.json`。已检查的 Provider 模型、route、allowlist、JOJO/JYQF endpoint/key、API pool 与 fallback 环境变量在 Process/User/Machine 均未设置；根 `.env` 存在且会由 `Config.load_config()` 读取，但本轮未读取其内容。`api_pool_store.default_profile_path()` 使用 `%LOCALAPPDATA%\TranslatorAI\api-pool.json`；截至本轮该路径存在，但未读取其内容；`%APPDATA%\TranslatorAI\api-pool.json` 不存在。Credential Manager 未检查。因此活动 route 仍未知，未调用真实 Provider。
+- `计划` 继续 K5.2 前，需要配置所有者提供不含密钥的目标模型 ID、与该模型匹配的 tokenizer 文件路径及可验证来源、context/output/message/safety/call 上限和可接受费用预算，并在本机确认活动 route 与 `source_text`/`book_knowledge` allowlist。随后先运行只读知识预算预检；通过后才可生成候选、逐证据审核、发布 reviewed 知识并进入第 1 话受控试译。详细复现和边界见[开发记录](development.md#2026-11-22-k5-输入复核与当前阻塞)及[续接交接](handoffs/2026-11-15-translation-workflow.md#2026-11-22-k5-输入复核与当前阻塞)。
+
+## 2026-11-22 元数据翻译 M0–M4 基线与 M1 执行器
+
+- `已实现` 从当前 verified AI book bundle 生成作品字段、章节标题和话标题的 source-bound metadata inventory；计划写在本地项目 `Workflow/Plans/`，create-only，不调用 Provider，不包含章节正文。
+- `已验证` 当前试点 103 个已采集字段（作品 12、章 3、话 88）均有源值；103 `pending_translation`、0 `missing_source`。源版本绑定经当前 manifest/bundle 重验，计划 SHA 可重复生成。定向命令、结果和 M0 边界见[开发与验证](development.md#2026-11-22-元数据翻译-m0-来源盘点)。
+- `部分实现` `metadata_translation.py` 与 `scripts/import_metadata_translation_candidate.py` 可将完整的外部译文映射导入为 source-bound、`review_pending` 候选；全字段覆盖、摘要绑定、create-only 和同内容幂等均有合成测试。`scripts/plan_metadata_translation_generation.py` 可重验当前来源并按调用方 tokenizer、预算及单价分批估算；新增 `scripts/generate_metadata_translation_candidate.py` 默认只输出摘要，显式 `--execute` 才按每次调用传入的 model ID 路由、检查现有 `source_text` 授权并生成 review-pending 候选。严格逐字段响应校验、零 SDK retry、source freshness 复核、create-only intent/checkpoint/receipt、相同 run 互斥与 checkpoint 恢复均有合成测试。没有新增持久化 metadata Translator role。模型/tokenizer/endpoint 匹配、价格准确性和服务端兼容性未验证；费用估算不是服务商硬性限额。详见[执行器验证](development.md#2026-11-22-元数据翻译-m1-provider-执行器合成验证)。
+- `部分实现` `metadata_translation_review.py` 与 `scripts/review_metadata_translation_candidate.py` 提供 schema v2 逐字段人工语义检查和 source-bound 回执，规则版本为 `metadata-translation-semantic-v1`。模板固定检查原意保真、完整性、适用术语、中文自然度和本地化处置；结果由这些检查派生，失败/冲突拒绝，不确定或需要独立注释时升级，任何未批准项阻止报告批准。来源摘要仍会复核。reviewer ID 未认证，术语参考未绑定 reviewed knowledge snapshot；这不是 AI 审核、身份认证或真实样本质量验收。schema v1 文件保留原样，当前 finalize 不接受旧模板。M2 仍需获准样本校准。
+- `部分实现` 新增 `metadata_translation_publication.py` 和 `scripts/publish_metadata_translation.py`，仅在 M2 完整批准且 candidate/current catalog/manifest 摘要一致时，在计划所属项目已存在的 `Metadata/` create-only 写入双语 artifact。全计划字段保持原序；已批译文与 `missing_source` 状态分开表示；artifact 绑定 plan/candidate/review/rubric/source hashes。`Metadata/` 是[来源发布方案](source-ingestion-and-publication-plan.md#目标目录与版本约束)既有默认目录，本地试点该目录存在；本轮未读取目录内容或写真实试点 artifact。验证见[开发记录](development.md#2026-11-22-元数据翻译-m3-本地批准-artifact)。
+- `部分实现` M4 增加 metadata-aware EPUB 入口：只消费 approved work/episode titles，先验证 M3 artifact 的原批准 lineage，再逐字段重验当前来源；只要本次使用的 source text/hash 不变，无关字段或 manifest 变化不会误使该译名 stale。变更/移除的选中字段拒绝构建。临时 EPUB catalog 不覆盖原文件，`build.json` 同时绑定批准 snapshot、当前 source snapshot 和所用字段 version/hash；要求 work ID、target locale 匹配，作者/identifier 等结构字段保持输入值。字段级 freshness 目前仅供 EPUB consumer 使用；M1/M2/M3 生成与写入仍要求全计划来源 freshness。验证见[开发记录](development.md#2026-11-22-元数据翻译-m4-freshness-与-epub-消费)。未接入 Notion/UI，也未使用真实试点 artifact/译文构建。
+- `未验证` 本轮未运行真实 103 字段 Provider 生成；metadata 专属长期 role 映射、当前 route/allowlist/凭据、试点适配 tokenizer/context/template 和实际费用仍待配置所有者核验。根 `.env` 存在但未读取；本轮所查 Process/User/Machine 变量均未设置，API pool profile 与 Credential Manager 未检查，因此不能推断当前 route。未调用外部服务、未读或改试点 candidate/review/Metadata 内容。前记/后记/作者的话没有独立来源字段，未纳入 103 项。Notion/UI 消费与真实语义质量验收仍未完成。
+
 ## 2026-11-21 当前工作树综合自检
 
 - `已验证` 起始 HEAD 为 `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。该工作树的完整非 E2E 回归为 816 项运行、5 项因 Windows 能力跳过、0 失败；loopback mock E2E 为 7 项通过。依赖、静态检查及扫描范围见[当前工作树综合自检](development.md#2026-11-21-当前工作树综合自检)。

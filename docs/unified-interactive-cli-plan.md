@@ -4,9 +4,9 @@
 
 - 状态：`计划`
 - 调查日期：2026-11-21
-- Git 基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`
+- 原计划基线：分支 `codex/translation-workflow-audit-20261117`，HEAD `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。2026-11-21 复核基线：同分支，HEAD `006b1c5cf4b32b49a4b74cbf1e096be60b95e39c`。
 - 本文是后续开发会话的实现计划，不表示统一入口、TUI 或新依赖已经实现。
-- 调查时工作区已有五份修改中的 Markdown 文件及一个未跟踪 JSON。该快照用于说明调查边界；后续工作必须重新检查 Git 状态，不得覆盖或清理用户现有变更。
+- 2026-11-21 复核时工作区无 tracked 修改，只有既有未跟踪文件 `downstream_freshness_ai_index_refreshed_2026-11-17.json`；本轮未打开或改动该文件。后续工作必须重新检查 Git 状态，不得覆盖或清理用户现有变更。
 
 ## 目标与非目标
 

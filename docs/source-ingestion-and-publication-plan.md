@@ -17,12 +17,12 @@
 4. 支持将清洗后的原文、译文和批准知识备份到 Notion；本地项目数据仍为权威数据源。
 5. 将章节/全书 Markdown 转换成 EPUB 派生文件，不覆盖原始或规范化文本。
 
-用户于 2026-11-14 选定 Kakuyomu 为首个候选平台，身份为普通用户，并指定试点作品及个人用途；用户于 2026-11-14 明确确认该作品获得授权，并于 2026-11-15 再次明确确认，本计划按已授权记录。该确认不独立证明 Kakuyomu 允许自动访问。Provider 数据范围另已确认：JOJO/JYQF 仅获各自职责所需的最小类别；Notion 接收范围仍须单独核定。本文不提供版权法律结论；逐平台访问规则仍须审查。
+用户于 2026-11-14 选定 Kakuyomu 为首个候选平台，身份为普通用户，并指定试点作品及个人用途；用户于 2026-11-14 明确确认该作品获得授权，并于 2026-11-15 再次明确确认，本计划按已授权记录。该确认不独立证明 Kakuyomu 允许自动访问。Provider 数据范围另已确认：JOJO/JYQF 仅获各自职责所需的最小类别。Notion 产品默认同步范围和行为已由用户选择，见下方方案；这不等于当前 Notion 账号、integration 权限已连接或首次启用确认已完成。本文不提供版权法律结论；逐平台访问规则仍须审查。
 
 ## 试点作品与本地文件
 
 - `用户输入`：作品《祝福のネトラレラ》，作者墨色，[Kakuyomu 作品地址](https://kakuyomu.jp/works/16817330668011048405)；首批试点为[第 1 话](https://kakuyomu.jp/works/16817330668011048405/episodes/16817330668011089189)。
-- `用户输入`：当前拟作个人非商业读取、保存、翻译、发送模型、Notion 备份和阅读，暂不公开分发。用户于 2026-11-14、2026-11-15 明确确认指定作品已获得授权；本方案按已授权记录。用户是普通读者，不具备作者 ZIP 导出权限，并要求从作品主页发现完整公开目录 URL、再用普通 episode URL 获取原文。用户明确表示不需要官方澄清；该决定不改写为平台许可或法律结论。JOJO/JYQF 各自职责所需的最小 Provider 数据类别另已授权；Notion 接收范围仍单独核定。初始 live 页面结构复核见[I0 核查记录](#kakuyomu-i0-规则核查-2026-11-14-至-2026-11-15)，88/88 实际采集结果见下方 I2 记录。
+- `用户输入`：当前拟作个人非商业读取、保存、翻译、发送模型、Notion 备份和阅读，暂不公开分发。用户于 2026-11-14、2026-11-15 明确确认指定作品已获得授权；本方案按已授权记录。用户是普通读者，不具备作者 ZIP 导出权限，并要求从作品主页发现完整公开目录 URL、再用普通 episode URL 获取原文。用户明确表示不需要官方澄清；该决定不改写为平台许可或法律结论。JOJO/JYQF 各自职责所需的最小 Provider 数据类别另已授权。Notion 的拟用内容范围及同步行为由用户另行明确选择；首次启用仍需在系统界面完成目标确认和 OAuth 授权。初始 live 页面结构复核见[I0 核查记录](#kakuyomu-i0-规则核查-2026-11-14-至-2026-11-15)，88/88 实际采集结果见下方 I2 记录。
 - `用户输入与数据目录快照`：本书采集版本归档位于 `D:\OWN\Programming\AI\TranslatorAI\Light Novel Translation Workflow System\projects\祝福のネトラレラ\SourceArchive`，AI 清洗版位于项目内 `RAWs_AI`；用户指定外部 `D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系女主)\生肉` 为人类阅读版，外部同书 `熟肉` 为译文根。归档含主页声明的 88 个可见正文、章节分组、raw/normalized 来源版本及全书 export；2026-11-16 显式刷新重取 88/88 话且哈希无变化，manifest 268 个文件型 artifact 通过 SHA-256 核验。2026-11-17 已从同一来源分别生成 88 话 AI/人读版；索引和输出哈希通过本地校验。译文目录仍无译文。用户指定路径与忽略项目数据不纳入 Git；此前 2026-11-14 的 48/19 章文件库存是历史快照。
 - `用户输入`：用户没有本地原文或译文，希望系统从 Kakuyomu 获取原文后翻译生成译文；不要求用户提供本地章节。用户于 2026-11-15 明确要求从作品主页发现完整公开目录 URL，再逐话访问普通 episode 页面获取正文；后续明确该书已获授权，并要求按发现的全部普通 episode URL 获取原文。主页目录到逐话采集已实现，历史 source-only live run 对主页声明的 88 话完成 88/88。该明确授权和采集范围不改写为平台背书或公开分发授权。
 - `不适用的条件路径`：Kakuyomu 官方作者 ZIP 只供作者账号备份自作小说，且无导入功能。用户已明确自己是普通读者，因此本试点不能依赖作者 ZIP；不要求用户另行提供，也不把它作为当前阻塞。
@@ -46,7 +46,7 @@
 - 已实现平台无关的分页采集核心、checkpoint 续传、本地 catalog adapter 和 Kakuyomu 主页目录 discovery；新增离线 catalog snapshot diff，可报告新增/消失/标题修改/重排及 v2 分组变化，并可排他导出新增或变化话目清单。纯追加更新验证旧 ID、标题、顺序、URL、章节归属和 manifest raw 版本后，只从追加位置请求新话。显式全量正文刷新绑定完整基线 catalog/checkpoint/manifest，要求当前目录完全一致，再逐话重取正文并按 SHA-256 复用或追加不可变 raw 版本。尚无其他站点 adapter 或独立于站点公开话数声明的完整性证明。纯追加路径不检测旧正文修订；全量刷新拒绝目录变化。续传只在来源快照与目标 manifest 身份匹配时适用；目录 parser 依赖站点服务端页面结构，变化时 fail-closed。
 - 仓库未发现 Notion API/数据库同步集成；依赖清单未声明 Notion 客户端。
 - 本机能解析到 Pandoc 可执行文件，但本次未核实其版本、EPUB 配置或输出兼容性。其存在不代表项目集成或构建已验证。
-- Kakuyomu 为用户选定的平台；指定作品授权按用户明确声明记录。用户明确表示无需官方澄清，并要求普通主页目录发现和普通 episode URL 路径；平台条款及 robots 观察保留为风险记录，不表述为平台背书、许可结论或停止本试点的官方答复门槛。真实 88/88 source-only 采集已执行；其他平台和 Notion 接收范围仍需分别核定。
+- Kakuyomu 为用户选定的平台；指定作品授权按用户明确声明记录。用户明确表示无需官方澄清，并要求普通主页目录发现和普通 episode URL 路径；平台条款及 robots 观察保留为风险记录，不表述为平台背书、许可结论或停止本试点的官方答复门槛。真实 88/88 source-only 采集已执行；其他平台仍需分别核定。Notion 产品默认同步范围已选定，但实际 integration 权限、OAuth 授权和首次启用确认尚未完成。
 - 本地忽略目录包含书籍数据且结构复杂；项目现状文档记录了目录/来源审计限制。不得由本计划推断数据合法来源，不得自动上传、改写或生成其映射。
 
 ## 搜索与双版本需求复核（2026-11-16）
@@ -148,7 +148,7 @@ D:\OWN\Programming\AI\TranslatorAI\祝福のネトラレラ(祝福的寝取系�
 | 2 元数据与章节完整性（I1/I2） | 本地 catalog v2 保存目录组 ID、章节 ID/标题/层级、位置范围及 episode ID 顺序；schema v3 增加主页作品元数据白名单，loader 保持 v1/v2 读取兼容。diff 比较快照并按需排他导出新增或 episode 元数据变化子集；作品级变化只报告字段名。`collect_source(work_metadata=...)` 已将主页元数据写入带记录时间和父版本的 `kind=work` manifest artifact；相同快照复用，archive limit 包含该内容。纯追加 CLI 继承已校验的完整旧 checkpoint/raw 版本并只请求新话；显式全量刷新要求相同完整目录，重取全部话目并追加有变化的不可变 raw 版本。 | 合成 fixture 验证 v2/v3 写入、旧版读取兼容、目录变化报告、纯追加时旧 ID/章节分组不变、只抓新增话、刷新时重抓全目录、正文哈希变化/复用、暂停续传、旧 raw 哈希/版本关系复核、拒绝目录变化和 checkpoint 不覆盖；work artifact 和 manifest 上限也有验证。2026-11-16 真实刷新 88/88 话、0 哈希变化；2026-11-17 纯追加复查发现/完成 88 话、追加 0、复用 88，未请求 episode 正文；同日后续显式全量刷新再次访问 88/88 话、正文哈希仍无变化并新增 88 个 `raw_page_html` artifact。最新 `source_manifest.json` 356/356 校验通过。 | `.\.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_catalog_diff tests.test_kakuyomu_page_source tests.test_kakuyomu_workflow tests.test_source_ingestion tests.test_source_manifest -q`。 | v1 无章节结构，v1/v2 无作品元数据；目录不含正文哈希，只有显式刷新才能发现正文修订。试点基线 v1 无法比较章节分组。作品字段或正文变化不会自动重建概要/知识；快照只记录状态，不自动更改消费者数据。历史非追加目录变化不允许用纯追加/精确刷新路径续用同一基线，需重新审视并制定迁移策略。 |
 | 3 原始证据与双版本（I1/I3） | `raw_source` 保存 parser 提取的 UTF-8 可见正文，`normalized_source` 保持字节保真；Kakuyomu adapter 另将原始 HTML 响应保存为独立 `raw_page_html` artifact，绑定作品话目元数据及同一话 `raw_source` 版本。2026-11-17 全量刷新为 88 话补录了 HTML；两种清洗 profile 仍从共同 `raw_source` 独立生成。`scripts/validate_source_editions.py` 可从 raw 重算并逐字节核验两版索引、归档和镜像。 | I2 当前来源、I1 manifest；按版本保留归档；人工验收段落完整性、前后记/作者话、特殊符号与阅读器显示。 | `.venv\Scripts\python.exe -m unittest tests.test_source_manifest tests.test_source_ingestion tests.test_kakuyomu_page_source tests.test_source_editions tests.test_source_markdown_materialization tests.test_source_pipeline_linkage tests.test_downstream_freshness_snapshot -q`；试点命令见下方 I3 当前验证记录。 | 历史未保存 HTML 不能从可见文本恢复；原始响应完整性不代表语义无损；未知标记和人读 Ruby/CSS 效果仍需人工检查。 |
 | 4 目录与映射（I1/I4） | `RAWs_AI` 稳定 ID 分层、人读版 `<章节名>/<话名.md>`、Windows 名称处理及碰撞消歧已有导出实现；Kakuyomu 编排器与通用 `pipeline.py --project` 在项目同时有 `SourceArchive/`、`RAWs_AI/` 时均默认核验 catalog 摘要、episode 全覆盖和 AI 归档来源，并生成带版本 ID 的 `CHAPTER_MAP`。`workflow_paths.json` 可配置外部人读根与译文根。 | AI 模式计划预览已实际核验 88/88 话。通用入口按 AI 索引位置生成稳定译文路径/TM 键；仍需人工验收 Kakuyomu 章节名、话名、顺序、目标译文路径与 TM 键。测试覆盖缺失/不完整索引、catalog 过期拒绝、输出路径覆盖、输出篡改、安全文件名、输出冲突拒绝和幂等，不替代人工内容映射批准。 | `.\.venv\Scripts\python.exe -m unittest tests.test_source_editions tests.test_kakuyomu_translation_plan tests.test_kakuyomu_workflow tests.test_translation_plan_approval tests.test_pipeline_contracts.TestTestWorkspaceConfiguration -q`；若 Kakuyomu 覆盖目录位置，再提供 `--ai-edition-root <AI版目录>`。 | 版本化来源目录缺失或不完整时阻断，不退回人读版；显式 JSON 配置仍由调用者配置映射，AI 默认选择不证明公开目录以外的完整性。 |
-| 5 翻译与知识衔接（I4/阶段 1–2） | 使用已获授权的作品、数据类别和目标 Provider；按话翻译，同时将概要作为独立源版本翻译，元数据／抽取知识先进入候选审核。 | 章节与概要译文及各自来源版本；用合成数据验证映射和审核隔离，再以获准作品样本评估忠实度、术语一致性、正文格式和成本。 | `.\.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_source_pipeline_linkage -q`；合成端到端使用 `.\.venv\Scripts\python.exe tests\run_tests.py`。真实 Provider 单话运行与人工质量验收另记独立结果。 | Provider 未配置或不可用时只做合成验证；未批准知识不作为正式知识，审核回执不证明身份或语义质量。 |
+| 5 翻译与知识衔接（I4/阶段 1–2） | 使用已获授权的作品、数据类别和目标 Provider；按话翻译，并将概要、标题及读者可见作品元数据作为字段级独立任务；元数据/抽取知识先进入候选审核。结构字段保持原值，字段缺失不得补造。 | 正文、章节/话标题、作品标题/宣传语/概要/详细介绍/类型/Tag 的中日并列版本及各自来源版本；字段清单能解释每个来源值是已译、待审、缺失或已过期。注释为必要时的编号文末注。用合成数据验证映射和审核隔离，再以获准作品样本评估忠实度、术语一致性、注释必要性、正文格式和成本。Notion/EPUB 只消费已批准版本。 | `.\.venv\Scripts\python.exe -m unittest tests.test_pipeline_contracts tests.test_kakuyomu_workflow tests.test_source_pipeline_linkage -q`；新增元数据契约测试后覆盖字段遗漏、空值、版本变更、注释引用与旧译保留；合成端到端使用 `.\.venv\Scripts\python.exe tests\run_tests.py`。真实 Provider 单话运行与人工质量验收另记独立结果。 | Provider 未配置或不可用时只做合成验证；未批准知识不作为正式知识；审核回执不证明身份或语义质量；catalog 变化不能静默覆盖既有元数据译文。 |
 
 catalog 快照比较可本地执行，无站点请求：
 
@@ -202,7 +202,7 @@ catalog 快照比较可本地执行，无站点请求：
     -> 结构/标记规范化（保留源版本及转换映射）
     -> 每话 Markdown + 全书 Markdown + 版本清单
          -> 显式 CHAPTER_MAP -> 现有翻译流水线/TM/知识候选
-         -> Notion 备份/检索副本（主要单向；规划双向编辑）
+         -> Notion 备份/检索副本（默认关闭；启用后默认自动，支持手动及受控双向同步）
          -> Pandoc 候选工具 -> 章节 EPUB / 全书 EPUB
 ```
 
@@ -268,7 +268,7 @@ catalog 快照比较可本地执行，无站点请求：
 | [知识产权规约 FAQ](https://kakuyomu.jp/help/entry/faq_authors_personal_rights)，2026-11-14 查阅 | 平台解释其服务条款不将投稿作品著作权转给平台，作品著作权仍属于作者；第三方不能据此规约擅自出版。 | 该 FAQ 本身不证明本项目授权；用户已另行明确确认指定作品获得授权，本计划按该声明记录，不要求额外文件才承认此确认。 |
 | [小说备份帮助](https://kakuyomu.jp/help/entry/download_works)，2026-11-15 查阅；[功能公告](https://kakuyomu.jp/info/entry/2018/11/14/162115) | 官方说明作者可从浏览器工作区下载自作小说 ZIP；示例包含 `about.txt` 与 `episode_0001.txt` 等逐话 UTF-8 文本。帮助页同时说明 App 不支持、仅可下载自作小说、下载文件没有回导功能。 | 这是作者账号发起的手动备份，不是面向普通读者的他人作品导出、程序化 API 或自动采集许可。用户已明确为普通读者，因此此路线不适用于本试点，也不要求提供 ZIP；本试点改用用户指定的普通 episode URL。 |
 
-**初步结论**：D-13/I0 的规则资料和用户操作决定分开记录。用户已明确确认指定作品获得授权，并明确表示不需要向 Kakuyomu 官方澄清；本试点按用户决定使用普通作品主页发现公开目录，再访问普通 episode URL。2026-11-15 复核的一般规约第 12 条与 robots 规则继续作为平台风险记录，不把技术可访问或用户授权写成平台背书，也不作法律结论；官方澄清不是本试点执行前置。采集器不请求 robots 禁止的 `/read`，不登录、不跟随重定向或调用未文档化 API。88/88 主页声明的公开目录章节已按默认 2 秒（允许配置 1.5–3 秒）间隔获取并归档，不包括草稿/私有话，也不授权公开分发。官方作者备份只适用于作者账号手动下载自作小说；用户为普通读者，故该路线不适用。JOJO/JYQF 各自职责的最小数据类别已由用户授权；本地 allowlist、端点仍未验证，其他 Provider/类别、Notion 接收范围及保留边界须分别落实。
+**初步结论**：D-13/I0 的规则资料和用户操作决定分开记录。用户已明确确认指定作品获得授权，并明确表示不需要向 Kakuyomu 官方澄清；本试点按用户决定使用普通作品主页发现公开目录，再访问普通 episode URL。2026-11-15 复核的一般规约第 12 条与 robots 规则继续作为平台风险记录，不把技术可访问或用户授权写成平台背书，也不作法律结论；官方澄清不是本试点执行前置。采集器不请求 robots 禁止的 `/read`，不登录、不跟随重定向或调用未文档化 API。88/88 主页声明的公开目录章节已按默认 2 秒（允许配置 1.5–3 秒）间隔获取并归档，不包括草稿/私有话，也不授权公开分发。官方作者备份只适用于作者账号手动下载自作小说；用户为普通读者，故该路线不适用。JOJO/JYQF 各自职责的最小数据类别已由用户授权；本地 allowlist、端点仍未验证，其他 Provider/类别及 Notion 的账号权限/实际连接仍分别核实。Notion 产品默认范围和同步方向已按下方方案记录，不应再作为待选择的数据范围重复询问。
 
 ### Kakuyomu live access review and user decision 2026-11-15
 
@@ -287,19 +287,34 @@ catalog 快照比较可本地执行，无站点请求：
 - 对本试点，全书预读是首话正式翻译前的必经工作流步骤，目标为基于全书生成术语、人物、世界观、视角/口癖候选；现有 `--full-book` 已支持 token 预算分批抽取和候选级分层综合，并把最终结论限制在候选携带的原文段落证据内。该能力仍需验证真实模型质量，不能替代人工核对章节覆盖及已批准知识回执。若整书超预算，不得把截断输入描述为“已通读全书”；未经核定的 Gemini/Claude 不接收试点原文。
 - 人名、专名、术语、世界观、一人称代词/口癖、人物语气生成结构化候选；来源定位到原始/规范化版本和话/段落。现有抽取脚本可作为候选校验起点，但需扩展类型和来源，不直接自动发布。
 - 采集的作品简介、Tag 和元数据可以成为知识候选/检索上下文，需保留来源及冲突状态；来源自述与模型推断分开标记。
-- 原文、译文、知识、评测样本的外发仍服从逐 Provider 数据授权；采集和 Notion 还需各自独立的目标服务授权，不从 `PROVIDER_DATA_POLICY` 推断 Notion 许可。
+- `计划（2026-11-22）` 将面向读者的作品元数据与章节/话标题纳入翻译范围，输出日文原值与中文译值并列的版本化记录；字段至少绑定 `work_id`/`episode_id`、来源 artifact/version/hash、字段名、模型/提示词配置、译文状态、审核结果和更新时间。作者标识、URL、时间、计数、连载状态及排序等结构字段保持原值，不送模型翻译；作者显示名默认保留日文原名，有可靠译名时另存中文显示值。此为目标数据契约，当前 catalog 采集和版本化不代表已实现元数据翻译或批准发布。
+- 元数据与正文分开运行、分开验收、共用已批准的术语与文风知识。翻译前按来源字段清单计算覆盖状态，区分缺失、空值、待译、待审、批准、冲突和过期，严禁模型补造缺失资料。概要、详细介绍、标题、类型/Tag 的中文显示值及其原文应并列保存；源字段更新只使对应译文及依赖目录/EPUB 的派生产物过期，不覆盖历史版本。正式目录、Notion 和 EPUB 只消费当前来源绑定且通过质量门禁的版本。
+- 本地化遵循保留原意、事实、叙事语气和作品特色，优先在正文中自然表达。俚语、梗、致敬、双关、生造用语和日本文化词先用批准知识解释；仅在正文无法兼顾自然表达与关键信息时附最少量编号文末注。注释必须绑定原文证据和段落，不得扩写未经证实的设定。该偏好由用户确认；具体质量检查需用代表性样本校准。
+- 原文、译文、知识、评测样本发往 AI Provider 仍服从逐 Provider 数据授权；Notion 是不同接收方，需用户在 Notion 配置中单独连接、显式启用并确认目标范围，不从 `PROVIDER_DATA_POLICY` 推断其已连接或获准发送。
 
 ### Notion 作为备份副本
 
-- 本地版本清单与项目文件为权威；Notion 是备份/浏览和协作副本，不作为唯一副本。主要场景为单向备份，同时规划双向编辑与冲突合并；远端修改不得静默覆盖本地内容，需保留来源版本和合并记录。
-- 用户指定目标为 `BOOK/Novel/Light-Novel/` 下的轻小说工作环境，希望数据库结构便于 AI 读取和人工查阅；用户表示该处部分旧内容可修改或覆盖。本轮不修改 Notion；实施前先只读核实完整页面层级、现有数据库与权限，并明确具体操作对象。此前按名称只读搜索发现 `Light-Novel` 与作品同名页面，不能据此确认完整层级或权限。
-- 建议设计相关联的作品、话、译文和知识 Database：作品记录保存元数据/来源与许可状态；话记录保存稳定 ID、顺序、版本、来源链接、原文/译文哈希与同步状态；译文关联话和版本；知识区分候选、已批准、冲突、废弃及来源。具体结构与 API 能力须验证。
-- 大文本可使用页面正文块，Database 属性只放稳定标识、状态和索引字段。具体 Notion API 可写字段、分页、块大小、限流、删除及权限行为需实施前复查官方 API 文档；本文不预设数值限制。
-- 先用合成数据验证单向 upsert，再在 Notion 目标、权限及数据类别范围核实后试点：本地版本哈希与 Notion 记录相同时跳过；源版本变化时创建新版本或报告冲突。正文和知识的双向冲突保留双方版本并报告差异，等待处理；自动合并不重叠变更作为后续优化，须验证共同基线和格式转换。
-- 记录待同步/成功/重试耗尽/冲突状态；网络和限流错误可退避重试，鉴权/权限/内容错误需停止并提示处理。同步成功需回读关键字段或用列表核对条目数、版本 ID、哈希；定期执行完整性审计。
-- 凭据存储采用系统凭据库；Key/token 不写入 JSON、日志、Markdown、Notion 属性或错误输出。原文和译文是否可上传必须有人类明确批准。
-- 备份验收包含恢复演练：从 Notion 备份副本恢复到隔离目录，与本地清单比对哈希和对象数量；在演练通过前不得将 Notion 宣称为可恢复备份。
-- 数据按版本保留至用户显式删除；Notion 删除可提出本地删除请求，但每次须经用户显式确认才执行，记录删除目标、结果和失败状态。规划本地及获授权远端副本的删除、撤回和失败报告，同时核实适用保留义务。
+- **用户选择（2026-11-22）**：默认关闭；启用后默认自动备份、可改手动；同步完整正式产物；沿用 `Light-Novel-Bookcase` 并新增“轻小说索引”；Notion 更改须显式批准后进入本地；冲突按“先保存远端到本地版本历史、再合并、最后本地版本推回 Notion”处理。下列内容把该选择细化为可实施方案。
+- **目标与状态**：Notion 是本地项目的备份/协作副本，不取代本地权威数据。当前仓库没有 Notion 同步实现或专项测试；以下是用户已选择的目标行为和待实现设计，不是当前能力。2026-11-14 的只读页面快照曾看到 `BOOK/Novel/Light-Novel` 路径下的 `Light-Novel-Bookcase` 数据库，但快照可能过时，页面层级、当前属性及集成权限必须在实施时重新只读核验。
+- **启用和触发**：备份默认关闭，用户必须在统一配置入口显式启用并完成 Notion 登录/授权及目标确认。启用后默认 `automatic`；用户可选择 `manual`，此时仅由用户从交互入口发起备份/同步。自动模式在系统产生并通过本地质量/完整性门禁的正式产物后入队；缓存、临时文件、草稿、未批准知识、运行日志、审计中的正文及凭据不触发备份。重跑同一版本为幂等 no-op；修改后的正式版本产生新版本记录。配置“启用”是目标产品行为，不代表当前 Notion 集成或本轮已连接。
+- **默认备份范围**：启用自动模式后，默认纳入全部完整、正式的书籍产物：作品元数据与其版本清单、已校验的来源证据/原始采集版本、AI 版及人类版原文、已批准知识、正式发布译文，以及必要的稳定 ID、来源/派生版本关系、内容哈希和同步状态。排除临时缓存、未审核候选、草稿译文、调试/访问日志、密钥/token 和不属于该作品的文件。此范围是用户选定的产品默认值；实际首次连接时应在 UI 中展示清单，并由用户显式启用目标工作区和同步范围。AI Provider 授权不覆盖 Notion。
+- **Notion 目标结构**：根位置为用户指定的 `/BOOK/Novel/Light-Novel/`。沿用现有 `Light-Novel-Bookcase` 作为“轻小说”作品/内容数据库；在同一根目录新建独立“轻小说索引”数据库，每部作品一条索引记录，并通过 relation/page links 连接作品目录和下述生肉、熟肉页面。索引至少包括：日文标题、翻译标题、作者、作品页 URL、连载状态、翻译进度、日文概要、翻译概要、作品类型、Tag、生肉页面连接、熟肉页面连接、稳定 `work_id`、本地版本/同步状态。若现有数据库属性与此不一致，先出具只读差异报告；仅添加缺失字段，不删除或覆盖不相关旧字段。
+- **作品目录与内容关系**：在根目录下为每本启用备份的书建立作品目录，显示名包含作品原名和译名，并附稳定 ID 以避免重名冲突。目录包含 Metadata、SourceArchive、RAWs_AI、人类阅读版“生肉”、Knowledge、“熟肉”和版本清单/同步状态；原文与译文按稳定 episode ID 和顺序组织为页面或分块内容，完整全书合集作为可追踪派生物而非唯一副本。使用 Notion page/database relation 连接索引、作品目录、话目及两种语言页面，不依赖标题文本作为唯一关联。实际 Notion 对象类型、子页面层级、页面/附件大小和格式能力在合成试点中验证，不假定任意文件可原样上传。
+- **连接和凭据**：优先评估 Notion 官方托管 MCP `https://mcp.notion.com/mcp`，采用浏览器 OAuth 2.0 + PKCE 授权；客户端需支持 Streamable HTTP、token refresh 和安全凭据存储。官方 Python MCP SDK 与 OAuth 库可作为候选，但并非当前依赖。若 MCP 工具无法支持本方案所需的数据库读写、块/文件同步、幂等和差异读取，再评估 Notion API；不得将 MCP token 当作 REST API token。API/OAuth 备选需要确认应用注册、redirect/callback、所需 capabilities 和回调部署方式。当前产品是本地 Python CLI，未发现 OAuth callback 服务或 Notion 凭据实现；因此浏览器授权及 Windows Credential Manager 保存/撤权路径是接入阶段的前置验证，不是现成功能。
+- **同步方向和用户授权**：本地正式产物变更在 `automatic` 模式下自动推送 Notion；`manual` 模式由用户发起。Notion 端发现更改只生成差异预览，不自动写入本地；用户对本批变更显式批准后，才允许导入。首次启用时对上述默认数据范围和目标目录做明确确认；后续可按作品停用、撤权或缩小范围。撤权后暂停新请求、保留本地队列状态并提示重新授权，不删除任何本地数据。
+- **冲突顺序与无损合并**：遵守用户确定的顺序：先把 Notion 当前版本作为不可变远端快照同步/记录到本地版本历史，再以共同基线对比 Notion 与本地变更；不重叠且可可靠定位的编辑执行三方合并，重叠、格式映射不确定或删除/标题变更等结构冲突暂停并展示双方差异。合并结果先写为新的本地版本并校验，之后再将该本地版本同步到 Notion。远端变更进入本地仍须用户对该批次显式许可。每个操作绑定 `work_id`、对象 ID、base/local/remote version ID、内容 hash、operation ID 和来源方向；处理“本次由同步器写回”的变更时检查 operation/hash，避免循环同步。任一阶段失败均保留双方原版本和队列记录，不以重试覆盖另一方。
+- **删除、改名和重复项**：物理删除默认不双向传播。Notion 删除或移动视为 tombstone/结构变更，进入预览；本地删除或远端删除只有在用户对具体对象显式确认后执行，记录目标、确认、结果及失败状态。作品标题/译名变更更新显示名与索引，但稳定 ID 和旧路径别名保持映射；同名作品通过来源平台/作品 ID 区分。检测到重复数据库行时按稳定 ID 合并同步身份，不自动删除旧页面；先报告重复及关联修复计划。
+- **幂等、重试与运行状态**：本地同步账本记录配置、对象、源版本/hash、Notion ID、最后共同基线、方向、状态、重试次数和错误类别；状态至少区分 pending、running、synced、awaiting_user_approval、conflict、retry_exhausted、permission_denied、deleted/tombstoned。队列首版可由本地文件/SQLite 等轻量持久状态实现；选型需按现有项目文件存储模式验证，不因“队列”预设后台服务。网络超时与 429/529 按 `Retry-After` 有界退避并带抖动；仅对幂等操作重试写请求，无法证明幂等时先读取目标状态再决定是否补写。401/403、对象不存在、格式/内容校验失败不盲目重试。部分成功逐对象落账并可续跑，不报告整批成功；同步完成后回读索引字段、关联、对象数与版本/hash。
+- **备份恢复和生命周期**：本地版本保留至用户显式删除；Notion 副本只有在对应对象权限和请求成功后才标记已备份。按稳定 ID/版本恢复到隔离目录，校验对象数量、哈希、版本父子关系和章节顺序；先演练恢复再称其为“可恢复备份”。Notion 删除引发本地删除请求须逐项确认；记录失败、撤回及副本清理状态，遵从适用保留要求。保持本地仍为权威副本，不把 Notion 当唯一备份。
+- **成本和可观测性**：在本地 run ledger 记录 Provider、模型、职责、输入/输出 token、重试/返工调用和时间；只有用户配置了计价信息才计算费用，否则显示 token 用量和“费用未知”。默认不设项目级硬上限；用户可配置单次运行/全书上限，达到后暂停并说明未完成任务。仅当 Provider/中转商有文档化且已配置的余额/用量查询接口时尝试读取余额；不支持或查询失败时不阻断工作流，明确提示余额未知，不猜测 endpoint。Notion 同步本身的请求量/重试也单独记录。用量日志不得含书籍正文或凭据。更细的生成 API 用量/价格模型见[模型与 API 配置方案](model-provider-configuration-plan.md)。
+- **测试和故障注入**：使用合成数据验证 OAuth 授权/撤权状态、只读发现、数据库 schema 差异、稳定 ID upsert、分页、文件/长文本切块、429/529 与 Retry-After、超时、401/403、部分成功续跑、撤权、远端删除预览、批准后导入、本地/远端并发修改、非重叠三方合并、重叠暂停及隔离恢复。首次真实数据前再次核对页面层级/权限和用户启用范围；未获授权的 Notion 工作区不得发出书籍内容请求。
+
+#### Notion 官方能力资料（2026-11-22 查阅）
+
+- [构建 Notion MCP 客户端](https://developers.notion.com/guides/mcp/build-mcp-client)：官方托管端点、OAuth 2.0/PKCE、Streamable HTTP、token refresh、安全凭据要求；Python SDK/OAuth 库为技术候选，不代表本项目已集成。
+- [连接 Notion MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)：支持通过浏览器完成授权并连接用户有权访问的 workspace；产品是否可做精确到页面/数据库的权限选择需在 OAuth 实际流程验证。
+- [API 请求限制](https://developers.notion.com/reference/request-limits)：存在 connection/workspace/endpoint 限流，429/529 需要遵从 `Retry-After` 并限制重试；具体限制可能随计划和接口变化，实施时复查。
+- [API 凭据安全](https://developers.notion.com/guides/authorization/credential-security)：token 可读取或修改其权限覆盖的内容；不得放入源码/普通配置或消息，应最小权限存储并提供撤权/轮换处理。
 
 ## EPUB 产物
 
@@ -315,6 +330,8 @@ catalog 快照比较可本地执行，无站点请求：
 
 `epub_builder.py` 与 `scripts/build_epub_candidate.py` 可用 Pandoc 从显式章节 catalog 构建一个不可覆盖的候选目录：`<output-root>/<work_id>/<build_id>/candidate.epub` 和 `build.json`。catalog 为 UTF-8 JSON schema v1，必填 `schema_version`、安全的 ASCII `work_id`/`build_id`、`expected_pandoc_version`、书名/作者/语言/identifier 和按 `position` 严格递增的 `chapters`；每话含 `episode_id`、`position`、`title`、`translation_path`、`source_version_id`。章节路径必须位于显式输入根目录内，Markdown 首个非空行须为与 catalog 标题一致的 H1。catalog 上限 1 MiB，单章/总输入/EPUB 输出上限须在 CLI 显式提供；超时默认 120 秒，可显式调整，最大为 24 小时。单章、总输入和 EPUB 输出上限的最大配置值为 1 GiB。安装 Pandoc 版本必须与 catalog 的 `expected_pandoc_version` 精确一致。
 
+`scripts/build_epub_candidate_with_metadata.py` 是 metadata-aware 入口：它要求计划、候选、审核回执和项目 `Metadata/` 内的批准 artifact 完整匹配，并重验当前 source catalog/manifest；只覆盖作品标题和显式选中话目的标题，且要求 EPUB `language` 与 metadata target locale 相同。作者、identifier 等结构值保留 catalog 原值。转换只发生在输入根目录中的临时 catalog 副本，结束后清理；`build.json` 绑定 metadata artifact 原批准 snapshot、当前 source snapshot、plan/candidate/review/rubric 摘要和实际消费字段当前 version ID/SHA。消费前逐 field ID 比较当前来源字段身份和值摘要；无关来源字段改变不会使未变更标题 stale，变更/移除的选中字段停止构建。此字段级判断仅被 EPUB consumer 使用，M1/M2/M3 计划生成、审核和发布仍要求全计划 freshness；该入口也不连接 Notion/UI。
+
 该工具始终把产物标记为 `artifact_status: candidate`、`quality_gate_status: not_evaluated`、`coverage_scope: explicit_episode_selection`。它记录实际 Markdown 哈希、来源版本声明、Pandoc 版本、EPUB 哈希及字节数；构建前读取显式 source manifest，校验每个 `source_version_id` 的文件哈希、作品/episode artifact identity 和该 artifact 的最新 normalized 版本，并把 manifest 相对路径与 SHA-256 写入 sidecar。该校验不证明所选章节覆盖全书，也不代表翻译质量或分发批准。工具拒绝图片标记，因此不处理插图、字体、CSS 或依赖图片的排版；源 Markdown 不修改。内置检查限于 ZIP CRC、mimetype、container/OPF manifest/spine 和 XHTML XML 可解析性；不是完整 EPUBCheck，也不是阅读器验收。当前 `PATH` 未解析到 `epubcheck` 命令，未在 Calibre、Apple Books 或 Thorium Reader 测试。这个子项不关闭 I5。
 
 本机合成验证命令：`.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v`；静态检查：`.venv\Scripts\python.exe -m py_compile epub_builder.py scripts\build_epub_candidate.py tests\test_epub_builder.py`；CLI 帮助：`.venv\Scripts\python.exe scripts\build_epub_candidate.py --help`。catalog 的完整字段以 `tests/test_epub_builder.py` 合成 fixture 为准。
@@ -325,13 +342,13 @@ catalog 快照比较可本地执行，无站点请求：
 
 | 工作包 | 目标、工作与交付物 | 前置条件/依赖 | 验收标准 | 风险与缓解 |
 | --- | --- | --- | --- | --- |
-| I0 来源许可与产品边界 | 评估已指定作品的 Kakuyomu 普通读者场景；记录用户已确认的作品授权、平台规则观察和用户决定，并分开核定数据类别、保留删除及目标服务范围。 | 已提供作品与拟用目的；指定作品和 JOJO/JYQF 各自职责的最小类别已由用户确认；用户明确不要求官方澄清。用户决定不等同于平台背书或法律结论；其他 Provider/Notion 接收范围仍独立处理。 | 记录官方规则来源、访问日期、技术访问限制与用户决定；采集不访问 robots 禁止路径或绕过登录/访问控制。 | 平台规则会变化，保留适用范围与操作证据；不把网页可访问、robots 放行或书籍授权外推成公开分发许可。 |
+| I0 来源许可与产品边界 | 评估已指定作品的 Kakuyomu 普通读者场景；记录用户已确认的作品授权、平台规则观察和用户决定，并区分 Provider 授权、Notion 目标连接与运行时启用。 | 已提供作品与拟用目的；指定作品和 JOJO/JYQF 各自职责的最小类别已由用户确认；Notion 默认正式产物范围/方向已选择，但权限、OAuth 与首次启用未完成；用户明确不要求官方澄清。用户决定不等同于平台背书或法律结论。 | 记录官方规则来源、访问日期、技术访问限制与用户决定；采集不访问 robots 禁止路径或绕过登录/访问控制。 | 平台规则会变化，保留适用范围与操作证据；不把网页可访问、robots 放行或书籍授权外推成公开分发许可。 |
 | I1 本地数据模型与版本清单 | 定义作品/话/原始/规范化/翻译/知识/导出版本 ID、哈希、关系和状态；制定目录与清单 schema。已实现 ID、哈希、父版本关系、相对路径检查及显式根目录下文件字节哈希核验的合成原型；父版本 DAG 采用迭代校验，深链不依赖 Python 递归栈。未覆盖状态流转或业务集成。 | 基础版本图可用合成数据独立验证；用于真实数据前仍依赖 I0 数据类别/保留边界及 D-16；对应路线图阶段 1、2。 | 合成 fixture 覆盖重复 ID、缺失/循环父版本、深层无环链、schema、路径和文件哈希；后续补齐版本迁移、状态规则及从译文/知识/导出到输入的端到端追溯。 | 过早引入 DB/队列；先用本地文件和版本化清单验证规模需求。 |
 | I2 单平台只读采集试点 | `SourceAdapter` 分页/续传/归档核心、显式路径 `LocalFileAdapter` 与 `scripts/ingest_local_sources.py` 已实现；Kakuyomu adapter 从作品主页发现完整公开目录，并用普通 episode URL 取文。每话 HTML 精确响应字节作为独立 `raw_page_html` 版本保存，解析后的可见文本仍保存为 `raw_source`；HTML artifact 绑定话目元数据及对应正文版本。目录和正文请求均检查 robots，不登录、不跟随重定向、不访问 `/read`，请求间隔 1.5–3 秒、默认 2 秒。采集为跨时间滚动快照；纯追加只抓新增话，显式刷新要求目录匹配并重取全部话目。2026-11-17 全量刷新完成 88/88，正文哈希无变化，新增 HTML artifact 88 个；source manifest 356/356 校验通过。 | 用户已确认作品授权并要求从主页发现完整目录、使用普通页 URL；明确无需官方澄清。归档根为项目内 `SourceArchive`；外部 `生肉` 是人读清洗版、外部 `熟肉` 是译文根。旧基线 catalog v1 无章节分组，本次不能证明旧/新分组相同。采集不含草稿/私有话，也不证明主页声明外完整性、平台背书或公开分发许可。 | `tests.test_kakuyomu_page_source` 覆盖 synthetic 目录、robots/URL、限速、重定向/限流、大小、标题、续传和格式。当前采集 manifest 356/356、合并 edition manifest 532/532；默认 AI 计划 88/88、0 问题、无网络/Provider；详情见[当前验证](development.md#2026-11-17-原始-html-归档与默认-ai-计划复核)。 | 目录结构/count 变化即停止；不请求 `/read`，不登录或绕过访问控制；逐话 hash 记录正文/页面变化；不外推草稿/私有话或平台外完整性；保留限速和大小上限。 |
 | I3 原始归档与双版本清洗 | `部分实现`：采集器分别归档可见文本 `raw_source`、字节保真的 `normalized_source` 和原始页面响应 `raw_page_html`；HTML 与 episode metadata、同话正文版本绑定。新采集把规范化 charset 写入 episode metadata，并由父版本关系绑定到 HTML artifact；原始 HTML bytes 不转码。`scripts/validate_kakuyomu_html_archive.py` 先预检 HTML 总字节上限，再校验全部 manifest 文件哈希；重放每话最新 HTML 时验证唯一标题/正文、当前 raw lineage 与 parser v4 输出哈希，并按记录 charset 解码。旧 metadata 缺字段时兼容 UTF-8；这不证明历史响应头字符集。默认上限 1 GiB，摘要不含正文。AI/人读版从同一 `raw_source` 独立清洗，前者以 AI 识别效率优先并作为翻译默认输入，后者以人类阅读观感优先。 | I2 当前来源、I1 manifest；按版本保留归档；人读版 Markdown/Ruby/CSS 显示及段落完整性需人工验收。 | `tests.test_source_editions` 覆盖双 profile 与 lineage；`tests.test_kakuyomu_page_source` 覆盖 charset 解析；`tests.test_kakuyomu_html_archive` 覆盖新 charset replay、legacy UTF-8 fallback 与 lineage。2026-11-19 试点 validator 返回 88/88、356 个文件哈希有效、`verified`；详见[当前工作树验证](development.md#2026-11-19-当前工作树回归与来源边界修复)。 | 历史 HTML 仅哈希校验，回放只对最新版本执行；旧档案缺 charset 时只能采用 UTF-8 兼容假设，无法恢复原始响应头；完整响应与哈希一致不证明语义无损；未知标记和阅读器视觉效果待检查。 |
 | I4 翻译与知识库接入 | `部分实现`：`CHAPTER_MAP` 支持可选 `source_version_id` 并核验 manifest 中最新 normalized→raw lineage；Kakuyomu workflow 从主页发现的公开 episode ID/位置生成确定性译文路径、TM 键和章节映射。显式全书抽取会读取当前全部配置章节，依调用者提供的 tokenizer JSON、context/output/safety/message 预算按段落切分，最多 500 段/批、100 次串行调用；概要/术语审核器支持全书来源集，并保存逐批 hash/coverage 与概要结论段落指针。Kakuyomu 与通用 `pipeline.py --project` 正式入口均默认从 AI 清洗版生成翻译映射，并在创建翻译管线前要求 approved 全书概要覆盖当前 AI 章节文件名/来源版本；缺失或错配时停止。通用显式 JSON 配置仍由操作者提供，可使用兼容输入路径。TM、知识和概要审计可报告 `stale`/`invalid`；`scripts/snapshot_downstream_freshness.py` 可将 TM/知识以及已审核全书概要结果保存为绑定来源 manifest 和消费者输入哈希的只读 schema v2 快照。概要审计要求当前版本化章节映射并核对全书覆盖，只持久化哈希、状态和详情，不包含概要正文。Kakuyomu 完整编排会在计划生成后自动追加翻译前快照，成功翻译后追加翻译后快照；独立 `scripts/ingest_kakuyomu_pages.py --project <项目名>` 也会同步来源历史至 edition manifest，并记录 AI 索引和下游新鲜度状态。该独立采集模式不重跑双版本清洗；来源或 catalog 前进时记录旧 AI 索引/全书概要为 `stale`，完整编排随后生成新 AI 版本。相同快照状态幂等复用，状态变化追加新文件。通用版本化翻译入口也会阻断与当前 source version 不匹配或缺少已提交 TM 证明的既有目标，不覆盖旧译文。快照只留档，不写回消费者状态、不替代运行时新鲜度门禁或自动重建派生物。 | I2 公开目录发现、I3 来源标识与版本清单；现有翻译契约、D-01 知识审核责任和 D-02 Provider 授权；对应路线图阶段 1、2、3。 | `.venv\Scripts\python.exe -m unittest tests.test_downstream_freshness_snapshot tests.test_kakuyomu_workflow -q` 覆盖快照 schema、哈希绑定、幂等追加和完整编排调用边界；`.venv\Scripts\python.exe -m unittest tests.test_kakuyomu_page_source tests.test_source_editions -q` 覆盖独立采集项目快照与 edition manifest 合并；更广来源/AI 选源/审批/概要回归与 `tests\run_tests.py` mock E2E 另见[开发与验证](development.md#2026-11-17-独立-kakuyomu-采集的项目新鲜度留档)。真实 Provider tokenizer/context 参数及候选质量仍未验收；Kakuyomu 用户授权及普通主页/episode URL 路径已确认，无需官方澄清。 | tokenizer 文件/模型配置不匹配或 chat template 开销低估时，估算可能偏离端点行为；分批候选确定性拼接不等于跨章叙事综合；通用配置章节集不自动证明完整目录；快照不会修改人工译文/审核数据，但也不会替代消费者运行时校验或重建下游；本地审核回执未签名且不认证身份。 |
 | I5 EPUB 构建与验证 | `部分实现`：`epub_builder.py` / `scripts/build_epub_candidate.py` 提供显式有序 Markdown catalog 的离线候选构建；要求精确 Pandoc 版本，校验 source manifest 中逐话来源版本/身份/hash/新鲜度并记录 manifest hash，记录输入/输出哈希和参数；输出不可覆盖并做有限 ZIP/OPF/XHTML 结构检查。始终标记为 candidate，拒绝图片，未实现目录/字体/CSS 定制。 | 完整验收依赖 I3 格式结构、I4 译文版本/质量门禁、字体许可和目标阅读器设备；当前环境 Pandoc 3.9.0.2 可用但来源未核实，当前 PATH 未解析 EPUBCheck。对应路线图阶段 5 的本地交付子项。 | 合成 fixture 验证章节顺序、TOC/XHTML 存在、输入不变、来源版本对 manifest 绑定、manifest hash、精确版本、尺寸上限和不覆盖。完整验收还需 EPUBCheck、文本往返、特殊字符/排版及 Calibre、Apple Books、Thorium Reader 实测；candidate 标记不能作为完整性或质量批准。 | Pandoc 环境漂移、标题格式与图片缺失、阅读器渲染差异；固定 catalog 版本、限制为文本候选，并显式报告未覆盖验收。 |
-| I6 Notion 备份试点与扩展 | 只读核实目标位置和权限；先用合成内容验证单向备份，再设计并验证双向编辑、冲突处理及删除传播；仅对获准项目小批量同步，交付完整性报告与恢复演练。 | I1–I4 稳定 ID/版本；Notion API 官方文档复核；保留义务、Notion 接收范围与具体数据类别核实；对应路线图阶段 5。 | 分页、限流、重试、幂等、双方版本保留、逐次确认反向删除及失败恢复均有测试；凭据不进日志；云端 ID、版本、哈希和数量与本地可核对；隔离目录恢复演练通过。 | API 变更、冲突和外发风险；先合成数据、单向试点，双向策略经验证后扩展，不静默覆盖。 |
+| I6 Notion 备份与受控双向同步 | `计划`：默认关闭；显式启用后默认自动备份，支持手动模式。复用 `Light-Novel-Bookcase` 并在 `/BOOK/Novel/Light-Novel/` 建“轻小说索引”；正式完整产物按本节范围同步。实现 Notion→本地显式批准、先记远端快照、三方合并、非冲突自动合并及冲突暂停，再把合并本地版推回 Notion。 | I1–I4 稳定 ID/版本/hash；重新只读核实目标目录、现有库和 integration 权限；验证官方 MCP/OAuth 能力与 Windows 凭据存储；首次 live 内容同步必须由统一入口显示目标和完整备份范围并取得用户显式确认。用户已选择的数据范围是产品默认配置，不等于当前 OAuth、Notion 页面权限或本轮数据外发已完成。 | 合成测试覆盖授权/撤权、schema 兼容、upsert 幂等、分页/限流、断网部分成功续跑、双向差异预览、远端版本先本地留档、获批后导入、非重叠三方合并、重叠冲突暂停、同步回环抑制、删除逐项确认及隔离恢复。首次 live 试点仅在配置启用、浏览器授权成功、页面权限有效且 UI 展示并确认数据范围后进行；回读核验条目数、关联、版本/hash；恢复演练通过前不得称为可恢复备份。 | OAuth/MCP 能力、Notion API 限额和页面块格式可能变化；远端授权扩大外发范围。保留双方不可变版本，默认停止于不确定状态；重试仅限幂等请求，撤权/权限错误停止；任何双向导入都先取得本批次显式许可。 |
 
 2026-11-17 Kakuyomu 追加模式真实复查：作品主页发现/复用 88 话、追加 0、待处理 0；没有新增话，因此没有请求 episode 正文。此项验证真实无变化续跑路径，不验证新增话目的 live 抓取。索引刷新后默认 AI 版计划为 `ready_for_review`、88/88 来源有效、0 问题；详细命令和结果见[开发与验证](development.md#2026-11-17-kakuyomu-追加无变化复查与-ai-默认输入)。
 
@@ -348,7 +365,7 @@ catalog 快照比较可本地执行，无站点请求：
 - **I4 来源版本绑定与新鲜度审计子项**：`.\.venv\Scripts\python.exe -m unittest tests.test_source_pipeline_linkage tests.test_knowledge_provenance_audit tests.test_tm_provenance_unit -v` 验证 TM 与知识草稿 provenance 的显式版本关联、当前/过期/损坏/缺失版本状态，以及 CRLF 字节保真样本。`SOURCE_MANIFEST_PATH` 相对 `RAW_DIR`；比较依据是 manifest 中同一 `artifact_id` 的最新 `normalized_source`。Kakuyomu 工作流可从发现的完整公开目录生成确定性 `CHAPTER_MAP`；其他通用来源仍须操作者指定映射。`scripts/snapshot_downstream_freshness.py` 可手工创建只读快照；完整 Kakuyomu 编排会在计划生成后、成功翻译后分别自动追加绑定来源 manifest 和消费者输入哈希的快照，并对相同状态幂等复用。独立 `scripts/ingest_kakuyomu_pages.py --project <项目名>` 现在也会同步来源历史到 `source_editions_manifest.json`，追加 AI 索引和 TM/知识/概要状态快照；catalog 或来源前进时将旧 AI 索引标记 `stale`，但不自动清洗双版本或重建译文/知识。未传 `--project` 的 Kakuyomu 来源 CLI 与本地导入 CLI 仍按 source-only 行为运行。快照只保存哈希、状态和详情，不回写消费者数据，也不替代运行时门禁。`tests\run_tests.py` 不直接调用审计 CLI；审计状态由定向单测覆盖。I4 仍未自动重建过期派生物，也未覆盖人工章节验收。
 - **I4 知识抽取输入边界**：`scripts/auto_extract_knowledge.py` 按 `PROOFREAD_MODEL` 通过共享模型路由选择 Provider ID、URL 与 Key，在读章节前核验 `source_text` 授权，客户端创建时复检；显式 `--full-book` 与 `--chapter-position N` 均要求同一 Provider 获准接收 `book_knowledge` 候选。未知模型、缺少远端 Key 或未授权时不读取来源。默认兼容模式最多读取前三个所选章节，提示词截到 20,000 个 Unicode 字符。全书模式读取当前全部配置章节（最多 1000 章），单话模式仅选一个版本化 catalog 位置；两者都要求 verified AI bundle、字符上限及本地 tokenizer/context/output/safety/message 参数，段落按 token 预算分批并综合，原文抽取与综合共受最多 100 次串行 Provider 调用限制。provenance 包含章节/段落覆盖、tokenizer SHA-256、批次 token/hash 记录、候选 lineage 和结论级段落证据。单话概要复用现有审核器按候选哈希、当前来源和 bundle 身份人工批准；可选术语表按词审核。Kakuyomu 流水线在首个模型请求前预检全部待翻译非空章节，逐章复核并注入已批准单话概要/术语，来源或 bundle 失效、知识冲突时停止。该机制不证明配置章节映射等于主页目录，也不验证真实模型 tokenizer/template、审核者身份或候选语义。以上模式只生成待审知识草稿。合成测试及边界见[token-budgeted 全书知识预读](development.md#2026-11-17-token预算分批全书知识预读)、[跨批候选综合](development.md#2026-11-18-全书跨批候选综合)、[单话知识候选草稿（审核接入前检查点）](development.md#2026-11-18-单话知识候选草稿审核接入前检查点)和[单话审核知识接入翻译上下文](development.md#2026-11-18-单话审核知识接入翻译上下文)；历史实现见[全书知识预读](development.md#2026-11-16-全书知识预读输入模式)；路由验证见[Provider 路由对齐](development.md#2026-11-15-知识抽取-provider-路由对齐)。
 - **I5**：本地候选原型入口为 `.\.venv\Scripts\python.exe -m unittest tests.test_epub_builder -v`，使用本机 Pandoc `3.9.0.2` 合成构建；`build.json` 的 `epubcheck` 明确为 `not_run`。在目标环境重新运行 `Get-Command pandoc`、`pandoc --version` 并核对安装来源，再选定并运行 EPUBCheck；随后用获准译文验证格式与文本往返，在 Calibre、Apple Books、Thorium Reader 记录版本和验收结果。当前原文/译文目录没有章节文件，故没有真实译文构建、字体/CSS/图片或阅读器验收。
-- **I6**：先用 mock/合成 Notion API 响应测试分页、幂等、冲突、删除确认和恢复，并接入 `.\.venv\Scripts\python.exe tests\run_tests.py`；当前没有 Notion 集成或专项测试。任何 live Notion 验收均须先确认目标权限、接收范围和备份数据类别授权，不能由 mock 结果替代。
+- **I6**：先用 mock/合成 Notion MCP/API 响应测试分页、幂等、冲突、删除确认和恢复，并接入 `.\.venv\Scripts\python.exe tests\run_tests.py`；当前没有 Notion 集成或专项测试。用户已选择默认正式产物范围；live 验收前仍须由系统实际完成 OAuth、确认目标页面/integration 权限，并在交互界面显式启用该范围，不能由 mock 结果替代。
 
 ### 路线图阶段映射
 
@@ -363,12 +380,12 @@ catalog 快照比较可本地执行，无站点请求：
 
 ## 风险、依赖与阻塞规则
 
-- 用户已确认指定作品获得授权；该确认消除本计划中的作品权利阻塞。平台自动化访问规则仍独立适用；不得请求 `robots.txt` 禁止路径或换路径规避。JOJO/JYQF 职责所需的最小 Provider 类别已另行授权；其他 Provider/类别及 Notion 接收范围须分别遵守 D-02/D-14。
+- 用户已确认指定作品获得授权；该确认消除本计划中的作品权利阻塞。平台自动化访问规则仍独立适用；不得请求 `robots.txt` 禁止路径或换路径规避。JOJO/JYQF 职责所需的最小 Provider 类别已另行授权；Notion 默认同步范围和方向已由 D-14 选择，但首次 OAuth、目标权限和实际启用必须由产品流程完成，不能沿用 Provider 授权。
 - 2026-11-15 对实时接入方法复核：当时的 `robots.txt` 允许普通作品主页和 episode URL，但禁止对应的 `/read` 路径；当前 adapter 不请求 `/read`。普通 `<a>` 链接只有 7 个唯一 episode URL，而页面声明 `publicEpisodeCount=88`，故目录解析使用页面内嵌的 `__NEXT_DATA__.__APOLLO_STATE__.Work.tableOfContentsV2`。同日查阅的[カクヨム服务条款](https://kakuyomu.jp/legal/tos)页面标注 2025-08-06 更新，并包含关于分析站点/应用结构的限制。用户明确表示无需官方澄清；该判断作为平台风险记录，不作为本试点等待官方许可/解释的实施前置。继续遵守 robots 与不绕过限制的实现边界，不声称平台背书或法律结论。
 - Kakuyomu 官方 ZIP 仅供作者账号备份自作小说，需浏览器手动操作且无导入功能。该路线不适用于本试点的普通读者输入，不要求用户提供 ZIP；本试点按用户要求使用显式普通 episode URL。作者 ZIP 的一般功能说明不自动授予访问其他页面或扩大作品处理范围。
-- Notion 外发、模型 Provider 外发属于不同接收方和目的，分别授权；不因 `PROVIDER_DATA_POLICY` 已实现就推断 Notion 上传获批。
+- Notion 外发、模型 Provider 外发属于不同接收方和目的，分别授权；不因 `PROVIDER_DATA_POLICY` 已实现就推断 Notion 已连接。D-14 已确定 Notion 启用后的默认正式产物范围，仍须由系统在实际连接时展示并由用户启用该目标。
 - 同一本书的原始、清洗、翻译、知识和 EPUB 必须绑定源版本。更新原文时标记下游版本过期，不自动覆盖人工译文/审核结果。
-- 现有知识/TM 审核、Provider 授权与跨文件恢复策略仍受[决策记录](decisions/README.md)中的 D-01、D-02、D-11 约束。JOJO/JYQF 各自职责的最小数据类别已由用户确认，但运行时 allowlist 仍为空、真实端点未验证；其他 Provider/类别及 Notion 接收范围未确认前，只可用合成数据验证相应路径。
+- 现有知识/TM 审核、Provider 授权与跨文件恢复策略仍受[决策记录](decisions/README.md)中的 D-01、D-02、D-11 约束。JOJO/JYQF 各自职责的最小数据类别已由用户确认，但运行时 allowlist 仍为空、真实端点未验证；Notion 默认产品范围已由用户确认，当前无连接、权限或运行时授权证据，因此仍只可用合成数据验证 Notion 路径。
 - 开始实施时先检查当前 Git 状态并保留已有修改；只改动本工作包所需文件，不重置、清理、暂存或提交无关工作。
 - 外部文档链接、平台规则和 API 限制会变化；复查日期与观察范围应记录在案。本次已通过普通 Kakuyomu URL 完成 88/88 source-only 采集，生成 88 个单话 Markdown 和一份全书 export，manifest 267 个文件均验证通过。正文人工格式验收、真实 Provider 翻译、Notion API、EPUB 阅读器或部署均未完成。
 
@@ -376,10 +393,10 @@ catalog 快照比较可本地执行，无站点请求：
 
 以下事项按各自边界记录；只有标为`需要人类决策`或`需要人类验收`的项目才是相应实施范围的未决项：
 
-- `已确认（用户于 2026-11-15 再次明确确认）`：指定作品已获明确授权，后续按已授权处理，不再把作品权利列为阻塞。该确认不替代公开分发许可的另行确认或 Kakuyomu 自动化访问规则。JOJO/JYQF 的最小职责类别另有明确授权；其他 Provider、Notion 接收方和未覆盖类别仍分别核定。
+- `已确认（用户于 2026-11-15 再次明确确认）`：指定作品已获明确授权，后续按已授权处理，不再把作品权利列为阻塞。该确认不替代公开分发许可的另行确认或 Kakuyomu 自动化访问规则。JOJO/JYQF 的最小职责类别另有明确授权；Notion 的默认正式产物范围与同步行为已由用户另行选择，但目标页面权限和 OAuth 连接尚未验证。
 - `已确认（用户决定）`：用户明确表示不需要 Kakuyomu 官方澄清，按指定作品授权及普通公开 URL 路径继续本试点；该决定不是平台背书或法律结论，不把官方答复设置为本试点的实施前置。
-- `部分实现`：2026-11-15 source-only live 采集已从主页发现并归档 88/88 个声明的公开 episode，默认 2 秒间隔；checkpoint 为 complete。178 个 manifest artifact 文件校验通过，并生成 88 个单话 Markdown 和一份 793,357 字节有序全书 export。正文 parser v4 保留 ruby notation、旁点 notation 与全角空格，旁点输出用合成测试覆盖。实际正文/标点人工验收、真实 Provider 翻译、Provider allowlist/端点、Notion 接收范围和公开分发仍未完成。此流程不覆盖草稿/私有话，也不证明主页声明以外的完整性。
-- `计划`：先人工核验已保存的段落、ruby、标点和章节标题；再按已确认的主备渠道职责将实际数据类别显式配置到本地 allowlist，之后才运行真实翻译。Notion 备份类别仍需核定。
+- `部分实现`：2026-11-15 source-only live 采集已从主页发现并归档 88/88 个声明的公开 episode，默认 2 秒间隔；checkpoint 为 complete。178 个 manifest artifact 文件校验通过，并生成 88 个单话 Markdown 和一份 793,357 字节有序全书 export。正文 parser v4 保留 ruby notation、旁点 notation 与全角空格，旁点输出用合成测试覆盖。实际正文/标点人工验收、真实 Provider 翻译、Provider allowlist/端点、Notion OAuth/页面权限/首次启用和公开分发仍未完成。Notion 默认内容范围已有用户选择，但不代表实际数据已经外发或同步已实现。此流程不覆盖草稿/私有话，也不证明主页声明以外的完整性。
+- `计划`：先按计划完成来源与双版本的结构/语义验收，再按已确认的主备渠道职责配置实际 Provider allowlist，之后运行真实翻译。Notion 工作包按 D-14 的正式产物范围设计；实际同步仍依赖 OAuth、目标权限和用户在配置界面启用。
 - `需要人类验收`：EPUB 在三种目标阅读器上的版本与设备；未来向论坛交流前确认作品、译文和字体/图片的分发权利。
 
 ### I4 新鲜度门禁实施记录 2026-11-16
