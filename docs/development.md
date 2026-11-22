@@ -2,6 +2,15 @@
 
 本文件按阶段追加验证记录；较靠前的增量优先于其后较早日期的历史快照，旧记录中的“下一步”不自动代表当前未完成状态。
 
+## 2026-11-22 提交后验证与 PR 状态
+
+- `已验证` 当前分支 `codex/translation-workflow-audit-20261117` 的 HEAD 为 `18e83873d42e858360eb7ed18e1d18d84ce368e3`。`183c3fe` 提交 M0–M4 元数据翻译实现、测试和文档；`18e8387` 修正 Windows hosted runner 短路径与长路径的测试断言。两个提交均已推送至 PR #71。
+- `已验证` HEAD 工作树 `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation tests.test_epub_builder -q`：65 项通过；`.venv\Scripts\python.exe scripts\run_unit_tests.py`：856 项运行、5 项 Windows 能力跳过、0 失败（110.695 秒）。新增/相关 Python 源码 `compileall` 和 `git diff --check HEAD^ HEAD` 通过。
+- `已验证` GitHub Actions run `44970830144` 对 PR #71 的 Ubuntu/Windows Python 3.14 job 均通过。workflow 在两个 job 中执行依赖安装、`pip check`、完整单测和 loopback mock E2E；该结果不验证真实 Provider、翻译语义或部署。
+- `已验证` PR #71 当前为 `OPEN`、`MERGEABLE`，HEAD 与本记录一致；`reviewDecision` 为空且未合并。没有正式 review approval，因此没有自动合并。CodeRabbit 状态为 `SKIPPED`。
+- `已验证` 提交后工作树没有已跟踪改动。唯一未跟踪项 `downstream_freshness_ai_index_refreshed_2026-11-17.json` 是受保护的既有用户数据，本次未读取、暂存、修改或提交。
+- 本地 loopback mock E2E 的 7 项通过记录见下方元数据阶段最终验证；CI run `44970830144` 则覆盖当前 HEAD。
+
 ## 2026-11-22 K5 输入复核与当前阻塞
 
 - `已验证` 当前工作树只读复核了试点来源：`.venv\Scripts\python.exe scripts\validate_source_manifest.py --root projects\祝福のネトラレラ\SourceArchive --manifest source_manifest.json` 为 356/356 文件通过；同命令将 manifest 换为 `source_editions_manifest.json` 后为 532/532 文件通过。

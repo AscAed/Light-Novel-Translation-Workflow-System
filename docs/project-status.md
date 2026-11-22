@@ -20,6 +20,12 @@
 - `部分实现` M4 增加 metadata-aware EPUB 入口：只消费 approved work/episode titles，先验证 M3 artifact 的原批准 lineage，再逐字段重验当前来源；只要本次使用的 source text/hash 不变，无关字段或 manifest 变化不会误使该译名 stale。变更/移除的选中字段拒绝构建。临时 EPUB catalog 不覆盖原文件，`build.json` 同时绑定批准 snapshot、当前 source snapshot 和所用字段 version/hash；要求 work ID、target locale 匹配，作者/identifier 等结构字段保持输入值。字段级 freshness 目前仅供 EPUB consumer 使用；M1/M2/M3 生成与写入仍要求全计划来源 freshness。验证见[开发记录](development.md#2026-11-22-元数据翻译-m4-freshness-与-epub-消费)。未接入 Notion/UI，也未使用真实试点 artifact/译文构建。
 - `未验证` 本轮未运行真实 103 字段 Provider 生成；metadata 专属长期 role 映射、当前 route/allowlist/凭据、试点适配 tokenizer/context/template 和实际费用仍待配置所有者核验。根 `.env` 存在但未读取；本轮所查 Process/User/Machine 变量均未设置，API pool profile 与 Credential Manager 未检查，因此不能推断当前 route。未调用外部服务、未读或改试点 candidate/review/Metadata 内容。前记/后记/作者的话没有独立来源字段，未纳入 103 项。Notion/UI 消费与真实语义质量验收仍未完成。
 
+## 2026-11-22 提交与 PR 状态
+
+- `已验证` 当前 HEAD `18e83873d42e858360eb7ed18e1d18d84ce368e3` 已推送到 `codex/translation-workflow-audit-20261117` 与 PR #71；提交及本地/hosted 验证见[开发与验证](development.md#2026-11-22-提交后验证与-pr-状态)。
+- `已验证` PR #71 为 `OPEN` 且 `MERGEABLE`，Ubuntu/Windows Python 3.14 hosted jobs 通过；没有正式 review approval，因此未合并。
+- 唯一未跟踪文件是受保护的 `downstream_freshness_ai_index_refreshed_2026-11-17.json`，保持未读、未改、未暂存和未提交。
+
 ## 2026-11-21 当前工作树综合自检
 
 - `已验证` 起始 HEAD 为 `b0a4f3d24fc5809e133a824ff81d03d7ea773a82`。该工作树的完整非 E2E 回归为 816 项运行、5 项因 Windows 能力跳过、0 失败；loopback mock E2E 为 7 项通过。依赖、静态检查及扫描范围见[当前工作树综合自检](development.md#2026-11-21-当前工作树综合自检)。
