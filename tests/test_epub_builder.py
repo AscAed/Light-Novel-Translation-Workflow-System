@@ -267,6 +267,7 @@ class EpubCandidateTests(unittest.TestCase):
         self,
         max_output_bytes=4 * 1024 * 1024,
         metadata_translation_provenance=None,
+        chapter_source_titles=None,
     ):
         return build_epub_candidate(
             input_root=self.input_root,
@@ -279,6 +280,7 @@ class EpubCandidateTests(unittest.TestCase):
             max_output_bytes=max_output_bytes,
             pandoc_executable=self.pandoc,
             metadata_translation_provenance=metadata_translation_provenance,
+            chapter_source_titles=chapter_source_titles,
         )
 
     def test_builds_candidate_with_source_hashes_and_preserves_markdown(self):
@@ -339,6 +341,100 @@ class EpubCandidateTests(unittest.TestCase):
             sorted(path.name for path in output_dir.iterdir()),
             ["build.json", "candidate.epub"],
         )
+
+    def test_approved_chapter_title_is_staged_without_changing_source_markdown(self):
+        chapter_path = self.input_root / "chapter-1.md"
+        original_bytes = chapter_path.read_bytes()
+        self.catalog["chapters"][0]["title"] = "第一话"
+        self._write_catalog()
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "3" * 64,
+                }
+            },
+        }
+
+        self._build(
+            metadata_translation_provenance=provenance,
+            chapter_source_titles={
+                "episode-1": "Chapter One",
+                "episode-2": "Chapter Two",
+            },
+        )
+
+        output_dir = self.output_root / "synthetic-work" / "edition-001"
+        build_manifest = json.loads(
+            (output_dir / "build.json").read_text(encoding="utf-8")
+        )
+        chapter = build_manifest["chapters"][0]
+        translated_bytes = b"# \xe7\xac\xac\xe4\xb8\x80\xe8\xaf\x9d\n\nSynthetic translation one.\n"
+        self.assertEqual(chapter["title"], "第一话")
+        self.assertEqual(chapter["source_title"], "Chapter One")
+        self.assertEqual(
+            chapter["content_sha256"],
+            hashlib.sha256(original_bytes).hexdigest(),
+        )
+        self.assertEqual(
+            chapter["pandoc_content_sha256"],
+            hashlib.sha256(translated_bytes).hexdigest(),
+        )
+        self.assertEqual(chapter_path.read_bytes(), original_bytes)
+        with zipfile.ZipFile(output_dir / "candidate.epub") as archive:
+            xhtml = "\n".join(
+                archive.read(name).decode("utf-8", errors="ignore")
+                for name in archive.namelist()
+                if name.endswith(".xhtml")
+            )
+        self.assertIn("第一话", xhtml)
+        self.assertNotIn("Chapter One", xhtml)
+
+    def test_chapter_source_title_must_match_the_original_h1(self):
+        self.catalog["chapters"][0]["title"] = "第一话"
+        self._write_catalog()
+        provenance = {
+            "artifact_sha256": "a" * 64,
+            "plan_sha256": "b" * 64,
+            "candidate_sha256": "c" * 64,
+            "review_sha256": "d" * 64,
+            "quality_rules_sha256": "e" * 64,
+            "artifact_source_snapshot": {
+                "catalog_sha256": "f" * 64,
+                "manifest_sha256": "0" * 64,
+            },
+            "current_source_snapshot": {
+                "catalog_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+            },
+            "field_lineage": {
+                "episode.episode-1.title": {
+                    "source_version_id": "episode-v1",
+                    "source_sha256": "3" * 64,
+                }
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "catalog-matched H1 title"):
+            self._build(
+                metadata_translation_provenance=provenance,
+                chapter_source_titles={
+                    "episode-1": "Wrong original title",
+                    "episode-2": "Chapter Two",
+                },
+            )
 
     def test_build_manifest_binds_approved_metadata_translation_provenance(self):
         provenance = {

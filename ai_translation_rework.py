@@ -469,7 +469,7 @@ async def _generate_translation_rework_candidate_locked(
             raise RuntimeError(
                 "Load project configuration before starting AI rework."
             )
-        validate_translation_rework_provider_configuration()
+        validate_translation_rework_provider_configuration(rework_model)
     model = rework_model or Config.PROOFREAD_MODEL
     if not isinstance(model, str) or not model.strip():
         raise RuntimeError("PROOFREAD_MODEL is not configured for AI rework.")
@@ -573,6 +573,7 @@ async def _generate_translation_rework_candidate_locked(
                 temperature=0.1,
                 top_p=0.7,
                 data_categories=("source_text", "translation_text"),
+                allow_fallback=False,
             )
 
             async def generator(prompt_text, _revision):

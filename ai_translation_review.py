@@ -886,7 +886,7 @@ async def _review_translation_candidate_locked(
             raise RuntimeError(
                 "Load project configuration before starting an AI review."
             )
-        validate_final_review_provider_configuration()
+        validate_final_review_provider_configuration(model)
     route_sha256 = _provider_fingerprint(model)
     context = _load_review_context(
         run_directory,
@@ -915,6 +915,7 @@ async def _review_translation_candidate_locked(
                 temperature=0.0,
                 top_p=0.1,
                 data_categories=list(FULL_TRANSLATION_CATEGORIES),
+                allow_fallback=False,
             )
 
             async def assessor(prompt, _assessment_number):

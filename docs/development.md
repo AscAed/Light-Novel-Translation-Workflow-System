@@ -28,8 +28,8 @@
 
 - `部分实现` `verify_metadata_translation_plan_freshness(..., allow_field_drift=True)` 仍从当前 verified catalog/manifest 完整构造字段清单，但逐 field ID 返回 `current`、`stale`、`source_removed` 或 `unplanned`，并对当前字段输出不含原值的 source version ID 与 source SHA。默认 `allow_field_drift=False` 维持 M1/M2/M3 全计划严格门禁；只有 metadata-aware consumer 可逐字段判断。
 - 新增 `metadata_translation_epub.py` 与 `scripts/build_epub_candidate_with_metadata.py`。入口读取项目 `Workflow/Plans/` 下的 plan/candidate/review 和 `Metadata/` 下的 approved artifact，先按 artifact 原批准 snapshot 重验其内部 plan/candidate/review/rubric lineage，再重验当前每个源字段。
-- 构建时只将当前 `work.title` 和本次 EPUB catalog 所选 episode 的已批准标题写入临时 catalog 副本；要求 EPUB catalog 的 `work_id` 与 artifact 一致、`language` 等于 artifact 目标 locale，且每个选中字段状态为 `current`、source SHA 与已批准值一致。无关字段变化不会使所选字段失效；变更/移除的所选源字段会在 Pandoc 启动前阻断。作者、identifier 等结构值和原 catalog/Markdown 均保持原字节不变；临时 catalog 在构建结束后清理。
-- EPUB `build.json` 新增 `metadata_translation` lineage，绑定 artifact、plan、candidate、review、rubric、artifact 批准 snapshot、当前 source snapshot，以及每个实际消费字段的当前 version ID/SHA。普通 `scripts/build_epub_candidate.py` 不变；metadata-aware 新入口命令格式如下：
+- 构建时只将当前 `work.title` 和本次 EPUB catalog 所选 episode 的已批准标题写入临时 catalog 副本；要求 EPUB catalog 的 `work_id` 与 artifact 一致、`language` 等于 artifact 目标 locale，且每个选中字段状态为 `current`、source SHA 与已批准值一致。无关字段变化不会使所选字段失效；变更/移除的所选源字段会在 Pandoc 启动前阻断。对每话，builder 先校验原译文 Markdown 的 H1 等于来源标题，再只在传给 Pandoc 的临时章节快照中替换为已批准译名。作者、identifier 等结构值、原 catalog 和原 Markdown 均保持原字节不变；临时输入在构建结束后清理。
+- EPUB `build.json` 新增 `metadata_translation` lineage，绑定 artifact、plan、candidate、review、rubric、artifact 批准 snapshot、当前 source snapshot，以及每个实际消费字段的当前 version ID/SHA。章节记录中的 `content_sha256`/`content_bytes` 描述原始译文 Markdown；`pandoc_content_sha256`/`pandoc_content_bytes` 描述含译名 H1 的 Pandoc 输入快照。普通 `scripts/build_epub_candidate.py` 不变；metadata-aware 新入口命令格式如下：
 
   ```powershell
   .venv\Scripts\python.exe scripts\build_epub_candidate_with_metadata.py `
@@ -45,6 +45,14 @@
 
 - `已验证` `.venv\Scripts\python.exe -m unittest tests.test_metadata_translation tests.test_epub_builder -q`：65 项通过。覆盖单字段变更只标 stale、其他字段保持 current、snapshot 变化但消费字段不变时允许构建、选中字段 stale 时不调用 builder、approved title overlay、locale/work ID、临时 catalog 清理/不改原 catalog，以及 Pandoc 构建 sidecar per-field lineage 和畸形 provenance 拒绝。`test_epub_candidate_integration_revalidates_and_uses_temporary_catalog` 通过 `publish_metadata_translation_artifact` 的 create-only 入口生成批准 artifact，再交给 EPUB consumer 读取，验证 M3 到 M4 的本地集成链；输入和 source freshness 均为合成夹具。具体 `py_compile`、CLI `--help`、全量回归及 Markdown 链接结果以本节最终验证补记为准。
 - 局限：字段级比较目前只服务于 EPUB metadata consumer；M1/M2/M3 生成、审核和正式 artifact 写入仍要求完整计划 freshness，来源变化后需要用新计划/候选/审核重新批准。没有通用下游 freshness registry，也未连接 Notion/UI。结构性作者字段没有现成已批准译名，因此保持 catalog 提供值。测试使用合成 metadata；没有真实 EPUB metadata artifact、试点译文、EPUBCheck 或阅读器验收。
+
+## 2026-11-22 审核路由、章节知识与 EPUB 标题复核
+
+- `已实现` AI 终审和返工入口将本次实际指定的模型 ID 交给路由 preflight；显式返工 override 只验证实际选中的 route、`source_text`/`translation_text` 授权和凭据，不被无关的默认 `PROOFREAD_MODEL` 配置阻断。审校/返工 `UnifiedAgent` 禁止 provider fallback，避免调用失败后实际 endpoint/model 与审核回执绑定的路由指纹不一致。普通翻译 agent 的既有 fallback 行为不变。
+- `已实现` 翻译运行加载当前章节 glossary 时，使用显式 chapter-local coverage 模式解析 reviewed bundle；该模式要求 `selected_chapter` 覆盖、配置/纳入章节数均为 1 且仅有一个来源文件，并继续校验 provenance、当前来源版本及 book bundle 身份。常规 RAG 的全书覆盖要求不变。
+- `已实现` metadata-aware EPUB 将批准 episode title 同步应用到 Pandoc 临时章节 H1。输入 H1 仍须与当前来源标题一致；sidecar 分别记录原始 Markdown 和 Pandoc 实际输入快照的字节数与 SHA-256。
+- `已验证` 定向测试：provider routing、chapter knowledge loader 与 reviewed glossary 53 项通过；EPUB builder 和 metadata translation 67 项通过。完整单测 `.venv\Scripts\python.exe scripts\run_unit_tests.py` 为 862 项运行、5 项 Windows 能力跳过、0 失败；loopback mock E2E `.venv\Scripts\python.exe tests\run_tests.py` 为 7 项通过、退出码 0。`.venv\Scripts\python.exe -m pip check`、相关源码 `py_compile`、活动 Markdown（排除历史 `.agents/`）31 份的本地文件链接目标检查与 `git diff --check` 均通过。以上测试不调用真实 Provider，也不使用真实试点批准 artifact 或译文。
+- `未验证` 真实 reviewer/rework route、数据授权及凭据状态未读取或调用；真实试点译名、EPUB 输出和阅读器兼容性未验收。K5 与 M1–M4 的真实运行门槛仍按[项目现状](project-status.md)所列条件执行。
 
 ## 2026-11-22 元数据翻译阶段最终验证
 

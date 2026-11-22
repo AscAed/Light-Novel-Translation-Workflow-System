@@ -1310,9 +1310,11 @@ def _provider_routes_are_independent(
     )
 
 
-def validate_final_review_provider_configuration() -> None:
+def validate_final_review_provider_configuration(
+    model_name: str | None = None,
+) -> None:
     """Validate the optional final-review route without starting a review call."""
-    model = Config.FINAL_REVIEW_MODEL
+    model = model_name or Config.FINAL_REVIEW_MODEL
     if not isinstance(model, str) or not model.strip():
         raise RuntimeError("FINAL_REVIEW_MODEL is not configured.")
 
@@ -1341,61 +1343,27 @@ def validate_final_review_provider_configuration() -> None:
     if not reviewer_is_local:
         required_keys.add(reviewer.api_key_env)
 
-    from api_pool import FALLBACK_ENV
-
-    pool_fallback = (
-        os.environ.get(FALLBACK_ENV, "") if model.startswith("pool:") else ""
-    )
-    if pool_fallback:
-        if not pool_fallback.startswith("pool:") or pool_fallback == model:
-            raise ValueError("API pool fallback must be a different configured pool slot.")
-        fallback = get_primary_provider_route(pool_fallback)
-        fallback_url = validate_provider_base_url(get_base_url(fallback.base_url))
-        fallback_is_local = _is_loopback_url(fallback_url)
-        require_provider_data_authorized(
-            fallback.provider_id,
-            FULL_TRANSLATION_CATEGORIES,
-            Config.PROVIDER_DATA_POLICY,
-            endpoint_is_local=fallback_is_local,
-        )
-        if not fallback_is_local:
-            required_keys.add(fallback.api_key_env)
-    elif reviewer.provider_id == "jojo" and Config.JYQF_FALLBACK_ENABLED:
-        fallback = get_primary_provider_route("deepseek-v4.1-flash")
-        fallback_url = validate_provider_base_url(get_base_url(fallback.base_url))
-        fallback_is_local = _is_loopback_url(fallback_url)
-        require_provider_data_authorized(
-            fallback.provider_id,
-            FULL_TRANSLATION_CATEGORIES,
-            Config.PROVIDER_DATA_POLICY,
-            endpoint_is_local=fallback_is_local,
-        )
-        if not fallback_is_local:
-            required_keys.add(fallback.api_key_env)
-    elif Config.GEMINI_FALLBACK_ENABLED:
-        require_provider_data_authorized(
-            "gemini",
-            FULL_TRANSLATION_CATEGORIES,
-            Config.PROVIDER_DATA_POLICY,
-        )
-        required_keys.add("GEMINI_API_KEY")
-
     missing = sorted(name for name in required_keys if not get_api_key(name))
-    if os.environ.get("MOCK_SERVER_PORT"):
-        missing = [name for name in missing if name != "GEMINI_API_KEY"]
     if missing:
         raise RuntimeError(
             f"Missing required provider credentials: {', '.join(missing)}"
         )
 
 
-def validate_translation_rework_provider_configuration() -> None:
+def validate_translation_rework_provider_configuration(
+    model_name: str | None = None,
+) -> None:
     """Validate the proofreading route used to generate bounded rework."""
     if not isinstance(Config.FINAL_REVIEW_MODEL, str) or not Config.FINAL_REVIEW_MODEL.strip():
         raise RuntimeError("FINAL_REVIEW_MODEL is not configured.")
-    validate_provider_configuration()
-    _, _, rework_identity = _resolve_provider_route_identity(
-        Config.PROOFREAD_MODEL
+    explicit_model = model_name is not None
+    if not explicit_model:
+        validate_provider_configuration()
+    model = model_name or Config.PROOFREAD_MODEL
+    if not isinstance(model, str) or not model.strip():
+        raise RuntimeError("PROOFREAD_MODEL is not configured for AI rework.")
+    rework_route, rework_url, rework_identity = (
+        _resolve_provider_route_identity(model)
     )
     _, _, reviewer_identity = _resolve_provider_route_identity(
         Config.FINAL_REVIEW_MODEL
@@ -1408,6 +1376,18 @@ def validate_translation_rework_provider_configuration() -> None:
             "Translation rework must use a different endpoint and model "
             "from the final reviewer."
         )
+    if explicit_model:
+        endpoint_is_local = _is_loopback_url(rework_url)
+        require_provider_data_authorized(
+            rework_route.provider_id,
+            ("source_text", "translation_text"),
+            Config.PROVIDER_DATA_POLICY,
+            endpoint_is_local=endpoint_is_local,
+        )
+        if not endpoint_is_local and not get_api_key(rework_route.api_key_env):
+            raise RuntimeError(
+                f"Missing required provider credential: {rework_route.api_key_env}"
+            )
 
 
 def validate_provider_base_url(base_url: str) -> str:
@@ -1493,7 +1473,10 @@ class UnifiedAgent:
                  cached_content: Optional[str] = None,
                  agent_dir: Optional[str] = None,
                  include_dirs: Optional[List[str]] = None,
-                 data_categories: Optional[List[str]] = None):
+                 data_categories: Optional[List[str]] = None,
+                 allow_fallback: bool = True):
+        if not isinstance(allow_fallback, bool):
+            raise ValueError("allow_fallback must be a boolean.")
         self.model_name = model_name
         self.system_instruction = system_instruction
         self.response_schema = response_schema
@@ -1501,6 +1484,7 @@ class UnifiedAgent:
         self.temperature = temperature
         self.top_p = top_p
         self.data_categories = data_categories
+        self.allow_fallback = allow_fallback
 
     async def _call_primary(
         self,
@@ -1644,6 +1628,8 @@ class UnifiedAgent:
             if isinstance(primary_error, ContentBlockedError) or not _is_retryable_provider_error(
                 primary_error
             ):
+                raise
+            if not self.allow_fallback:
                 raise
             primary_route = get_primary_provider_route(self.model_name)
             from api_pool import FALLBACK_ENV
@@ -2236,7 +2222,8 @@ class TranslationPipeline:
             if not isinstance(glossary_bundle, dict):
                 raise ValueError("Chapter-local glossary bundle must be an object.")
             chapter_terms = self.rag._parse_reviewed_glossary_bundle(
-                glossary_bundle
+                glossary_bundle,
+                allow_chapter_local_coverage=True,
             )
             review = glossary_bundle.get("review")
             source_files = (

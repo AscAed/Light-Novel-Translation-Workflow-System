@@ -1505,6 +1505,9 @@ class MetadataTranslationTests(unittest.TestCase):
                 captured["provenance"] = kwargs[
                     "metadata_translation_provenance"
                 ]
+                captured["chapter_source_titles"] = kwargs[
+                    "chapter_source_titles"
+                ]
                 captured["temporary_catalog"] = (
                     Path(kwargs["input_root"]) / kwargs["catalog_relative_path"]
                 )
@@ -1562,6 +1565,10 @@ class MetadataTranslationTests(unittest.TestCase):
                     for item in artifact["fields"]
                     if item["field_id"] == "episode.episode-1.title"
                 ),
+            )
+            self.assertEqual(
+                captured["chapter_source_titles"],
+                {"episode-1": "Original episode title"},
             )
             self.assertEqual(
                 (input_root / "catalog.json").read_bytes(),

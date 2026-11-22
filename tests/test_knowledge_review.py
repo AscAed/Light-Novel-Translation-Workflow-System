@@ -2,6 +2,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -435,6 +436,7 @@ class KnowledgeReviewTests(unittest.TestCase):
             engine.get_cleaned_glossary("alpha"),
             [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
         )
+
         self.assertEqual(engine.get_cleaned_glossary("not-found"), [])
 
     def test_ai_edition_glossary_binds_current_full_book_bundle(self):
@@ -538,6 +540,54 @@ class KnowledgeReviewTests(unittest.TestCase):
             engine.get_cleaned_glossary("alpha"),
             [{"src": "alpha", "dst": "阿尔法", "info": "阿尔法"}],
         )
+
+        chapter_bundle = deepcopy(reviewed)
+        chapter_bundle["review"]["input_coverage"] = {
+            "scope": "selected_chapter",
+            "complete_for_configured_chapters": False,
+            "configured_chapter_count": 1,
+            "included_chapter_count": 1,
+            "input_characters": len(ai_text),
+            "input_character_limit": len(ai_text),
+        }
+        self.assertEqual(
+            engine._parse_reviewed_glossary_bundle(
+                chapter_bundle,
+                allow_chapter_local_coverage=True,
+            ),
+            {"alpha": "阿尔法"},
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "current AI chapter map",
+        ):
+            engine._parse_reviewed_glossary_bundle(chapter_bundle)
+
+        bad_chapter_coverage = deepcopy(chapter_bundle)
+        bad_chapter_coverage["review"]["input_coverage"][
+            "included_chapter_count"
+        ] = 2
+        with self.assertRaisesRegex(
+            ValueError,
+            "selected-chapter coverage",
+        ):
+            engine._parse_reviewed_glossary_bundle(
+                bad_chapter_coverage,
+                allow_chapter_local_coverage=True,
+            )
+
+        bad_chapter_source = deepcopy(chapter_bundle)
+        bad_chapter_source["review"]["source_files"][0][
+            "source_version_id"
+        ] = "obsolete-source-version"
+        with self.assertRaisesRegex(
+            ValueError,
+            "source versions are not current",
+        ):
+            engine._parse_reviewed_glossary_bundle(
+                bad_chapter_source,
+                allow_chapter_local_coverage=True,
+            )
 
         without_map_engine = RAGEngine(
             str(self.root / "translation_memory.json"),

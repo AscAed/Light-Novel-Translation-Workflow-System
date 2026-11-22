@@ -115,6 +115,10 @@ def build_epub_candidate_with_metadata(
             pandoc_executable=pandoc_executable,
             timeout_seconds=timeout_seconds,
             metadata_translation_provenance=provenance,
+            chapter_source_titles={
+                chapter["episode_id"]: chapter["title"]
+                for chapter in epub_catalog["chapters"]
+            },
         )
     result["metadata_translation_artifact_sha256"] = provenance["artifact_sha256"]
     return result

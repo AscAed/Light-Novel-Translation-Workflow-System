@@ -280,7 +280,14 @@ class RAGEngine:
                 pos = start + 1
         return merged
 
-    def _parse_reviewed_glossary_bundle(self, bundle: dict) -> dict:
+    def _parse_reviewed_glossary_bundle(
+        self,
+        bundle: dict,
+        *,
+        allow_chapter_local_coverage: bool = False,
+    ) -> dict:
+        if not isinstance(allow_chapter_local_coverage, bool):
+            raise ValueError("allow_chapter_local_coverage must be a boolean.")
         if (
             bundle.get("_knowledge_review_schema") != 1
             or isinstance(bundle.get("_knowledge_review_schema"), bool)
@@ -387,7 +394,34 @@ class RAGEngine:
             isinstance(coverage, dict)
             and coverage.get("scope") == "all_configured_chapters"
         )
-        if self.require_full_book_coverage or full_book_coverage:
+        chapter_local_coverage = (
+            isinstance(coverage, dict)
+            and coverage.get("scope") == "selected_chapter"
+        )
+        if allow_chapter_local_coverage:
+            configured_count = (
+                coverage.get("configured_chapter_count")
+                if isinstance(coverage, dict)
+                else None
+            )
+            included_count = (
+                coverage.get("included_chapter_count")
+                if isinstance(coverage, dict)
+                else None
+            )
+            if (
+                not chapter_local_coverage
+                or coverage.get("complete_for_configured_chapters") is not False
+                or isinstance(configured_count, bool)
+                or configured_count != 1
+                or isinstance(included_count, bool)
+                or included_count != 1
+                or len(source_files) != 1
+            ):
+                raise ValueError(
+                    "Reviewed glossary lacks valid selected-chapter coverage."
+                )
+        elif self.require_full_book_coverage or full_book_coverage:
             configured_count = (
                 coverage.get("configured_chapter_count")
                 if isinstance(coverage, dict)
@@ -461,7 +495,11 @@ class RAGEngine:
                 or not isinstance(book_bundle.get("episode_count"), int)
                 or (
                     book_bundle["episode_count"] != len(source_files)
-                    if self.require_full_book_coverage or full_book_coverage
+                    if (
+                        self.require_full_book_coverage
+                        and not allow_chapter_local_coverage
+                    )
+                    or full_book_coverage
                     else book_bundle["episode_count"] < len(source_files)
                 )
             ):

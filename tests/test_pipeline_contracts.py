@@ -149,6 +149,159 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
                     ):
                         validate_final_review_provider_configuration()
 
+    def test_final_review_model_override_is_checked_against_translator(self):
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "reviewer-override",
+        )
+        translator_identity = (
+            "https",
+            "translator.example",
+            443,
+            "/v1",
+            "translator",
+        )
+        reviewer_route = SimpleNamespace(
+            provider_id="reviewer",
+            api_key_env="REVIEWER_API_KEY",
+        )
+        translator_route = SimpleNamespace(
+            provider_id="translator",
+            api_key_env="TRANSLATOR_API_KEY",
+        )
+        with (
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (reviewer_route, "http://127.0.0.1:6006/v1", reviewer_identity),
+                    (
+                        translator_route,
+                        "http://127.0.0.1:6006/v1",
+                        translator_identity,
+                    ),
+                ],
+            ) as resolve_route,
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "INITIAL_MODEL", "pool:translator"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            validate_final_review_provider_configuration("pool:reviewer-override")
+
+        self.assertEqual(
+            [call.args[0] for call in resolve_route.call_args_list],
+            ["pool:reviewer-override", "pool:translator"],
+        )
+        authorize.assert_called_once()
+
+    def test_translation_rework_model_override_is_checked_against_reviewer(self):
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "shared-model",
+        )
+        rework_route = SimpleNamespace(
+            provider_id="reworker",
+            api_key_env="REWORKER_API_KEY",
+        )
+        with (
+            patch("pipeline.validate_provider_configuration"),
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (
+                        rework_route,
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                    (
+                        SimpleNamespace(provider_id="reviewer"),
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                ],
+            ),
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "PROOFREAD_MODEL", "pool:default-rework"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "different endpoint and model",
+            ):
+                validate_translation_rework_provider_configuration(
+                    "pool:rework-override"
+                )
+
+        authorize.assert_not_called()
+
+    def test_translation_rework_model_override_validates_only_the_selected_route(self):
+        rework_identity = (
+            "https",
+            "reworker.example",
+            443,
+            "/v1",
+            "rework-override",
+        )
+        reviewer_identity = (
+            "https",
+            "reviewer.example",
+            443,
+            "/v1",
+            "reviewer",
+        )
+        rework_route = SimpleNamespace(
+            provider_id="reworker",
+            api_key_env="REWORKER_API_KEY",
+        )
+        with (
+            patch(
+                "pipeline.validate_provider_configuration",
+                side_effect=AssertionError("default route should not be checked"),
+            ),
+            patch(
+                "pipeline._resolve_provider_route_identity",
+                side_effect=[
+                    (
+                        rework_route,
+                        "http://127.0.0.1:6006/v1",
+                        rework_identity,
+                    ),
+                    (
+                        SimpleNamespace(provider_id="reviewer"),
+                        "http://127.0.0.1:6006/v1",
+                        reviewer_identity,
+                    ),
+                ],
+            ) as resolve_route,
+            patch("pipeline._is_loopback_url", return_value=True),
+            patch("pipeline.require_provider_data_authorized") as authorize,
+            patch.object(Config, "PROOFREAD_MODEL", "pool:stale-default"),
+            patch.object(Config, "FINAL_REVIEW_MODEL", "pool:reviewer"),
+            patch.object(Config, "PROVIDER_DATA_POLICY", {}),
+        ):
+            validate_translation_rework_provider_configuration(
+                "pool:rework-override"
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in resolve_route.call_args_list],
+            ["pool:rework-override", "pool:reviewer"],
+        )
+        authorize.assert_called_once_with(
+            "reworker",
+            ("source_text", "translation_text"),
+            {},
+            endpoint_is_local=True,
+        )
+
     async def test_local_http_base_url_is_allowed(self):
         with patch.object(Config, "API_TIMEOUT", 2.0):
             with patch("pipeline.AsyncOpenAI") as client_factory:
@@ -639,6 +792,24 @@ class TestProviderRouting(unittest.IsolatedAsyncioTestCase):
         with patch.object(Config, "GEMINI_FALLBACK_ENABLED", False):
             with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
                 await agent.call("source text")
+        agent._call_gemini.assert_not_awaited()
+
+    @patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}, clear=True)
+    async def test_agent_can_disable_all_provider_fallbacks(self):
+        error = make_api_status_error(503)
+        agent = UnifiedAgent(
+            "deepseek-test",
+            "instruction",
+            allow_fallback=False,
+        )
+        agent._call_primary = AsyncMock(side_effect=error)
+        agent._call_gemini = AsyncMock(return_value="fallback")
+
+        with patch.object(Config, "GEMINI_FALLBACK_ENABLED", True):
+            with self.assertRaises(APIStatusError) as raised:
+                await agent.call("source text")
+
+        self.assertIs(raised.exception, error)
         agent._call_gemini.assert_not_awaited()
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2912,6 +3083,23 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
             )
             (draft_root / current_bundle_dir).mkdir(parents=True)
             (draft_root / f"episode-0002-episode-2-{source_version_key}").mkdir()
+            chapter_glossary = {
+                "review": {
+                    "source_files": [
+                        {
+                            "filename": "editions/ai/episode-2.md",
+                            "source_version_id": source_version_id,
+                        }
+                    ]
+                }
+            }
+            glossary_path = (
+                draft_root / current_bundle_dir / "Glossary_reviewed.json"
+            )
+            glossary_path.write_text(
+                json.dumps(chapter_glossary),
+                encoding="utf-8",
+            )
             chapter_map = [
                 {
                     "raw_file": "editions/ai/episode-2.md",
@@ -2922,7 +3110,11 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                 }
             ]
             pipeline = TranslationPipeline.__new__(TranslationPipeline)
-            pipeline.rag = SimpleNamespace()
+            pipeline.rag = SimpleNamespace(
+                _parse_reviewed_glossary_bundle=Mock(
+                    return_value={"alpha": "阿尔法"}
+                )
+            )
 
             with (
                 patch.object(Config, "WORKSPACE_DIR", str(workspace)),
@@ -2945,7 +3137,17 @@ class TestParagraphContracts(unittest.IsolatedAsyncioTestCase):
                     2,
                 )
 
-        self.assertEqual(result, {"summary": "Approved chapter summary.", "terms": {}})
+        self.assertEqual(
+            result,
+            {
+                "summary": "Approved chapter summary.",
+                "terms": {"alpha": "阿尔法"},
+            },
+        )
+        pipeline.rag._parse_reviewed_glossary_bundle.assert_called_once_with(
+            chapter_glossary,
+            allow_chapter_local_coverage=True,
+        )
         self.assertEqual(
             load_summary.call_args.args[0],
             str(
